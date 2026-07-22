@@ -21,7 +21,7 @@
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -29,12 +29,18 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createUsageReader, type LimitWindow } from "./usage.ts";
 
 /**
+ * A color is either one of pi's semantic theme roles (follows the active theme) or a
+ * `#rrggbb` literal (pinned exactly, ignores the theme). `ThemeColor` is pi's own
+ * exported union, so an invalid role name is a compile error rather than a silent
+ * mis-render.
+ */
+type ColorSpec = ThemeColor | `#${string}`;
+
+/**
  * Display knobs. Everything tunable lives here so the render code below stays boring.
  *
- * Colors: each entry is either a theme role name (follows the active theme) or a
- * `#rrggbb` hex string (pinned exactly, ignores the theme). Roles are the default so
- * the footer tracks whatever theme is active; switch an entry to hex when you want an
- * exact match to some other tool's palette.
+ * Roles are the default so the footer tracks whatever theme is active; switch an entry
+ * to a hex literal when you want an exact match to some other tool's palette.
  */
 const CONFIG = {
 	/** Width of each meter in cells. */
@@ -62,18 +68,16 @@ const CONFIG = {
 		cached: "mdCode",
 		out: "warning",
 		reset: "dim",
-	} satisfies Record<string, string>,
+	} satisfies Record<string, ColorSpec>,
 };
 
 /** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
 const BAR_FILL = "█";
 const BAR_TRACK = "·";
 
-type Theme = { fg(role: string, text: string): string; bold(text: string): string };
-
 /** Paint `text` with a CONFIG.colors entry, honoring either a theme role or a hex value. */
-function paint(theme: Theme, color: string, text: string): string {
-	if (!color.startsWith("#")) return theme.fg(color, text);
+function paint(theme: Theme, color: ColorSpec, text: string): string {
+	if (!color.startsWith("#")) return theme.fg(color as ThemeColor, text);
 	const r = Number.parseInt(color.slice(1, 3), 16);
 	const g = Number.parseInt(color.slice(3, 5), 16);
 	const b = Number.parseInt(color.slice(5, 7), 16);
@@ -144,7 +148,7 @@ function bar(percent: number, cells = CONFIG.barCells): { filled: string; track:
 }
 
 /** Color role for a meter, escalating as it fills. */
-function meterColor(percent: number | null): string {
+function meterColor(percent: number | null): ColorSpec {
 	if (percent === null) return CONFIG.colors.barFill;
 	if (percent > CONFIG.errorAbovePercent) return CONFIG.colors.barError;
 	if (percent > CONFIG.warnAbovePercent) return CONFIG.colors.barWarn;
