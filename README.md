@@ -39,6 +39,7 @@ provider reports any.
 | `config.ts` | Tunables and endpoint constants |
 | `client.ts` | Request building, filter validation, HTTP |
 | `format.ts` | Dedupe and markdown rendering (pure) |
+| `render.ts` | Collapsed/expanded TUI view |
 | `types.ts` | Exa response shapes |
 
 **`agent/extensions/web-fetch/`** — registers a `web_fetch` tool that reads pages by URL via Exa's
@@ -51,6 +52,7 @@ provider reports any.
 | `client.ts` | URL validation, request building, HTTP |
 | `sanitize.ts` | Injection defenses (pure) |
 | `format.ts` | Fenced, labelled rendering (pure) |
+| `render.ts` | Collapsed/expanded TUI view |
 | `types.ts` | Exa `/contents` response shapes |
 
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
@@ -86,7 +88,7 @@ Extensions and themes are picked up automatically by filename — no registratio
   roles, so retargeting a role restyles everything that uses it. The file's `$schema` points at
   pi's theme schema, so an editor will autocomplete the valid role names.
 - **Statusline** — every knob lives in the `CONFIG` block at the top of
-  `agent/extensions/statusline/index.ts`: bar width, whether to show the limit meters, reset
+  `agent/extensions/statusline/config.ts`: bar width, whether to show the limit meters, reset
   formatting (`"clock"` → `resets 04:51 Wed`, `"relative"` → `2d 6h left`), the warn/error
   thresholds, and per-segment colours. Each colour is either one of pi's semantic theme roles
   (follows the active theme) or a `#rrggbb` literal (pinned, ignores the theme). Roles are
@@ -98,14 +100,14 @@ Extensions and themes are picked up automatically by filename — no registratio
   Set `CONFIG.showLimits` to `false` to drop the line entirely.
 - **Web search** — needs an Exa key from <https://dashboard.exa.ai/api-keys>; put it in
   `agent/.env` (see below). Tunables (result count, snippet length, search mode, timeout) live in
-  the `CONFIG` block at the top of `agent/extensions/web-search.ts`. Exa bills per search, and
+  `agent/extensions/web-search/config.ts`. Exa bills per search, and
   `CONFIG.searchType` values `deep`/`deep-reasoning` cost substantially more and are far slower than
   the default `auto` (~1s vs 4–40s). Highlights-only is the default content mode because it keeps
   token cost predictable; set `CONFIG.includeText` to also pull page text. Categories `company` and
   `people` disable `excludeDomains` and both date filters — the tool rejects that combination up
   front rather than letting Exa 400. Canonical API reference:
   <https://exa.ai/docs/reference/search-api-guide-for-coding-agents>
-- **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env.ts` adds it:
+- **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env/` adds it:
 
   ```sh
   cp ~/.pi/agent/.env.example ~/.pi/agent/.env
@@ -118,7 +120,7 @@ Extensions and themes are picked up automatically by filename — no registratio
   or `.env.example`, both of which are committed to this public repo.
 
   Caveat: the loader runs at `session_start`, so it reliably serves anything read at call time
-  (like `EXA_API_KEY`, which `web-search.ts` reads inside `execute()`). Whether it lands early
+  (like `EXA_API_KEY`, which `web-search` reads inside `execute()`). Whether it lands early
   enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
   provider keys in your shell profile or use `/login`.
 - **Web fetch, and its trust boundary** — `web_fetch` returns third-party content, which is
@@ -136,6 +138,11 @@ Extensions and themes are picked up automatically by filename — no registratio
   rather than silently cutting. Note that Exa's documented `text.verbosity: "compact"` knob had
   **no measurable effect** in testing (identical 18,668 chars vs `"full"`), so the character cap is
   the only control that actually works.
+- **Tool output is collapsed** — `web_search` and `web_fetch` results show the first
+  `CONFIG.collapsedLines` (8) lines with a `… N more line(s)` hint; press **Ctrl+O**
+  (`app.tools.expand`) for the full detail. pi's TUI has **no mouse support**, so expansion is
+  keyboard-only. The model always receives the complete text — only the on-screen view collapses.
+  pi's default tool renderer does not truncate at all, so this is done by each tool's `render.ts`.
 - **Adding an extension** — create `agent/extensions/<name>/index.ts` with a default-exported
   factory, and put helpers in sibling files. Import them with an explicit `.ts` extension
   (`from "./config.ts"`), which is what pi's own examples do — extensions load through jiti, so

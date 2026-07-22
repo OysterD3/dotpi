@@ -76,6 +76,6 @@ export const CONFIG = {
 	 * The deep modes cost significantly more and are much slower.
 	 */
 	searchType: "auto",
-	/** Append Exa's reported dollar cost to the tool output. */
-	showCost: true,
+	/** Visual lines of result shown before the output is collapsed. Ctrl+O expands. */
+	collapsedLines: 8,
 };

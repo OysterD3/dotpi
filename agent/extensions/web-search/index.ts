@@ -23,6 +23,7 @@ import { Type } from "typebox";
 import { buildBody, search, validateFilters } from "./client.ts";
 import { CATEGORIES, CONFIG } from "./config.ts";
 import { dedupe, formatResults } from "./format.ts";
+import { bodyText, renderCollapsible, type SearchDetails, summarize } from "./render.ts";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -81,7 +82,12 @@ export default function (pi: ExtensionAPI) {
 			const filterError = validateFilters(params);
 			if (filterError) throw new Error(filterError);
 
-			onUpdate?.({ content: [{ type: "text", text: `Searching: ${params.query}` }] });
+			// `details` is required on updates too — AgentToolUpdateCallback takes a full
+			// AgentToolResult, not a partial one.
+			onUpdate?.({
+				content: [{ type: "text", text: `Searching: ${params.query}` }],
+				details: { query: params.query, results: [] },
+			});
 
 			const wanted = Math.min(params.numResults ?? CONFIG.defaultNumResults, CONFIG.maxNumResults);
 			// Over-fetch into the free tier so dedupe can't shrink the set below what was asked for.
@@ -103,21 +109,23 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: formatResults(
-							params.query,
-							results,
-							raw.length - unique.length,
-							payload.costDollars?.total,
-						),
+						text: formatResults(params.query, results, raw.length - unique.length),
 					},
 				],
 				details: {
 					query: params.query,
 					requestId: payload.requestId,
+					// Kept for logs and the /session view; deliberately not rendered or sent
+					// to the model.
 					costDollars: payload.costDollars?.total,
 					results: results.map((result) => ({ title: result.title, url: result.url })),
 				},
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			// No separate summary line: formatResults already leads with the count and query.
+			return renderCollapsible(bodyText(result.content), "", expanded, theme);
 		},
 	});
 }

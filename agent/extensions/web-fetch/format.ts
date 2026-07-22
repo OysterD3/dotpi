@@ -80,7 +80,6 @@ export function formatOutput(
 	results: ContentsResult[],
 	failures: ContentsStatus[],
 	maxChars: number,
-	costDollars: number | undefined,
 ): string {
 	const parts: string[] = [];
 
@@ -96,10 +95,6 @@ export function formatOutput(
 	}
 
 	if (parts.length === 0) parts.push("No content returned.");
-
-	if (CONFIG.showCost && typeof costDollars === "number") {
-		parts.push(`_Exa cost: $${costDollars.toFixed(4)}_`);
-	}
 
 	return parts.join("\n\n");
 }

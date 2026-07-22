@@ -31,8 +31,8 @@ export const CONFIG = {
 	 * 0 forces a livecrawl and is markedly slower; -1 never livecrawls.
 	 */
 	maxAgeHours: undefined as number | undefined,
-	/** Append Exa's reported dollar cost to the output. */
-	showCost: true,
+	/** Visual lines of result shown before the output is collapsed. Ctrl+O expands. */
+	collapsedLines: 8,
 	/** Schemes the tool will pass through. Everything else is refused. */
 	allowedProtocols: ["http:", "https:"],
 };

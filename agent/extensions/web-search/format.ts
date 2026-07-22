@@ -77,20 +77,14 @@ export function formatResult(result: ExaResult, position: number): string {
 	return lines.join("\n");
 }
 
-/** The full tool output: header line, result blocks, and optional cost footer. */
+/** The full tool output: header line then result blocks. */
 export function formatResults(
 	query: string,
 	results: ExaResult[],
 	droppedDuplicates: number,
-	costDollars: number | undefined,
 ): string {
 	const rendered = results.map((result, index) => formatResult(result, index + 1)).join("\n\n");
 	// Say so rather than silently returning fewer results than were asked for.
-	const deduped =
-		droppedDuplicates > 0 ? ` (${droppedDuplicates} duplicate URL(s) omitted)` : "";
-	const cost =
-		CONFIG.showCost && typeof costDollars === "number"
-			? `\n\n_Exa cost: $${costDollars.toFixed(4)}_`
-			: "";
-	return `${results.length} result(s) for "${query}"${deduped}:\n\n${rendered}${cost}`;
+	const deduped = droppedDuplicates > 0 ? ` (${droppedDuplicates} duplicate URL(s) omitted)` : "";
+	return `${results.length} result(s) for "${query}"${deduped}:\n\n${rendered}`;
 }

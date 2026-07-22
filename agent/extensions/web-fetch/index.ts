@@ -26,7 +26,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { buildBody, getContents, validateUrl } from "./client.ts";
 import { CONFIG } from "./config.ts";
-import { formatOutput } from "./format.ts";
+import { formatOutput, GUARD_NOTICE } from "./format.ts";
+import { bodyText, type FetchDetails, renderCollapsible, summarize } from "./render.ts";
 import type { ContentsStatus, FetchMode } from "./types.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -93,8 +94,13 @@ export default function (pi: ExtensionAPI) {
 			const mode: FetchMode = params.mode ?? (query ? "summary" : "text");
 			const maxChars = Math.min(params.maxChars ?? CONFIG.maxCharsPerPage, CONFIG.maxCharsCeiling);
 
+			// `details` is required on updates too — AgentToolUpdateCallback takes a full
+			// AgentToolResult, not a partial one.
 			onUpdate?.({
-				content: [{ type: "text", text: `Fetching ${urls.length} URL(s)${query ? ` for: ${query}` : ""}` }],
+				content: [
+					{ type: "text", text: `Fetching ${urls.length} URL(s)${query ? ` for: ${query}` : ""}` },
+				],
+				details: { mode, fetched: [], failed: [] },
 			});
 
 			const payload = await getContents(apiKey, buildBody(urls, mode, maxChars, query), signal);
@@ -107,17 +113,26 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: formatOutput(results, failures, maxChars, payload.costDollars?.total),
+						text: formatOutput(results, failures, maxChars),
 					},
 				],
 				details: {
 					requestId: payload.requestId,
 					mode,
+					// Kept for logs and the /session view; deliberately not rendered or sent
+					// to the model.
 					costDollars: payload.costDollars?.total,
 					fetched: results.map((result) => result.url ?? result.id),
 					failed: failures.map((status) => ({ url: status.id, tag: status.error?.tag })),
 				},
 			};
+		},
+
+		renderResult(result, { expanded }, theme) {
+			// The guard notice exists to frame the content for the model; on screen it would
+			// consume the entire collapsed view, so strip it from the display only.
+			const body = bodyText(result.content).replace(GUARD_NOTICE, "").trimStart();
+			return renderCollapsible(body, summarize(result.details as FetchDetails), expanded, theme);
 		},
 	});
 }
