@@ -5,7 +5,8 @@
  * markdown — title, URL, date, and a snippet per hit — rather than raw page dumps, so a
  * search costs a predictable slice of context instead of blowing the window.
  *
- * API (verified against https://exa.ai/docs/reference/search):
+ * API (verified against the canonical coding-agent guide:
+ * https://exa.ai/docs/reference/search-api-guide-for-coding-agents):
  *   POST https://api.exa.ai/search
  *   Header: x-api-key: <key>
  *   Body:   { query, type, numResults, category?, includeDomains?, excludeDomains?,
@@ -32,12 +33,25 @@ export const CONFIG = {
 	/** Hard ceiling, regardless of what the model asks for. Exa's own max is 100. */
 	maxNumResults: 25,
 	/**
-	 * Characters of page text kept per result. The whole point of the tool is to summarize
-	 * the web into context, so this stays small; raise it if you want fuller extracts.
+	 * Request Exa's query-relevant highlight excerpts. This is the recommended default for
+	 * agent workflows — token cost stays predictable because Exa only returns the relevant
+	 * sentences rather than whole pages.
 	 */
-	maxCharsPerResult: 1200,
-	/** Include Exa's extracted highlight sentences alongside the text snippet. */
 	includeHighlights: true,
+	/**
+	 * Also request full page text. Off by default: requesting text you don't use still
+	 * transfers (and bills for) it. Turn on when downstream reasoning genuinely needs
+	 * broad page context rather than excerpts.
+	 */
+	includeText: false,
+	/** Hard cap on extracted text length, only applies when includeText is true. */
+	maxCharsPerResult: 1200,
+	/**
+	 * Cache freshness in hours. Omitted by default, which is Exa's recommended balance
+	 * (use cache when present, livecrawl as fallback). 0 forces a livecrawl on every
+	 * result and is markedly slower; -1 never livecrawls.
+	 */
+	maxAgeHours: undefined as number | undefined,
 	/** Abort a search that takes longer than this. */
 	timeoutMs: 20_000,
 	/**
@@ -101,6 +115,8 @@ export default function (pi: ExtensionAPI) {
 					description: `How many results to return (default ${CONFIG.defaultNumResults}).`,
 				}),
 			),
+			// Note for the model: "company" and "people" disable excludeDomains and both date
+			// filters. Exa returns 400 if they're combined; execute() rejects that up front.
 			category: Type.Optional(StringEnum(CATEGORIES)),
 			includeDomains: Type.Optional(
 				Type.Array(Type.String(), {
@@ -127,6 +143,23 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 
+			// Exa returns 400 when these categories are combined with domain exclusion or date
+			// filters. Fail here with an actionable message instead of burning a request on a
+			// rejection the model can't interpret.
+			if (params.category === "company" || params.category === "people") {
+				const unsupported = [
+					params.excludeDomains?.length ? "excludeDomains" : undefined,
+					params.startPublishedDate ? "startPublishedDate" : undefined,
+					params.endPublishedDate ? "endPublishedDate" : undefined,
+				].filter(Boolean);
+				if (unsupported.length > 0) {
+					throw new Error(
+						`Exa rejects category "${params.category}" combined with ${unsupported.join(", ")}. ` +
+							"Retry without those filters, or drop the category.",
+					);
+				}
+			}
+
 			onUpdate?.({ content: [{ type: "text", text: `Searching: ${params.query}` }] });
 
 			const numResults = Math.min(
@@ -144,8 +177,9 @@ export default function (pi: ExtensionAPI) {
 				...(params.startPublishedDate ? { startPublishedDate: params.startPublishedDate } : {}),
 				...(params.endPublishedDate ? { endPublishedDate: params.endPublishedDate } : {}),
 				contents: {
-					text: { maxCharacters: CONFIG.maxCharsPerResult },
 					...(CONFIG.includeHighlights ? { highlights: true } : {}),
+					...(CONFIG.includeText ? { text: { maxCharacters: CONFIG.maxCharsPerResult } } : {}),
+					...(CONFIG.maxAgeHours !== undefined ? { maxAgeHours: CONFIG.maxAgeHours } : {}),
 				},
 			};
 

@@ -53,7 +53,12 @@ Extensions and themes are picked up automatically by filename — no registratio
 - **Web search** — needs an Exa key from <https://dashboard.exa.ai/api-keys>; put it in
   `agent/.env` (see below). Tunables (result count, snippet length, search mode, timeout) live in
   the `CONFIG` block at the top of `agent/extensions/web-search.ts`. Exa bills per search, and
-  `CONFIG.searchType` values `deep`/`deep-reasoning` cost substantially more than the default `auto`.
+  `CONFIG.searchType` values `deep`/`deep-reasoning` cost substantially more and are far slower than
+  the default `auto` (~1s vs 4–40s). Highlights-only is the default content mode because it keeps
+  token cost predictable; set `CONFIG.includeText` to also pull page text. Categories `company` and
+  `people` disable `excludeDomains` and both date filters — the tool rejects that combination up
+  front rather than letting Exa 400. Canonical API reference:
+  <https://exa.ai/docs/reference/search-api-guide-for-coding-agents>
 - **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env.ts` adds it:
 
   ```sh
