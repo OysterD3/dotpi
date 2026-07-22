@@ -11,7 +11,8 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | --- | --- |
 | `agent/settings.json` | Global pi settings. Currently just selects the theme. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
-| `agent/extensions/statusline.ts` | Two-line custom footer: model / cwd / git branch / diff stat / pi version, plus a context-window bar and token totals. |
+| `agent/extensions/statusline/index.ts` | Custom footer. Line 1: model / cwd / git branch / diff stat / pi version. Line 2: context-window bar and token totals. Line 3: subscription limit meters, when the provider reports any. |
+| `agent/extensions/statusline/usage.ts` | Helper module (not a standalone extension) that reads ChatGPT subscription limits for the `openai-codex` provider. |
 
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
 and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with other agents and lives elsewhere).
@@ -35,10 +36,21 @@ Extensions and themes are picked up automatically by filename — no registratio
   `muted`, `mdCode`, …) onto those vars. The statusline and the rest of the UI only ever reference
   roles, so retargeting a role restyles everything that uses it. The file's `$schema` points at
   pi's theme schema, so an editor will autocomplete the valid role names.
-- **Statusline** — edit `agent/extensions/statusline.ts`. The two `render()` return values are
-  line 1 and line 2; delete a `parts1.push(...)` to drop a segment, or change `bar(pct, cells)`
-  to resize the context meter. Colours go through `theme.fg("<role>", …)`, so keep using role
-  names rather than literal hex if you want it to follow the active theme.
+- **Statusline** — every knob lives in the `CONFIG` block at the top of
+  `agent/extensions/statusline/index.ts`: bar width, whether to show the limit meters, reset
+  formatting (`"clock"` → `resets 04:51 Wed`, `"relative"` → `2d 6h left`), the warn/error
+  thresholds, and per-segment colours. Each colour is either one of pi's semantic theme roles
+  (follows the active theme) or a `#rrggbb` literal (pinned, ignores the theme). Roles are
+  typed against pi's own `ThemeColor` union, so a typo is a compile error rather than a silent
+  mis-render.
+- **Limit meters** — shown only when the provider actually reports limit windows, and each is
+  labelled from the duration the API returns rather than from its position in the response.
+  A ChatGPT/Codex account reports a single weekly window, so you get `Weekly:` and nothing else.
+  Set `CONFIG.showLimits` to `false` to drop the line entirely.
+- **Multi-file extensions** — note the subdirectory. pi auto-loads *every* top-level
+  `extensions/*.ts` as its own extension, so a helper module sitting next to an extension would
+  be loaded as one and fail. Inside a directory only `index.ts` is loaded; siblings are plain
+  modules. Import them with an explicit `.ts` extension.
 - **Disable an extension** — remove or rename the file out of `agent/extensions/`.
 
 `agent/settings.json` also gains machine-local keys as you use pi (e.g. `lastChangelogVersion`).

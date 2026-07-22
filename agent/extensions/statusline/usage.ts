@@ -43,10 +43,16 @@ export type LimitWindow = {
 };
 
 export type CodexUsage = {
-	/** Rolling ~5h window. */
-	session?: LimitWindow;
-	/** Weekly window. */
-	weekly?: LimitWindow;
+	/**
+	 * Whatever limit windows the account actually has, in the order the API returns
+	 * them (primary first, then secondary).
+	 *
+	 * Deliberately NOT named session/weekly: which windows exist differs per provider
+	 * and plan. A ChatGPT/Codex account reports only a weekly window in
+	 * `primary_window` — assuming primary means "5h session" the way Claude Code's
+	 * footer does mislabels it. Callers derive the label from `windowMinutes`.
+	 */
+	windows: LimitWindow[];
 	planType?: string;
 };
 
@@ -130,12 +136,16 @@ async function fetchUsage(ctx: CtxLike, signal: AbortSignal): Promise<CodexUsage
 	if (!isObject(payload)) throw new Error("usage response was not an object");
 
 	const rateLimit = isObject(payload.rate_limit) ? payload.rate_limit : undefined;
-	const usage: CodexUsage = {
-		session: parseWindow(rateLimit?.primary_window),
-		weekly: parseWindow(rateLimit?.secondary_window),
+	const windows = [
+		parseWindow(rateLimit?.primary_window),
+		parseWindow(rateLimit?.secondary_window),
+	].filter((window): window is LimitWindow => window !== undefined);
+	if (windows.length === 0) return null;
+
+	return {
+		windows,
 		planType: typeof payload.plan_type === "string" ? payload.plan_type : undefined,
 	};
-	return usage.session || usage.weekly ? usage : null;
 }
 
 /**

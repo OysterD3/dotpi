@@ -3,14 +3,18 @@
  *
  * Line 1:  <model>  |  <cwd>  |  <branch>  |  (+added,-removed)  |  v<pi-version>
  * Line 2:  Context: [====------] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
- * Line 3:  Session: [====------] <pct>% (resets <time>)   Weekly: [==--------] <pct>% (resets <time>)
+ * Line 3:  Weekly: [====------] <pct>% (resets <time>)   [further windows, if any]
  *
  * Data sources:
  *   - model / cwd / usage tokens : ctx.model, ctx.cwd, ctx.sessionManager.getEntries()
  *   - context window / percent   : ctx.getContextUsage()
  *   - git branch                 : footerData.getGitBranch()
  *   - git diff (+/-)             : `git diff --numstat HEAD` (shelled out, cached briefly)
- *   - session / weekly limits    : ./usage.ts (ChatGPT subscription endpoint; Codex provider only)
+ *   - subscription limits        : ./usage.ts (ChatGPT subscription endpoint; Codex provider only)
+ *
+ * Each limit window is labelled by its own reported duration, not by slot order — a
+ * Codex account reports only a weekly window, in the slot Claude Code uses for its 5h
+ * session meter.
  *
  * Line 3 appears only when pi is authenticated with the `openai-codex` provider and the
  * usage endpoint answers. On any other provider, or any failure, it is omitted entirely.
@@ -143,7 +147,11 @@ function makeGitDiffCounter(cwd: string) {
 
 function bar(percent: number, cells = CONFIG.barCells): { filled: string; track: string } {
 	const clamped = Math.max(0, Math.min(100, percent));
-	const filled = Math.round((clamped / 100) * cells);
+	let filled = Math.round((clamped / 100) * cells);
+	// Any nonzero usage gets at least one cell, else 3% of a 12-cell bar rounds to an
+	// empty bar and reads as "unused". Likewise 99% keeps one track cell visible.
+	if (clamped > 0 && filled === 0) filled = 1;
+	if (clamped < 100 && filled === cells) filled = cells - 1;
 	return { filled: BAR_FILL.repeat(filled), track: BAR_TRACK.repeat(cells - filled) };
 }
 
@@ -191,13 +199,32 @@ function formatReset(epochSeconds: number | undefined): string {
 	return sameDay ? `resets ${time}` : `resets ${time} ${day}`;
 }
 
-/** "Session: [███·····] 42% (resets 17:04)" */
-function limitSegment(theme: Theme, label: string, window: LimitWindow | undefined): string | null {
-	if (!window) return null;
+/**
+ * Name a limit window by how long it actually is, per the API's `limit_window_seconds`.
+ *
+ * Not by which slot it arrived in: a ChatGPT/Codex account puts its *weekly* window in
+ * `primary_window` and has no 5h window at all, so slot order says nothing about
+ * duration. Falls back to a bare duration when it isn't one of the common shapes, and
+ * to "Limit" when the API omits the window length entirely.
+ */
+function windowLabel(window: LimitWindow): string {
+	const minutes = window.windowMinutes;
+	if (minutes === undefined) return "Limit";
+	const hours = minutes / 60;
+	if (hours <= 1) return `${Math.round(minutes)}m`;
+	if (hours <= 8) return "Session";
+	if (hours <= 36) return "Daily";
+	if (hours <= 24 * 10) return "Weekly";
+	if (hours <= 24 * 40) return "Monthly";
+	return `${Math.round(hours / 24)}d`;
+}
+
+/** "Weekly: [███·····] 42% (resets 17:04)" */
+function limitSegment(theme: Theme, window: LimitWindow): string {
 	const pct = Math.round(window.usedPercent);
 	const reset = formatReset(window.resetsAt);
 	return (
-		paint(theme, CONFIG.colors.label, `${label}: `) +
+		paint(theme, CONFIG.colors.label, `${windowLabel(window)}: `) +
 		meter(theme, pct) +
 		` ${paint(theme, meterColor(pct), `${pct}%`)}` +
 		(reset ? ` ${paint(theme, CONFIG.colors.reset, `(${reset})`)}` : "")
@@ -293,14 +320,9 @@ export default function (pi: ExtensionAPI) {
 
 					// --- line 3: subscription limits (only when the provider supplies them) ---
 					const limits = usage?.get();
-					if (limits) {
-						const segments = [
-							limitSegment(theme, "Session", limits.session),
-							limitSegment(theme, "Weekly", limits.weekly),
-						].filter((segment): segment is string => segment !== null);
-						if (segments.length > 0) {
-							lines.push(truncateToWidth(segments.join("   "), width));
-						}
+					if (limits && limits.windows.length > 0) {
+						const segments = limits.windows.map((window) => limitSegment(theme, window));
+						lines.push(truncateToWidth(segments.join("   "), width));
 					}
 
 					return lines;
