@@ -186,9 +186,19 @@ the network into a shell. Modes, from most to least permissive:
 | `askAll` | Prompt for every tool call. |
 | `denyAll` | Refuse everything not explicitly allowed. |
 
-What counts as destructive is a readable table in `destructive.ts` — no model call in front of
-every command, so it is fast, offline, free, and auditable. `/permissions patterns` lists all of
-them; silence any single one by id via `allowDestructive`. Detection splits on `;`, `&&`, `||` and
+What counts as destructive is a readable table in `destructive.ts` — 62 patterns, no model call in
+front of every command, so it is fast, offline, free, and auditable. `/permissions patterns` lists
+them; silence any single one by id via `allowDestructive`.
+
+**Provenance, since this is a security control and it matters:** the table was written from
+scratch, then audited against the shipped Claude Code binary. Claude Code turned out not to gate on
+a destructive denylist at all — it has an enumerated destructive regex table that is *advisory
+only* (behind a default-off flag, feeding a "Note: may …" hint and telemetry), narrow deterministic
+blocking only for `rm` path shape, and a 66-rule taxonomy that is a prompt for an LLM classifier
+whose own text says "RULE LISTS ARE EXAMPLES, NOT BOUNDARIES". So nothing was copied; those 66 rule
+names were used as a coverage checklist, and the audit added 21 patterns and fixed 18 existing ones
+— including `rm -v -rf /srv/data`, which the headline rule silently missed because it required the
+flag to be the first token. Detection splits on `;`, `&&`, `||` and
 newlines while respecting quotes, and looks inside `$(...)` and backticks, so `echo ok && rm -rf x`
 and `echo "$(git reset --hard)"` are both caught. It also treats a destructive command with
 runtime-computed arguments (`rm $(cat list)`) as destructive, since it cannot be read statically.
