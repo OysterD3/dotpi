@@ -251,7 +251,59 @@ that is already executing, and `bash` remains able to do anything the pattern ta
 | `rules.ts` | Claude Code rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
+| `grants.ts` | Session-scoped approvals and what each one covers |
 | `config.ts` | Modes and their ordering |
+| `corpus.test.ts` | 171 safe / 85 dangerous commands the table must get right |
+
+**`agent/extensions/add-dir/`** — adds `/add-dir`, a port of Claude Code's command, plus `/dirs` to
+list and remove. Brings another directory into the session's workspace:
+
+```
+/add-dir ../design-system     # tab-completes directories
+/add-dir                      # prompts for a path
+/dirs                         # list the workspace, remove a directory
+```
+
+After the path checks out you get Claude Code's three-way answer — **this session** / **remember
+it** / **no** — and choosing to remember asks one more question pi needs and Claude Code does not:
+which settings file. Claude Code always writes `.claude/settings.local.json`, a per-project file
+its own setup gitignores; pi has no local-settings tier, so the choice is between this project's
+`.pi/settings.json` (may get committed) and your global one (applies everywhere). Neither is a safe
+silent default. It lands under the same `permissions` block:
+
+```jsonc
+{ "permissions": { "additionalDirectories": ["/Users/me/work/design-system"] } }
+```
+
+**What this does and does not do is worth being precise about**, because the name is borrowed from
+a tool where it means something stronger. In Claude Code the workspace is a permission boundary:
+tools refuse paths outside it, so `/add-dir` unlocks access. pi has no such fence — `read`, `edit`
+and `bash` already accept any absolute path. So this **grants nothing**. What it does is tell the
+model the directory is in scope, and load that directory's `AGENTS.md` the way pi loads the
+project's own. Claude Code does that second part too; it keeps a separate list of added directories
+for exactly this. Both are capped (24 directories, 48k characters of guidance) because they are
+re-sent every turn.
+
+Session-scoped additions are written to the session as custom entries rather than held in memory,
+which makes them behave correctly around `/rewind`: rewinding past an `/add-dir` un-adds the
+directory, and resuming a session keeps what you added. Validation is Claude Code's, including its
+wording — a path that is already covered says *which* directory covers it, and pointing at a file
+suggests its parent. macOS `/tmp` vs `/private/tmp` is normalised, so those are not two directories.
+
+The same trust rule as `permissions` applies: an untrusted project's `additionalDirectories` is
+ignored on load, and choosing to remember into an untrusted project says so and falls back to the
+session rather than writing a file that would be quietly ignored.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Commands, dialogs, prompt injection |
+| `paths.ts` | Expansion and containment (pure) |
+| `validate.ts` | The checks and Claude Code's wording for each |
+| `workspace.ts` | The directory set and its session persistence |
+| `settings.ts` | Reading and writing `settings.json` without losing pi's own writes |
+| `prompt.ts` | What gets appended to the system prompt |
+| `config.ts` | Caps and labels |
+| `add-dir.test.ts` / `add-dir.e2e.ts` | Unit and end-to-end coverage |
 
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
