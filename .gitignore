@@ -9,6 +9,11 @@ agent/auth.json
 agent/models-store.json
 agent/trust.json
 
+# Language server binaries — reinstall with: cd agent/lsp && pnpm install
+# package.json and the lockfile ARE tracked, so versions stay reproducible.
+agent/lsp/node_modules/
+agent/lsp/bin/
+
 # Skills are symlinks into ~/.agents/skills (shared with other agents), not part of this config
 agent/skills/
 

@@ -1,0 +1,17 @@
+{
+  "name": "pi-lsp-servers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Language servers used by the pi lsp extension. Installed here so nothing pollutes the global environment and versions stay pinned.",
+  "dependencies": {
+    "typescript": "5.9.3",
+    "typescript-language-server": "5.3.0",
+    "pyright": "1.1.411"
+  },
+  "comments": {
+    "typescript": "Pinned to 5.x deliberately. TypeScript 7.0.x dropped the tsserver binary (its bin field is only tsc), and typescript-language-server drives tsserver — installing typescript@latest silently breaks TS/JS diagnostics.",
+    "pyright": "Ships both pyright and pyright-langserver; the extension uses pyright-langserver --outputjson --stdio.",
+    "gopls": "Not an npm package. Install with: GOBIN=~/.pi/agent/lsp/bin go install golang.org/x/tools/gopls@latest — or leave it on PATH.",
+    "jdtls": "Eclipse JDT language server is not installed here (100MB+). The registry entry resolves it from PATH if you install it, e.g. brew install jdtls."
+  }
+}

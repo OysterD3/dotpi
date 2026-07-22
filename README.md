@@ -55,6 +55,21 @@ provider reports any.
 | `render.ts` | Collapsed/expanded TUI view |
 | `types.ts` | Exa `/contents` response shapes |
 
+**`agent/extensions/lsp/`** — registers an `lsp_diagnostics` tool: real compiler errors and
+warnings from language servers, so the agent can verify an edit without running a build. pi has
+no LSP support of its own, so this is a complete client.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Tool registration and orchestration |
+| `servers.ts` | **Server registry — the nvim-lspconfig equivalent; edit this to add a language** |
+| `protocol.ts` | `Content-Length` JSON-RPC framing and URI helpers (pure) |
+| `client.ts` | One server process: spawn, initialize, didOpen, collect diagnostics |
+| `manager.ts` | Server selection, project-root detection, client reuse and idle reaping |
+| `format.ts` | Compact `path:line:col: severity: message` rendering (pure) |
+| `render.ts` | Collapsed/expanded TUI view |
+| `config.ts` | Timeouts and limits |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
@@ -143,6 +158,41 @@ Extensions and themes are picked up automatically by filename — no registratio
   (`app.tools.expand`) for the full detail. pi's TUI has **no mouse support**, so expansion is
   keyboard-only. The model always receives the complete text — only the on-screen view collapses.
   pi's default tool renderer does not truncate at all, so this is done by each tool's `render.ts`.
+- **LSP: adding a language** — one entry in `agent/extensions/lsp/servers.ts`, in
+  lspconfig's vocabulary:
+
+  ```ts
+  rust_analyzer: {
+    cmd: () => [resolveBin("rust-analyzer")],
+    extensions: ["rs"],
+    languageId: "rust",
+    rootMarkers: ["Cargo.toml", ".git"],
+  },
+  ```
+
+  `resolveBin` prefers `agent/lsp/node_modules/.bin`, then `agent/lsp/bin` (Go tools), then
+  `PATH`. `cmd` is a function so a missing binary reports an install hint at call time instead
+  of breaking the extension at import. Root detection walks upward to the nearest marker, so a
+  monorepo package resolves to the package rather than the repo root.
+- **LSP: installed servers** — `cd agent/lsp && pnpm install` (the lockfile is committed;
+  `node_modules/` is not).
+
+  | Language | Server | Status |
+  | --- | --- | --- |
+  | TypeScript / JavaScript | `typescript-language-server` + `typescript` | installed |
+  | Python | `pyright` | installed |
+  | Go | `gopls` | resolved from PATH |
+  | Java | `jdtls` | **configured but not installed** — `brew install jdtls` |
+
+  **`typescript` is pinned to 5.9.3 on purpose.** TypeScript 7.0.x dropped the `tsserver`
+  binary (its `bin` field is only `tsc`), and `typescript-language-server` drives `tsserver` —
+  so `typescript@latest` silently breaks TS/JS diagnostics.
+- **LSP: latency** — the first call for a project is slow while the server indexes it
+  (~1.6s measured on small fixtures, much longer on a real codebase); later calls reuse the
+  running server. Warm calls are dominated by `CONFIG.settleMs` (1200ms), which is how long the
+  client keeps listening after the first `publishDiagnostics` — servers routinely send an empty
+  batch first and the real errors a moment later. Lower it for snappier checks at the risk of
+  missing a late batch. Idle servers are shut down after 10 minutes.
 - **Adding an extension** — create `agent/extensions/<name>/index.ts` with a default-exported
   factory, and put helpers in sibling files. Import them with an explicit `.ts` extension
   (`from "./config.ts"`), which is what pi's own examples do — extensions load through jiti, so
