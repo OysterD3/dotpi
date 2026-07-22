@@ -11,11 +11,45 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | --- | --- |
 | `agent/settings.json` | Global pi settings. Currently just selects the theme. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
-| `agent/extensions/statusline/index.ts` | Custom footer. Line 1: model / cwd / git branch / diff stat / pi version. Line 2: context-window bar and token totals. Line 3: subscription limit meters, when the provider reports any. |
-| `agent/extensions/statusline/usage.ts` | Helper module (not a standalone extension) that reads ChatGPT subscription limits for the `openai-codex` provider. |
-| `agent/extensions/web-search.ts` | Registers a `web_search` tool backed by [Exa](https://exa.ai). Requires `EXA_API_KEY`. |
-| `agent/extensions/env.ts` | Loads `.env` files into `process.env` at session start. pi has no built-in dotenv support. |
 | `agent/.env.example` | Template for `agent/.env`, which holds your keys and is gitignored. |
+
+Each extension is a folder whose `index.ts` is the entry point; every sibling file is a plain
+helper module. That is pi's documented multi-file layout, and it's required here — pi auto-loads
+*every* top-level `extensions/*.ts` as its own extension, so a helper sitting beside an entry point
+would be loaded as an extension and fail.
+
+**`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
+version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
+provider reports any.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Footer wiring and layout |
+| `config.ts` | Tunables, colours, bar glyphs |
+| `render.ts` | Colours, number formatting, meters (pure) |
+| `git.ts` | Working-tree diff counts |
+| `usage.ts` | Subscription limit windows via the Codex endpoint |
+
+**`agent/extensions/web-search/`** — registers a `web_search` tool backed by
+[Exa](https://exa.ai). Requires `EXA_API_KEY`.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Tool registration and orchestration |
+| `config.ts` | Tunables and endpoint constants |
+| `client.ts` | Request building, filter validation, HTTP |
+| `format.ts` | Dedupe and markdown rendering (pure) |
+| `types.ts` | Exa response shapes |
+
+**`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
+built-in dotenv support.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Extension wiring |
+| `config.ts` | Tunables |
+| `parse.ts` | dotenv text → key/value pairs (pure) |
+| `load.ts` | File discovery, permission check, applying to `process.env` |
 
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
 and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with other agents and lives elsewhere).
@@ -75,10 +109,10 @@ Extensions and themes are picked up automatically by filename — no registratio
   (like `EXA_API_KEY`, which `web-search.ts` reads inside `execute()`). Whether it lands early
   enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
   provider keys in your shell profile or use `/login`.
-- **Multi-file extensions** — note the subdirectory. pi auto-loads *every* top-level
-  `extensions/*.ts` as its own extension, so a helper module sitting next to an extension would
-  be loaded as one and fail. Inside a directory only `index.ts` is loaded; siblings are plain
-  modules. Import them with an explicit `.ts` extension.
+- **Adding an extension** — create `agent/extensions/<name>/index.ts` with a default-exported
+  factory, and put helpers in sibling files. Import them with an explicit `.ts` extension
+  (`from "./config.ts"`), which is what pi's own examples do — extensions load through jiti, so
+  TypeScript runs uncompiled and no build step is involved.
 - **Disable an extension** — remove or rename the file out of `agent/extensions/`.
 
 `agent/settings.json` also gains machine-local keys as you use pi (e.g. `lastChangelogVersion`).

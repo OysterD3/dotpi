@@ -1,113 +1,43 @@
 /**
  * Rich statusline (custom footer) for pi.
  *
- * Line 1:  <model>  |  <cwd>  |  <branch>  |  (+added,-removed)  |  v<pi-version>
- * Line 2:  Context: [====------] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
- * Line 3:  Weekly: [====------] <pct>% (resets <time>)   [further windows, if any]
+ * Line 1:  <model>  │  <cwd>  │  <branch>  │  +added,-removed  │  v<pi-version>
+ * Line 2:  Context: [████····] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
+ * Line 3:  Weekly: [████····] <pct>% (resets <time>)   [further windows, if any]
+ *
+ *   config.ts  tunables, colors, bar glyphs
+ *   git.ts     working-tree diff counts
+ *   usage.ts   subscription limit windows (Codex provider)
+ *   render.ts  colors, number formatting, meters (pure)
+ *   index.ts   footer wiring and layout
  *
  * Data sources:
  *   - model / cwd / usage tokens : ctx.model, ctx.cwd, ctx.sessionManager.getEntries()
  *   - context window / percent   : ctx.getContextUsage()
  *   - git branch                 : footerData.getGitBranch()
- *   - git diff (+/-)             : `git diff --numstat HEAD` (shelled out, cached briefly)
- *   - subscription limits        : ./usage.ts (ChatGPT subscription endpoint; Codex provider only)
+ *   - git diff (+/-)             : ./git.ts
+ *   - subscription limits        : ./usage.ts
  *
- * Each limit window is labelled by its own reported duration, not by slot order — a
- * Codex account reports only a weekly window, in the slot Claude Code uses for its 5h
- * session meter.
- *
- * Line 3 appears only when pi is authenticated with the `openai-codex` provider and the
- * usage endpoint answers. On any other provider, or any failure, it is omitted entirely.
- *
- * This lives in `extensions/statusline/index.ts` rather than `extensions/statusline.ts`
- * because pi auto-loads every top-level `extensions/*.ts` as its own extension. In a
- * subdirectory only `index.ts` is loaded, so `usage.ts` stays a plain helper module.
+ * Line 3 appears only when the provider actually reports limit windows. Each window is
+ * labelled by its own reported duration, not by slot order — a Codex account reports
+ * only a weekly window, in the slot Claude Code uses for its 5h session meter.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { isAbsolute, relative, resolve, sep } from "node:path";
-import { createUsageReader, type LimitWindow } from "./usage.ts";
-
-/**
- * A color is either one of pi's semantic theme roles (follows the active theme) or a
- * `#rrggbb` literal (pinned exactly, ignores the theme). `ThemeColor` is pi's own
- * exported union, so an invalid role name is a compile error rather than a silent
- * mis-render.
- */
-type ColorSpec = ThemeColor | `#${string}`;
-
-/**
- * Display knobs. Everything tunable lives here so the render code below stays boring.
- *
- * Roles are the default so the footer tracks whatever theme is active; switch an entry
- * to a hex literal when you want an exact match to some other tool's palette.
- */
-const CONFIG = {
-	/** Width of each meter in cells. */
-	barCells: 12,
-	/** Show the subscription limit meters at all. */
-	showLimits: true,
-	/** Render +0,-0 in a clean repo. When false, the segment only appears once something changes. */
-	alwaysShowDiff: true,
-	/** Minimum gap between git invocations, in ms. */
-	gitPollMs: 2000,
-	/** "clock" -> "resets 17:04"; "relative" -> "3h 12m left". */
-	resetStyle: "clock" as "clock" | "relative",
-	/** Context percentage above which the meter turns warning/error colored. */
-	warnAbovePercent: 70,
-	errorAbovePercent: 90,
-	colors: {
-		model: "accent",
-		cwd: "dim",
-		branch: "mdListBullet",
-		added: "success",
-		removed: "error",
-		version: "dim",
-		separator: "dim",
-		label: "muted",
-		barFill: "accent",
-		barTrack: "dim",
-		barWarn: "warning",
-		barError: "error",
-		cached: "mdCode",
-		out: "warning",
-		reset: "dim",
-	} satisfies Record<string, ColorSpec>,
-};
-
-/** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
-const BAR_FILL = "█";
-const BAR_TRACK = "·";
-
-/** Paint `text` with a CONFIG.colors entry, honoring either a theme role or a hex value. */
-function paint(theme: Theme, color: ColorSpec, text: string): string {
-	if (!color.startsWith("#")) return theme.fg(color as ThemeColor, text);
-	const r = Number.parseInt(color.slice(1, 3), 16);
-	const g = Number.parseInt(color.slice(3, 5), 16);
-	const b = Number.parseInt(color.slice(5, 7), 16);
-	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return text;
-	return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
-}
-
-function formatTokens(count: number): string {
-	if (count < 1000) return `${count}`;
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
-
-function formatCwd(cwd: string, home: string | undefined): string {
-	if (!home) return cwd;
-	const rel = relative(resolve(home), resolve(cwd));
-	const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-	if (!inside) return cwd;
-	return rel === "" ? "~" : `~${sep}${rel}`;
-}
+import { CONFIG } from "./config.ts";
+import { makeGitDiffCounter } from "./git.ts";
+import {
+	formatCwd,
+	formatTokens,
+	limitSegment,
+	meter,
+	meterColor,
+	paint,
+} from "./render.ts";
+import { createUsageReader } from "./usage.ts";
 
 /** pi's own version, resolved once (best-effort). */
 function piVersion(): string {
@@ -117,160 +47,6 @@ function piVersion(): string {
 	} catch {
 		return "";
 	}
-}
-
-/** The canonical empty tree object, per `git hash-object -t tree /dev/null`. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/** Run git, returning stdout, or null if it failed for any reason. */
-function git(cwd: string, args: string[]): string | null {
-	try {
-		return execFileSync("git", args, {
-			cwd,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: 1500,
-		});
-	} catch {
-		return null;
-	}
-}
-
-function parseNumstat(out: string): { added: number; removed: number } {
-	let added = 0;
-	let removed = 0;
-	for (const line of out.split("\n")) {
-		const [a, r] = line.split("\t");
-		// "-" marks a binary file, which has no line counts to add.
-		if (a && a !== "-") added += Number(a) || 0;
-		if (r && r !== "-") removed += Number(r) || 0;
-	}
-	return { added, removed };
-}
-
-/**
- * Added/removed lines in the working tree, or null when cwd is not a git work tree.
- *
- * `git diff HEAD` covers staged and unstaged changes together, but fails outright in a
- * repo with no commits yet ("ambiguous argument 'HEAD'"), so that case falls back to
- * diffing against the empty tree. Untracked files are counted by neither — git has no
- * previous version to diff them against.
- *
- * A negative result is cached just like a positive one: the previous version only
- * short-circuited when `cache` was non-null, so a non-repo cwd re-spawned git on every
- * single render.
- */
-function makeGitDiffCounter(cwd: string) {
-	let cache: { added: number; removed: number } | null = null;
-	let stamp = 0;
-	let knownWorkTree = false;
-
-	return (): { added: number; removed: number } | null => {
-		const now = Date.now();
-		if (stamp !== 0 && now - stamp < CONFIG.gitPollMs) return cache;
-		stamp = now;
-
-		// Once true this cannot become false for a fixed cwd, so only re-probe while
-		// false — that way a `git init` mid-session is still picked up.
-		if (!knownWorkTree) {
-			knownWorkTree = git(cwd, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
-		}
-		if (!knownWorkTree) {
-			cache = null;
-			return cache;
-		}
-
-		const out =
-			git(cwd, ["diff", "--numstat", "HEAD"]) ?? git(cwd, ["diff", "--numstat", EMPTY_TREE]);
-		cache = out === null ? null : parseNumstat(out);
-		return cache;
-	};
-}
-
-function bar(percent: number, cells = CONFIG.barCells): { filled: string; track: string } {
-	const clamped = Math.max(0, Math.min(100, percent));
-	let filled = Math.round((clamped / 100) * cells);
-	// Any nonzero usage gets at least one cell, else 3% of a 12-cell bar rounds to an
-	// empty bar and reads as "unused". Likewise 99% keeps one track cell visible.
-	if (clamped > 0 && filled === 0) filled = 1;
-	if (clamped < 100 && filled === cells) filled = cells - 1;
-	return { filled: BAR_FILL.repeat(filled), track: BAR_TRACK.repeat(cells - filled) };
-}
-
-/** Color role for a meter, escalating as it fills. */
-function meterColor(percent: number | null): ColorSpec {
-	if (percent === null) return CONFIG.colors.barFill;
-	if (percent > CONFIG.errorAbovePercent) return CONFIG.colors.barError;
-	if (percent > CONFIG.warnAbovePercent) return CONFIG.colors.barWarn;
-	return CONFIG.colors.barFill;
-}
-
-/** `[███·····]` with the fill colored by severity and the track always dim. */
-function meter(theme: Theme, percent: number | null): string {
-	const { filled, track } = bar(percent ?? 0);
-	return (
-		paint(theme, CONFIG.colors.barTrack, "[") +
-		paint(theme, meterColor(percent), filled) +
-		paint(theme, CONFIG.colors.barTrack, track) +
-		paint(theme, CONFIG.colors.barTrack, "]")
-	);
-}
-
-/** "resets 17:04" / "resets 17:04 Mon", or "3h 12m left" depending on CONFIG.resetStyle. */
-function formatReset(epochSeconds: number | undefined): string {
-	if (epochSeconds === undefined) return "";
-	const reset = new Date(epochSeconds * 1000);
-	if (Number.isNaN(reset.getTime())) return "";
-
-	if (CONFIG.resetStyle === "relative") {
-		const remainingMs = reset.getTime() - Date.now();
-		if (remainingMs <= 0) return "resetting";
-		const minutes = Math.floor(remainingMs / 60_000);
-		const hours = Math.floor(minutes / 60);
-		if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h left`;
-		if (hours >= 1) return `${hours}h ${minutes % 60}m left`;
-		return `${minutes}m left`;
-	}
-
-	const time = `${reset.getHours().toString().padStart(2, "0")}:${reset
-		.getMinutes()
-		.toString()
-		.padStart(2, "0")}`;
-	const sameDay = reset.toDateString() === new Date().toDateString();
-	const day = reset.toLocaleDateString(undefined, { weekday: "short" });
-	return sameDay ? `resets ${time}` : `resets ${time} ${day}`;
-}
-
-/**
- * Name a limit window by how long it actually is, per the API's `limit_window_seconds`.
- *
- * Not by which slot it arrived in: a ChatGPT/Codex account puts its *weekly* window in
- * `primary_window` and has no 5h window at all, so slot order says nothing about
- * duration. Falls back to a bare duration when it isn't one of the common shapes, and
- * to "Limit" when the API omits the window length entirely.
- */
-function windowLabel(window: LimitWindow): string {
-	const minutes = window.windowMinutes;
-	if (minutes === undefined) return "Limit";
-	const hours = minutes / 60;
-	if (hours <= 1) return `${Math.round(minutes)}m`;
-	if (hours <= 8) return "Session";
-	if (hours <= 36) return "Daily";
-	if (hours <= 24 * 10) return "Weekly";
-	if (hours <= 24 * 40) return "Monthly";
-	return `${Math.round(hours / 24)}d`;
-}
-
-/** "Weekly: [███·····] 42% (resets 17:04)" */
-function limitSegment(theme: Theme, window: LimitWindow): string {
-	const pct = Math.round(window.usedPercent);
-	const reset = formatReset(window.resetsAt);
-	return (
-		paint(theme, CONFIG.colors.label, `${windowLabel(window)}: `) +
-		meter(theme, pct) +
-		` ${paint(theme, meterColor(pct), `${pct}%`)}` +
-		(reset ? ` ${paint(theme, CONFIG.colors.reset, `(${reset})`)}` : "")
-	);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -316,18 +92,19 @@ export default function (pi: ExtensionAPI) {
 					const pct = ctxUsage?.percent ?? null;
 					const pctStr = pct === null ? "?" : pct.toFixed(0);
 
-					// --- line 1: model | cwd | branch | diff | version ---
-					const parts1: string[] = [];
-					parts1.push(paint(theme, CONFIG.colors.model, ctx.model?.id || "no-model"));
-					parts1.push(
+					// --- line 1: model │ cwd │ branch │ diff │ version ---
+					const parts1: string[] = [
+						paint(theme, CONFIG.colors.model, ctx.model?.id || "no-model"),
 						paint(
 							theme,
 							CONFIG.colors.cwd,
 							formatCwd(ctx.cwd, process.env.HOME || process.env.USERPROFILE),
 						),
-					);
+					];
+
 					const branch = footerData.getGitBranch();
 					if (branch) parts1.push(paint(theme, CONFIG.colors.branch, branch));
+
 					// null means "not a git work tree" — then there is genuinely nothing to show.
 					// A clean tree still renders +0,-0 so the segment doesn't silently vanish.
 					const diff = gitDiff();
@@ -338,9 +115,9 @@ export default function (pi: ExtensionAPI) {
 								paint(theme, CONFIG.colors.removed, `-${diff.removed}`),
 						);
 					}
+
 					if (version) parts1.push(paint(theme, CONFIG.colors.version, `v${version}`));
-					const sep1 = paint(theme, CONFIG.colors.separator, "  │  ");
-					const line1 = parts1.join(sep1);
+					const line1 = parts1.join(paint(theme, CONFIG.colors.separator, "  │  "));
 
 					// --- line 2: context bar + token breakdown ---
 					const ctxLabel =
@@ -362,10 +139,10 @@ export default function (pi: ExtensionAPI) {
 
 					const lines = [truncateToWidth(line1, width), truncateToWidth(line2, width)];
 
-					// --- line 3: subscription limits (only when the provider supplies them) ---
+					// --- line 3: subscription limits, when the provider supplies them ---
 					const limits = usage?.get();
 					if (limits && limits.windows.length > 0) {
-						const segments = limits.windows.map((window) => limitSegment(theme, window));
+						const segments = limits.windows.map((limit) => limitSegment(theme, limit));
 						lines.push(truncateToWidth(segments.join("   "), width));
 					}
 
