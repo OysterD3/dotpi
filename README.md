@@ -145,6 +145,75 @@ anything that is not a plain regular file, so a symlink in the way is reported, 
 | `render.ts` | Picker rows and result summaries (pure) |
 | `config.ts` | Tracked tools, size caps, retention |
 
+**`agent/extensions/permissions/`** — tool permissions in Claude Code's `settings.json` shape. pi
+ships nothing like this; its security doc states plainly that built-in tools "can read files, write
+files, edit files, and run shell commands with the permissions of the pi process".
+
+Copy `agent/permissions.example.json` to `agent/permissions.json` to start. Rules use Claude Code's
+syntax, so an existing settings file can be carried across:
+
+```json
+{ "permissions": {
+    "defaultMode": "askDestructive",
+    "deny":  ["Read(**/.env)"],
+    "ask":   ["Bash(git push *)"],
+    "allow": ["Bash(git status)", "Bash(pnpm test *)"]
+} }
+```
+
+`Bash(git log *)` is a prefix rule (the space enforces a word boundary; a trailing `:*` is the
+legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, and a bare `Bash`
+matches every use of the tool.
+
+**The default mode is `askDestructive`** — exactly the "only ask me about destructive things" case.
+Everything runs silently except commands that destroy work, publish, escalate privilege, or pipe
+the network into a shell. Modes, from most to least permissive:
+
+| Mode | Behaviour |
+| --- | --- |
+| `allowAll` | Never prompt. Rules still apply. |
+| `askDestructive` | Prompt only for destructive commands. **Default.** |
+| `askMutating` | Prompt for anything that writes: bash, write, edit. |
+| `askAll` | Prompt for every tool call. |
+| `denyAll` | Refuse everything not explicitly allowed. |
+
+What counts as destructive is a readable table in `destructive.ts` — no model call in front of
+every command, so it is fast, offline, free, and auditable. `/permissions patterns` lists all of
+them; silence any single one by id via `allowDestructive`. Detection splits on `;`, `&&`, `||` and
+newlines while respecting quotes, and looks inside `$(...)` and backticks, so `echo ok && rm -rf x`
+and `echo "$(git reset --hard)"` are both caught. It also treats a destructive command with
+runtime-computed arguments (`rm $(cat list)`) as destructive, since it cannot be read statically.
+`echo`/`grep`-style commands are judged on their unquoted parts, so searching *for* `rm -rf` does
+not prompt.
+
+Precedence is **deny → destructive → ask → allow → mode**. The destructive check sitting ahead of
+`allow` is the one deliberate departure from Claude Code, and it fixes a trap Claude Code documents
+in its own guidance: prefix rules are string matches with no flag analysis, so `Bash(git *)` also
+permits `git push --force` and `git reset --hard`. Allowlisting `git` to stop being nagged about
+`git status` is not consent to silent history rewrites. Set `destructiveOverridesAllow: false` for
+strict Claude Code ordering.
+
+Two other safety choices: a project's `.pi/permissions.json` can always add `deny`/`ask` rules, but
+its `allow` rules and any loosening of the mode are **ignored unless the project is trusted**, so
+cloning a hostile repo cannot grant itself permissions. And with no interactive session, an "ask"
+blocks rather than passes (`askWithoutUi`).
+
+`/permissions` shows the active policy, `/permissions test <command>` explains what would happen to
+a command without running it, and `/permissions reload` re-reads the files.
+
+**This is a guardrail, not a sandbox.** It gates tool calls before they run; it cannot contain code
+that is already executing, and `bash` remains able to do anything the pattern table does not name.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Event wiring, the approval prompt, `/permissions` |
+| `destructive.ts` | **What counts as destructive — edit this table to taste** |
+| `decide.ts` | Precedence engine (pure) |
+| `rules.ts` | Claude Code rule syntax: parsing and matching (pure) |
+| `glob.ts` | Path and command pattern matching (pure) |
+| `settings.ts` | Loading and layering the JSON files |
+| `config.ts` | Modes and their ordering |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
