@@ -14,6 +14,8 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | `agent/extensions/statusline/index.ts` | Custom footer. Line 1: model / cwd / git branch / diff stat / pi version. Line 2: context-window bar and token totals. Line 3: subscription limit meters, when the provider reports any. |
 | `agent/extensions/statusline/usage.ts` | Helper module (not a standalone extension) that reads ChatGPT subscription limits for the `openai-codex` provider. |
 | `agent/extensions/web-search.ts` | Registers a `web_search` tool backed by [Exa](https://exa.ai). Requires `EXA_API_KEY`. |
+| `agent/extensions/env.ts` | Loads `.env` files into `process.env` at session start. pi has no built-in dotenv support. |
+| `agent/.env.example` | Template for `agent/.env`, which holds your keys and is gitignored. |
 
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
 and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with other agents and lives elsewhere).
@@ -48,12 +50,26 @@ Extensions and themes are picked up automatically by filename — no registratio
   labelled from the duration the API returns rather than from its position in the response.
   A ChatGPT/Codex account reports a single weekly window, so you get `Weekly:` and nothing else.
   Set `CONFIG.showLimits` to `false` to drop the line entirely.
-- **Web search** — needs an Exa key. Get one at <https://dashboard.exa.ai/api-keys> and put
-  `export EXA_API_KEY="..."` in your shell profile; the extension reads it from the environment
-  and nowhere else. **Do not put it in `settings.json`** — that file is committed to this public
-  repo. Tunables (result count, snippet length, search mode, timeout) live in the `CONFIG` block
-  at the top of `agent/extensions/web-search.ts`. Note that Exa bills per search, and `CONFIG.searchType`
-  values `deep`/`deep-reasoning` cost substantially more than the default `auto`.
+- **Web search** — needs an Exa key from <https://dashboard.exa.ai/api-keys>; put it in
+  `agent/.env` (see below). Tunables (result count, snippet length, search mode, timeout) live in
+  the `CONFIG` block at the top of `agent/extensions/web-search.ts`. Exa bills per search, and
+  `CONFIG.searchType` values `deep`/`deep-reasoning` cost substantially more than the default `auto`.
+- **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env.ts` adds it:
+
+  ```sh
+  cp ~/.pi/agent/.env.example ~/.pi/agent/.env
+  chmod 600 ~/.pi/agent/.env
+  ```
+
+  Put `EXA_API_KEY=...` (and anything else) in there. Precedence is **most specific wins**: a var
+  already exported in your shell beats `<cwd>/.pi/.env`, which beats `~/.pi/agent/.env`. Nothing
+  already set is ever overwritten. `.env` is gitignored — **never** put a key in `settings.json`
+  or `.env.example`, both of which are committed to this public repo.
+
+  Caveat: the loader runs at `session_start`, so it reliably serves anything read at call time
+  (like `EXA_API_KEY`, which `web-search.ts` reads inside `execute()`). Whether it lands early
+  enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
+  provider keys in your shell profile or use `/login`.
 - **Multi-file extensions** — note the subdirectory. pi auto-loads *every* top-level
   `extensions/*.ts` as its own extension, so a helper module sitting next to an extension would
   be loaded as one and fail. Inside a directory only `index.ts` is loaded; siblings are plain

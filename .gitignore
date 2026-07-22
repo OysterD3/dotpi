@@ -1,4 +1,7 @@
-# Runtime state — never publish
+# Secrets — never publish
+.env
+*.env
+!*.env.example
 agent/sessions/
 agent/auth.json
 
