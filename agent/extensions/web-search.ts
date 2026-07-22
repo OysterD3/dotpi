@@ -46,6 +46,27 @@ export const CONFIG = {
 	includeText: false,
 	/** Hard cap on extracted text length, only applies when includeText is true. */
 	maxCharsPerResult: 1200,
+	/** Highlights kept per result. */
+	maxHighlights: 3,
+	/**
+	 * Cap on each highlight. Exa's highlights are not short — a single one can run past
+	 * 1500 characters, so three of them across five results is a five-figure character
+	 * dump. Truncating here is what actually makes token cost predictable.
+	 */
+	maxCharsPerHighlight: 300,
+	/**
+	 * Drop results whose URL matches an earlier one once the query string and fragment are
+	 * removed. Exa readily returns `/pricing`, `/pricing?tab=api` and `/pricing?tab=websets`
+	 * as three separate hits, which otherwise eats the whole result budget on one page.
+	 */
+	dedupeByUrl: true,
+	/**
+	 * When deduping, ask Exa for this many results even if fewer were requested, so
+	 * duplicates don't eat the result budget. Exa's base price covers up to 10 results per
+	 * request ("Base price, with up to 10 results"; additional results bill separately), so
+	 * over-fetching to 10 costs nothing. Raise only if you accept the extra per-result cost.
+	 */
+	freeResultCeiling: 10,
 	/**
 	 * Cache freshness in hours. Omitted by default, which is Exa's recommended balance
 	 * (use cache when present, livecrawl as fallback). 0 forces a livecrawl on every
@@ -162,10 +183,10 @@ export default function (pi: ExtensionAPI) {
 
 			onUpdate?.({ content: [{ type: "text", text: `Searching: ${params.query}` }] });
 
-			const numResults = Math.min(
-				params.numResults ?? CONFIG.defaultNumResults,
-				CONFIG.maxNumResults,
-			);
+			const wanted = Math.min(params.numResults ?? CONFIG.defaultNumResults, CONFIG.maxNumResults);
+			// Over-fetch into the free tier so dedupe doesn't shrink the result set below what
+			// was asked for.
+			const numResults = CONFIG.dedupeByUrl ? Math.max(wanted, CONFIG.freeResultCeiling) : wanted;
 
 			const body = {
 				query: params.query,
@@ -184,7 +205,10 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			const payload = await postSearch(apiKey, body, signal);
-			const results = payload.results ?? [];
+			const raw = payload.results ?? [];
+			const unique = dedupe(raw);
+			const results = unique.slice(0, wanted);
+			const dropped = raw.length - unique.length;
 			if (results.length === 0) {
 				return {
 					content: [{ type: "text", text: `No results for "${params.query}".` }],
@@ -193,6 +217,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const rendered = results.map((result, index) => formatResult(result, index + 1)).join("\n\n");
+			// Say so rather than silently returning fewer results than were asked for.
+			const deduped = dropped > 0 ? ` (${dropped} duplicate URL(s) omitted)` : "";
 			const cost =
 				CONFIG.showCost && typeof payload.costDollars?.total === "number"
 					? `\n\n_Exa cost: $${payload.costDollars.total.toFixed(4)}_`
@@ -202,7 +228,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `${results.length} result(s) for "${params.query}":\n\n${rendered}${cost}`,
+						text: `${results.length} result(s) for "${params.query}"${deduped}:\n\n${rendered}${cost}`,
 					},
 				],
 				details: {
@@ -286,17 +312,57 @@ function formatResult(result: ExaResult, position: number): string {
 
 	const highlights = result.highlights?.filter((h) => h.trim()) ?? [];
 	if (highlights.length > 0) {
-		for (const highlight of highlights.slice(0, 3)) {
-			lines.push(`   > ${collapse(highlight)}`);
+		for (const highlight of highlights.slice(0, CONFIG.maxHighlights)) {
+			lines.push(`   > ${truncate(collapse(highlight), CONFIG.maxCharsPerHighlight)}`);
 		}
 	} else if (result.text?.trim()) {
-		lines.push(`   ${collapse(result.text).slice(0, CONFIG.maxCharsPerResult)}`);
+		lines.push(`   ${truncate(collapse(result.text), CONFIG.maxCharsPerResult)}`);
 	}
 
 	return lines.join("\n");
 }
 
-/** Flatten whitespace so a snippet stays on one line in the transcript. */
+/**
+ * Flatten whitespace so a snippet stays on one line, and strip any leading blockquote
+ * markers the source page already had — otherwise our own "> " prefix renders as "> >".
+ */
 function collapse(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
+	return text
+		.replace(/\s+/g, " ")
+		.replace(/^(?:>\s*)+/, "")
+		.trim();
+}
+
+function truncate(text: string, limit: number): string {
+	return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}…`;
+}
+
+/**
+ * URL with query string and fragment stripped, for dedupe purposes.
+ * Falls back to the raw string when it isn't parseable.
+ */
+function canonicalUrl(url: string | undefined): string | undefined {
+	if (!url) return undefined;
+	try {
+		const parsed = new URL(url);
+		return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+	} catch {
+		return url.toLowerCase();
+	}
+}
+
+/** Drop later results that collapse to the same canonical URL as an earlier one. */
+function dedupe(results: ExaResult[]): ExaResult[] {
+	if (!CONFIG.dedupeByUrl) return results;
+	const seen = new Set<string>();
+	const kept: ExaResult[] = [];
+	for (const result of results) {
+		const key = canonicalUrl(result.url);
+		if (key !== undefined) {
+			if (seen.has(key)) continue;
+			seen.add(key);
+		}
+		kept.push(result);
+	}
+	return kept;
 }
