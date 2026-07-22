@@ -1,8 +1,19 @@
 /**
  * Loading and layering permission settings.
  *
- *   ~/.pi/agent/permissions.json     yours, applies everywhere
- *   <cwd>/.pi/permissions.json       the project's
+ * Rules live under a `permissions` key in pi's own settings files, the way
+ * Claude Code puts them in its `settings.json`:
+ *
+ *   ~/.pi/agent/settings.json    yours, applies everywhere
+ *   <cwd>/.pi/settings.json      the project's
+ *
+ * pi's `Settings` type has no `permissions` field, so this had to be checked
+ * rather than assumed: pi rewrites settings.json by merging its modified fields
+ * over the parsed current file (`{ ...currentFileSettings }`), so unknown keys
+ * survive. Verified against the real SettingsManager — a `/theme` change leaves
+ * the permissions block intact. If a future pi version starts pruning unknown
+ * keys, that guarantee breaks; `/permissions` reports the file it loaded so the
+ * loss would at least be visible.
  *
  * Layering is not a plain merge, because a project file is content you may not
  * have written. Denies and asks from a project always apply — a repo is welcome
@@ -47,13 +58,24 @@ export const BUILTIN: PermissionSettings = {
 	askWithoutUi: "deny",
 };
 
-function readFile(path: string, warnings: string[]): Partial<PermissionSettings> | undefined {
+/**
+ * Read the `permissions` block out of a settings file.
+ *
+ * `standalone` files (the older permissions.json) may also hold the block at the
+ * top level, since that is how they were written.
+ */
+function readFile(
+	path: string,
+	warnings: string[],
+	standalone = false,
+): Partial<PermissionSettings> | undefined {
 	if (!existsSync(path)) return undefined;
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-		// Accept a Claude Code shaped file too, where the block is nested.
-		const block = (parsed.permissions ?? parsed) as Partial<PermissionSettings>;
-		return block;
+		const nested = parsed.permissions;
+		if (nested && typeof nested === "object") return nested as Partial<PermissionSettings>;
+		if (standalone) return parsed as Partial<PermissionSettings>;
+		return undefined; // settings.json with no permissions block
 	} catch (error) {
 		warnings.push(`Ignoring ${path}: ${error instanceof Error ? error.message : String(error)}`);
 		return undefined;
@@ -70,10 +92,19 @@ function atLeastAsStrict(candidate: Mode, current: Mode): boolean {
 }
 
 export function userSettingsPath(agentDir: string): string {
-	return join(agentDir, "permissions.json");
+	return join(agentDir, "settings.json");
 }
 
 export function projectSettingsPath(cwd: string): string {
+	return join(cwd, ".pi", "settings.json");
+}
+
+/** Pre-merge location, still honoured so an old policy cannot silently lapse. */
+export function legacyUserPath(agentDir: string): string {
+	return join(agentDir, "permissions.json");
+}
+
+export function legacyProjectPath(cwd: string): string {
 	return join(cwd, ".pi", "permissions.json");
 }
 
@@ -81,6 +112,16 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 	const warnings: string[] = [];
 	const sources: string[] = [];
 	const settings: PermissionSettings = { ...BUILTIN, allow: [], ask: [], deny: [], allowDestructive: [] };
+
+	// Legacy standalone file first, so settings.json wins on conflict. Silently
+	// ignoring it would turn a policy someone still relies on into no policy.
+	const legacyUser = legacyUserPath(agentDir);
+	const legacy = readFile(legacyUser, warnings, true);
+	if (legacy) {
+		sources.push(legacyUser);
+		warnings.push(`${legacyUser} is deprecated — move its contents under a "permissions" key in ${userSettingsPath(agentDir)}`);
+		applyFull(settings, legacy, warnings, legacyUser);
+	}
 
 	const userPath = userSettingsPath(agentDir);
 	const user = readFile(userPath, warnings);
@@ -91,7 +132,8 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 
 	const projectPath = projectSettingsPath(cwd);
 	if (projectPath !== userPath) {
-		const project = readFile(projectPath, warnings);
+		const legacyProject = readFile(legacyProjectPath(cwd), warnings, true);
+		const project = readFile(projectPath, warnings) ?? legacyProject;
 		if (project) {
 			sources.push(projectTrusted ? projectPath : `${projectPath} (untrusted: deny/ask only)`);
 			if (projectTrusted) {

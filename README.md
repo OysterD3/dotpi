@@ -9,7 +9,7 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 
 | Path | What it does |
 | --- | --- |
-| `agent/settings.json` | Global pi settings. Currently just selects the theme. |
+| `agent/settings.json` | Global pi settings: theme, model, and the `permissions` policy. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
 | `agent/.env.example` | Template for `agent/.env`, which holds your keys and is gitignored. |
 
@@ -149,17 +149,26 @@ anything that is not a plain regular file, so a symlink in the way is reported, 
 ships nothing like this; its security doc states plainly that built-in tools "can read files, write
 files, edit files, and run shell commands with the permissions of the pi process".
 
-Copy `agent/permissions.example.json` to `agent/permissions.json` to start. Rules use Claude Code's
-syntax, so an existing settings file can be carried across:
+Rules live under a `permissions` key in pi's own settings files, exactly like Claude Code's
+`settings.json`, so an existing policy can be pasted straight in:
 
-```json
-{ "permissions": {
+```jsonc
+// agent/settings.json  (or <project>/.pi/settings.json)
+{
+  "theme": "one-dark-pro",
+  "permissions": {
     "defaultMode": "askDestructive",
     "deny":  ["Read(**/.env)"],
     "ask":   ["Bash(git push *)"],
     "allow": ["Bash(git status)", "Bash(pnpm test *)"]
-} }
+  }
+}
 ```
+
+pi's `Settings` type has no `permissions` field, so this was checked rather than assumed: pi
+rewrites `settings.json` by merging its modified fields over the parsed current file, which
+preserves unknown keys. Verified against the real `SettingsManager` — changing the theme leaves the
+permissions block intact.
 
 `Bash(git log *)` is a prefix rule (the space enforces a word boundary; a trailing `:*` is the
 legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, and a bare `Bash`
@@ -193,7 +202,7 @@ permits `git push --force` and `git reset --hard`. Allowlisting `git` to stop be
 `git status` is not consent to silent history rewrites. Set `destructiveOverridesAllow: false` for
 strict Claude Code ordering.
 
-Two other safety choices: a project's `.pi/permissions.json` can always add `deny`/`ask` rules, but
+Two other safety choices: a project's `.pi/settings.json` can always add `deny`/`ask` rules, but
 its `allow` rules and any loosening of the mode are **ignored unless the project is trusted**, so
 cloning a hostile repo cannot grant itself permissions. And with no interactive session, an "ask"
 blocks rather than passes (`askWithoutUi`).
