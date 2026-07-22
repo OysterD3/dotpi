@@ -1,0 +1,8 @@
+# Runtime state — never publish
+agent/sessions/
+agent/auth.json
+
+# Skills are symlinks into ~/.agents/skills (shared with other agents), not part of this config
+agent/skills/
+
+.DS_Store
