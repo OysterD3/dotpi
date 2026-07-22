@@ -207,8 +207,28 @@ its `allow` rules and any loosening of the mode are **ignored unless the project
 cloning a hostile repo cannot grant itself permissions. And with no interactive session, an "ask"
 blocks rather than passes (`askWithoutUi`).
 
+When it does ask, the prompt offers four grains, because "don't ask me again" means different
+things at different moments:
+
+| Choice | Scope |
+| --- | --- |
+| Allow once | Just this call. |
+| Allow this exact command | That command string, for the rest of the session. |
+| Allow anything that *&lt;reason&gt;* | Every command tripping the same pattern — all recursive deletes, all force-pushes — for the rest of the session. |
+| Allow every *&lt;tool&gt;* call | The whole tool, for the rest of the session. |
+
+The third is the one that earns its keep: when you are deleting twenty build directories, being
+asked about each distinct path is the same nag with extra steps. It is also the one with teeth —
+approving "recursive deletes" does **not** wave through `sudo rm -rf /`, because that command is
+also dangerous for a second, ungranted reason. A blanket pass needs every reason covered.
+
+Grants live in memory only and die with the session; a standing approval should be a deliberate
+edit to `settings.json`, not something that accumulates from clicking. **No grant can lift a
+`deny` rule** — deny is decided before grants are consulted.
+
 `/permissions` shows the active policy, `/permissions test <command>` explains what would happen to
-a command without running it, and `/permissions reload` re-reads the files.
+a command without running it, `/permissions grants` lists what you have approved this session,
+`/permissions forget` revokes it all, and `/permissions reload` re-reads the files.
 
 **This is a guardrail, not a sandbox.** It gates tool calls before they run; it cannot contain code
 that is already executing, and `bash` remains able to do anything the pattern table does not name.

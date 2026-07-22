@@ -37,6 +37,7 @@ import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-wo
 import { CONFIG, MODE_HELP, MODE_ORDER } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
 import { findDestructive, PATTERNS } from "./destructive.ts";
+import { type Grant, SessionGrants } from "./grants.ts";
 import { parseRules, ruleTarget } from "./rules.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
 
@@ -75,8 +76,8 @@ export default function (pi: ExtensionAPI) {
 	let policy: CompiledPolicy | undefined;
 	let report: string[] = [];
 
-	/** Approvals granted for the rest of the session, keyed by tool and target. */
-	const remembered = new Set<string>();
+	/** Approvals granted for the rest of the session. */
+	const grants = new SessionGrants();
 
 	const rebuild = (cwd: string, trusted: boolean) => {
 		const built = compile(agentDir, cwd, trusted);
@@ -105,8 +106,11 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const target = ruleTarget(event.toolName, input) ?? "";
-		const memoryKey = `${event.toolName}::${target}`;
-		if (remembered.has(memoryKey)) return undefined;
+		const findings = decision.findings ?? [];
+		const grantContext = { tool: event.toolName, target, findings, rule: decision.rule };
+
+		// Checked only after deny: a grant can lift an ask, never a hard block.
+		if (grants.covers(grantContext)) return undefined;
 
 		if (!ctx.hasUI) {
 			if (policy.settings.askWithoutUi === "allow") return undefined;
@@ -116,33 +120,54 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		const ONCE = "Allow once";
-		const ALWAYS = "Allow for the rest of this session";
-		const NO = "Block";
-
-		const choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), [ONCE, ALWAYS, NO]);
-
-		if (choice === ALWAYS) {
-			remembered.add(memoryKey);
-			return undefined;
-		}
-		if (choice === ONCE) return undefined;
+		const options = buildOptions(event.toolName, target, decision);
+		const choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label));
+		const picked = options.find((option) => option.label === choice);
 
 		// Escape and an explicit Block both mean no. Failing closed is the only
 		// safe reading of "the user did not say yes".
-		return { block: true, reason: `Permission denied by user — ${decision.reason}` };
+		if (!picked || picked.grant === "block") {
+			return { block: true, reason: `Permission denied by user — ${decision.reason}` };
+		}
+
+		if (picked.grant === "once") return undefined;
+
+		if (picked.grant === "pattern") grants.addPatternGrants(findings);
+		else grants.add(picked.grant);
+
+		return undefined;
 	});
 
 	pi.registerCommand("permissions", {
-		description: "Show or test tool permission rules ([test <command>] | reload | patterns)",
+		description: "Show or test tool permission rules ([test <command>] | reload | patterns | grants | forget)",
 
 		getArgumentCompletions: (prefix) =>
-			["test ", "reload", "patterns"]
+			["test ", "reload", "patterns", "grants", "forget"]
 				.filter((option) => option.startsWith(prefix))
 				.map((value) => ({ value, label: value.trim() })),
 
 		handler: async (args, ctx) => {
 			const text = args.trim();
+
+			if (text === "grants") {
+				const listed = grants.describe();
+				ctx.ui.notify(
+					listed.length === 0
+						? "No session approvals. Every prompt is still being asked."
+						: `Approved for this session (${listed.length}):\n${listed.map((line) => `  • ${line}`).join("\n")}\n\n/permissions forget revokes them.`,
+					"info",
+				);
+				return;
+			}
+
+			if (text === "forget") {
+				const count = grants.clear();
+				ctx.ui.notify(
+					count === 0 ? "There were no session approvals to revoke." : `Revoked ${count} session approval(s). You will be asked again.`,
+					"info",
+				);
+				return;
+			}
 
 			if (text === "reload") {
 				rebuild(ctx.cwd, ctx.isProjectTrusted());
@@ -179,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 					`Rules: ${policy.deny.length} deny, ${policy.ask.length} ask, ${policy.allow.length} allow`,
 					`Destructive overrides allow: ${settings.destructiveOverridesAllow}`,
 					`Without a UI, "ask" becomes: ${settings.askWithoutUi}`,
-					`Session approvals remembered: ${remembered.size}`,
+					`Session approvals held: ${grants.size()} (/permissions grants to list, forget to revoke)`,
 					"",
 					`User file:    ${userSettingsPath(agentDir)}`,
 					`Project file: ${projectSettingsPath(ctx.cwd)}`,
@@ -191,6 +216,54 @@ export default function (pi: ExtensionAPI) {
 			);
 		},
 	});
+}
+
+type PromptOption = { label: string; grant: Grant | "once" | "block" | "pattern" };
+
+/**
+ * The choices offered for one prompt.
+ *
+ * The grains are deliberately different sizes. "This exact command" is the safe
+ * default for a one-off. The pattern grain is the one that actually saves you
+ * during real work: when you are deleting twenty build directories, being asked
+ * about each distinct path is the same nag with extra steps — what you want to
+ * say is "yes, recursive deletes are fine right now".
+ *
+ * Only offered when it can be described precisely, so the user always knows the
+ * exact scope of what they are approving.
+ */
+export function buildOptions(tool: string, target: string, decision: Decision): PromptOption[] {
+	const options: PromptOption[] = [{ label: "Allow once", grant: "once" }];
+
+	if (target.length > 0) {
+		options.push({
+			label: `Allow this exact command for the rest of this session`,
+			grant: { kind: "exact", tool, target },
+		});
+	}
+
+	const findings = decision.findings ?? [];
+	if (findings.length > 0) {
+		const reasons = [...new Set(findings.map((finding) => finding.reason))];
+		const described =
+			reasons.length === 1
+				? `anything that ${reasons[0]}`
+				: `anything that ${reasons.slice(0, 2).join(" or ")}${reasons.length > 2 ? ` (+${reasons.length - 2} more)` : ""}`;
+		options.push({ label: `Allow ${described} for the rest of this session`, grant: "pattern" });
+	} else if (decision.rule !== undefined) {
+		options.push({
+			label: `Allow anything matching ${decision.rule} for the rest of this session`,
+			grant: { kind: "rule", rule: decision.rule },
+		});
+	}
+
+	options.push({
+		label: `Allow every ${tool} call for the rest of this session`,
+		grant: { kind: "tool", tool },
+	});
+
+	options.push({ label: "Block", grant: "block" });
+	return options;
 }
 
 function promptTitle(tool: string, target: string, decision: Decision): string {
