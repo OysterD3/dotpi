@@ -13,6 +13,7 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
 | `agent/extensions/statusline/index.ts` | Custom footer. Line 1: model / cwd / git branch / diff stat / pi version. Line 2: context-window bar and token totals. Line 3: subscription limit meters, when the provider reports any. |
 | `agent/extensions/statusline/usage.ts` | Helper module (not a standalone extension) that reads ChatGPT subscription limits for the `openai-codex` provider. |
+| `agent/extensions/web-search.ts` | Registers a `web_search` tool backed by [Exa](https://exa.ai). Requires `EXA_API_KEY`. |
 
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
 and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with other agents and lives elsewhere).
@@ -47,6 +48,12 @@ Extensions and themes are picked up automatically by filename — no registratio
   labelled from the duration the API returns rather than from its position in the response.
   A ChatGPT/Codex account reports a single weekly window, so you get `Weekly:` and nothing else.
   Set `CONFIG.showLimits` to `false` to drop the line entirely.
+- **Web search** — needs an Exa key. Get one at <https://dashboard.exa.ai/api-keys> and put
+  `export EXA_API_KEY="..."` in your shell profile; the extension reads it from the environment
+  and nowhere else. **Do not put it in `settings.json`** — that file is committed to this public
+  repo. Tunables (result count, snippet length, search mode, timeout) live in the `CONFIG` block
+  at the top of `agent/extensions/web-search.ts`. Note that Exa bills per search, and `CONFIG.searchType`
+  values `deep`/`deep-reasoning` cost substantially more than the default `auto`.
 - **Multi-file extensions** — note the subdirectory. pi auto-loads *every* top-level
   `extensions/*.ts` as its own extension, so a helper module sitting next to an extension would
   be loaded as one and fail. Inside a directory only `index.ts` is loaded; siblings are plain
