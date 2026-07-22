@@ -49,8 +49,12 @@ type ColorSpec = ThemeColor | `#${string}`;
 const CONFIG = {
 	/** Width of each meter in cells. */
 	barCells: 12,
-	/** Show the session/weekly limit meters at all. */
+	/** Show the subscription limit meters at all. */
 	showLimits: true,
+	/** Render +0,-0 in a clean repo. When false, the segment only appears once something changes. */
+	alwaysShowDiff: true,
+	/** Minimum gap between git invocations, in ms. */
+	gitPollMs: 2000,
 	/** "clock" -> "resets 17:04"; "relative" -> "3h 12m left". */
 	resetStyle: "clock" as "clock" | "relative",
 	/** Context percentage above which the meter turns warning/error colored. */
@@ -115,32 +119,70 @@ function piVersion(): string {
 	}
 }
 
-/** Sum of added/removed lines vs HEAD, cached for a short window to avoid spawning git on every render. */
+/** The canonical empty tree object, per `git hash-object -t tree /dev/null`. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Run git, returning stdout, or null if it failed for any reason. */
+function git(cwd: string, args: string[]): string | null {
+	try {
+		return execFileSync("git", args, {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 1500,
+		});
+	} catch {
+		return null;
+	}
+}
+
+function parseNumstat(out: string): { added: number; removed: number } {
+	let added = 0;
+	let removed = 0;
+	for (const line of out.split("\n")) {
+		const [a, r] = line.split("\t");
+		// "-" marks a binary file, which has no line counts to add.
+		if (a && a !== "-") added += Number(a) || 0;
+		if (r && r !== "-") removed += Number(r) || 0;
+	}
+	return { added, removed };
+}
+
+/**
+ * Added/removed lines in the working tree, or null when cwd is not a git work tree.
+ *
+ * `git diff HEAD` covers staged and unstaged changes together, but fails outright in a
+ * repo with no commits yet ("ambiguous argument 'HEAD'"), so that case falls back to
+ * diffing against the empty tree. Untracked files are counted by neither — git has no
+ * previous version to diff them against.
+ *
+ * A negative result is cached just like a positive one: the previous version only
+ * short-circuited when `cache` was non-null, so a non-repo cwd re-spawned git on every
+ * single render.
+ */
 function makeGitDiffCounter(cwd: string) {
 	let cache: { added: number; removed: number } | null = null;
 	let stamp = 0;
+	let knownWorkTree = false;
+
 	return (): { added: number; removed: number } | null => {
 		const now = Date.now();
-		if (cache && now - stamp < 2000) return cache;
+		if (stamp !== 0 && now - stamp < CONFIG.gitPollMs) return cache;
 		stamp = now;
-		try {
-			const out = execFileSync("git", ["diff", "--numstat", "HEAD"], {
-				cwd,
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-				timeout: 1500,
-			});
-			let added = 0;
-			let removed = 0;
-			for (const line of out.split("\n")) {
-				const [a, r] = line.split("\t");
-				if (a && a !== "-") added += Number(a) || 0;
-				if (r && r !== "-") removed += Number(r) || 0;
-			}
-			cache = { added, removed };
-		} catch {
-			cache = null;
+
+		// Once true this cannot become false for a fixed cwd, so only re-probe while
+		// false — that way a `git init` mid-session is still picked up.
+		if (!knownWorkTree) {
+			knownWorkTree = git(cwd, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
 		}
+		if (!knownWorkTree) {
+			cache = null;
+			return cache;
+		}
+
+		const out =
+			git(cwd, ["diff", "--numstat", "HEAD"]) ?? git(cwd, ["diff", "--numstat", EMPTY_TREE]);
+		cache = out === null ? null : parseNumstat(out);
 		return cache;
 	};
 }
@@ -286,8 +328,10 @@ export default function (pi: ExtensionAPI) {
 					);
 					const branch = footerData.getGitBranch();
 					if (branch) parts1.push(paint(theme, CONFIG.colors.branch, branch));
+					// null means "not a git work tree" — then there is genuinely nothing to show.
+					// A clean tree still renders +0,-0 so the segment doesn't silently vanish.
 					const diff = gitDiff();
-					if (diff && (diff.added > 0 || diff.removed > 0)) {
+					if (diff && (CONFIG.alwaysShowDiff || diff.added > 0 || diff.removed > 0)) {
 						parts1.push(
 							paint(theme, CONFIG.colors.added, `+${diff.added}`) +
 								paint(theme, CONFIG.colors.separator, ",") +
