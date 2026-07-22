@@ -105,6 +105,46 @@ an unsatisfiable goal cannot spend money unattended. Set it to `0` for exact par
 | `render.ts` | TUI panels and footer status (pure) |
 | `config.ts` | Limits and timeouts |
 
+**`agent/extensions/rewind/`** — adds `/rewind` (aliases `/checkpoint`, `/undo`), a port of Claude
+Code's command. Pick an earlier prompt, then choose what to restore:
+
+| Mode | Effect |
+| --- | --- |
+| Restore code and conversation | Files go back, and the session forks to just before that prompt |
+| Restore conversation | Session only; files are left alone |
+| Restore code | Files only; the conversation continues |
+
+Code restore is only offered when that point actually has file changes — the picker shows the
+count per row, so you can see what a rewind would touch before choosing it.
+
+pi already had half of this: `/fork` and `/tree` navigate the session tree, and
+`ctx.fork(id, { position: "before" })` puts the prompt back in the editor. That *is* conversation
+rewind, so this calls it rather than reimplementing it. What pi has no answer for is code — its
+docs say to "use git or another checkpointing workflow if you want easy rollback". So the file
+history is the new part, and it is **git-independent**: it works in a repo, outside one, and on
+files git ignores.
+
+How it works: before every `write`/`edit`, the file's current contents are saved to a
+content-addressed blob under `agent/file-history/<session>/`. Identical contents share a blob, so
+repeatedly touching the same file costs nothing extra. A file that did not exist at the chosen
+point is recorded as absent, and restoring **deletes** it. History is inherited when a rewind forks
+the session, so you can rewind more than once, and sessions older than 30 days are pruned.
+
+**The limit worth knowing: only `write` and `edit` are checkpointed.** Files changed by `bash` —
+`mv`, `rm`, `sed -i`, a build script — are invisible to this and will not be undone. A shell
+command's effects cannot be known before it runs, so including `bash` would produce checkpoints
+that silently miss files, which is worse than a documented gap. Restoring also refuses to touch
+anything that is not a plain regular file, so a symlink in the way is reported, never followed.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Command, event wiring, the restore flow |
+| `history.ts` | Checkpoint model and its queries (pure) |
+| `store.ts` | Content-addressed blobs and the on-disk index |
+| `restore.ts` | Applying a code rewind, with the refuse-rather-than-force rules |
+| `render.ts` | Picker rows and result summaries (pure) |
+| `config.ts` | Tracked tools, size caps, retention |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
