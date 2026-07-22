@@ -19,7 +19,7 @@ and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with othe
 ## Install on a new machine
 
 ```sh
-git clone https://github.com/OysterD3/<repo>.git ~/.pi
+git clone https://github.com/OysterD3/dotpi.git ~/.pi
 ```
 
 If `~/.pi` already exists, clone elsewhere and copy `agent/themes`, `agent/extensions`,
