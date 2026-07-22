@@ -36,6 +36,8 @@ export const CONFIG = {
 		added: "success",
 		removed: "error",
 		version: "dim",
+		/** Statuses other extensions publish via ctx.ui.setStatus(). */
+		status: "warning",
 		separator: "dim",
 		label: "muted",
 		barFill: "accent",

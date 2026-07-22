@@ -116,6 +116,13 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 
+					// Statuses set by other extensions via ctx.ui.setStatus(). The built-in
+					// footer shows these; a custom footer replaces it entirely, so without
+					// this they would silently vanish (e.g. /goal's active indicator).
+					for (const status of footerData.getExtensionStatuses().values()) {
+						if (status) parts1.push(paint(theme, CONFIG.colors.status, status));
+					}
+
 					if (version) parts1.push(paint(theme, CONFIG.colors.version, `v${version}`));
 					const line1 = parts1.join(paint(theme, CONFIG.colors.separator, "  │  "));
 

@@ -70,6 +70,41 @@ no LSP support of its own, so this is a complete client.
 | `render.ts` | Collapsed/expanded TUI view |
 | `config.ts` | Timeouts and limits |
 
+**`agent/extensions/goal/`** — adds `/goal`, a port of Claude Code's command of the same name. Set
+a condition and pi keeps working until it holds.
+
+```
+/goal all tests pass and the linter is clean
+/goal                 # show the active goal, its iteration count and elapsed time
+/goal clear           # clear it early (also: stop, off, reset, none, cancel)
+```
+
+When the agent finishes a run, a separate LLM call judges the transcript against the condition. If
+it is met, the goal clears itself. If not, the reason is fed back and the agent resumes. The judge
+can also rule a condition **impossible**, which stops the loop instead of retrying forever.
+
+The logic is taken from the Claude Code binary rather than guessed at, so the prompts, the 4000
+character limit, the clear-words and the impossible escape hatch all match. One thing does not:
+Claude Code implements this as a **Stop hook** that vetoes the agent's attempt to stop. pi has no
+Stop hook and no event that can veto the end of a run, so the block is expressed as pi's own
+shipped examples do it — evaluate on `agent_end`, and resume by delivering a follow-up message.
+Same behaviour, pi-native mechanism.
+
+Two things worth knowing before you use it. Every stop attempt while a goal is active costs an
+extra LLM call carrying up to half the context window; that is inherent to the design, not this
+port. And `maxIterations` in `config.ts` (default 20) has no Claude Code equivalent — it exists so
+an unsatisfiable goal cannot spend money unattended. Set it to `0` for exact parity.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Command, `agent_end` hook, renderers |
+| `prompts.ts` | **Evaluator and instruction prompts, transcribed from Claude Code** |
+| `judge.ts` | The evaluator call and verdict parsing |
+| `transcript.ts` | Session branch → budgeted transcript text (pure) |
+| `state.ts` | Active goal, iteration count, persistence across `/resume` |
+| `render.ts` | TUI panels and footer status (pure) |
+| `config.ts` | Limits and timeouts |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
