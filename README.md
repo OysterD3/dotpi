@@ -41,6 +41,18 @@ provider reports any.
 | `format.ts` | Dedupe and markdown rendering (pure) |
 | `types.ts` | Exa response shapes |
 
+**`agent/extensions/web-fetch/`** — registers a `web_fetch` tool that reads pages by URL via Exa's
+`/contents`. Pairs with `web_search`, which finds the URLs. Requires `EXA_API_KEY`.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Tool registration and orchestration |
+| `config.ts` | Tunables and fence markers |
+| `client.ts` | URL validation, request building, HTTP |
+| `sanitize.ts` | Injection defenses (pure) |
+| `format.ts` | Fenced, labelled rendering (pure) |
+| `types.ts` | Exa `/contents` response shapes |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
@@ -109,6 +121,21 @@ Extensions and themes are picked up automatically by filename — no registratio
   (like `EXA_API_KEY`, which `web-search.ts` reads inside `execute()`). Whether it lands early
   enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
   provider keys in your shell profile or use `/login`.
+- **Web fetch, and its trust boundary** — `web_fetch` returns third-party content, which is
+  attacker-controlled by definition. Defenses: invisible/bidi/tag characters, terminal escapes and
+  markup are stripped; content is wrapped in fence markers randomised per process (so a page can't
+  forge the closing marker) with any copy inside neutralised; and an explicit untrusted-data notice
+  precedes it. Instruction-like prose is **not** censored — blocklisting phrases is trivially
+  bypassed and mangles legitimate pages, so the design is containment plus labelling. **This raises
+  the bar; it does not make reading hostile pages safe.** Nothing fetched is ever executed.
+  Because Exa performs the fetch, SSRF against localhost and private ranges is impossible by
+  construction — which also means intranet URLs don't work.
+- **Keeping fetches cheap** — pass a `query` to `web_fetch` and it returns a focused summary plus
+  targeted excerpts instead of the whole page. Measured: **1,604 chars vs 6,571 — 75.6% smaller**
+  on the same document. Text mode is capped at `CONFIG.maxCharsPerPage` (6k) and reports truncation
+  rather than silently cutting. Note that Exa's documented `text.verbosity: "compact"` knob had
+  **no measurable effect** in testing (identical 18,668 chars vs `"full"`), so the character cap is
+  the only control that actually works.
 - **Adding an extension** — create `agent/extensions/<name>/index.ts` with a default-exported
   factory, and put helpers in sibling files. Import them with an explicit `.ts` extension
   (`from "./config.ts"`), which is what pi's own examples do — extensions load through jiti, so
