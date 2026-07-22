@@ -1,4 +1,7 @@
 {
-  "lastChangelogVersion": "0.80.7",
-  "theme": "one-dark-pro"
+  "lastChangelogVersion": "0.81.1",
+  "theme": "one-dark-pro",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "medium"
 }
