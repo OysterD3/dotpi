@@ -365,6 +365,77 @@ trusted — a clone cannot silently redirect where your transcript is sent.
 | `config.ts` | Limits and Claude Code's constants |
 | `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
 
+**`agent/extensions/ultracode/`** — a port of Claude Code's ultracode: a `workflow` tool that
+orchestrates fleets of subagents from a script, and the triggers that opt the model into using it.
+
+```
+ultracode find every place this event is mishandled     # keyword: opts in this one turn
+/ultracode                                              # session mode: on until turned off
+```
+
+The **keyword** works exactly as in Claude Code — the detector is transcribed from the binary, so
+a whole-word "ultracode" triggers it but `ultracode.ts`, `extensions/ultracode`, a quoted
+"ultracode", or `/effort ultracode` do not. It injects Claude Code's verbatim reminder for that
+turn and nothing else: the prompt is not rewritten and the thinking level is untouched (that
+matches Claude Code, where the keyword and the session mode are independent).
+
+The **session mode** (`/ultracode`, or `/ultracode on|off|status`) is Claude Code's
+`/effort ultracode`: thinking is raised to xhigh for the session and standing reminders follow the
+same cadence — the full "Ultracode is on" reminder on entry, a sparse "still on" nudge every 10th
+user turn (its `TURNS_BETWEEN_MAINTENANCE`), and one exit notice when it goes off. Changing the
+thinking level away from xhigh exits the mode, the way picking another effort level does in Claude
+Code. The mode survives session resume: toggles are replayed from the branch, and delivered
+reminders are counted so a resumed session continues the cadence instead of re-announcing.
+
+The **`workflow` tool** is the thing the reminders point at: the model writes a plain-JS script
+with `export const meta = {...}` and orchestrates subagents with `agent()`, `parallel()`, and
+`pipeline()` (plus `phase()`/`log()` for progress and an optional JSON `schema` per agent, with
+one retry on unusable output). Each subagent is a headless `pi --mode json -p --no-session
+--no-extensions --no-skills` subprocess in the project directory — pi's own vendor pattern — so a
+wedged agent cannot take down the session, subagents cannot recurse into further workflows, and
+project trust is forwarded (`--approve` only when the parent session trusts the project).
+Concurrency is Claude Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps; subagent
+spend is attached to the tool result as `usage`, so it shows up in `/session` totals.
+
+```jsonc
+{
+  "ultracode": {
+    "keywordTrigger": true,               // optional; Claude Code: workflowKeywordTriggerEnabled
+    "model": "openai-codex/gpt-5.4-mini"  // optional subagent model; default: the session model
+  }
+}
+```
+
+**Where this diverges from Claude Code, and why.** Reminders arrive as hidden custom messages
+(pi's plan-mode pattern) rather than attachments — same text, same position, invisible in the
+transcript UI. Workflow runs have no resume journal and no worktree isolation (pi has neither
+primitive; a failed run re-runs from the top, so the tool description steers toward several small
+workflows). The keyword has no alt+w dismiss and no live composer highlight — pi extensions see
+input only on submit — and a prompt steered into a *running* turn cannot carry the keyword
+reminder (steered input never reaches `before_agent_start`). `budget` is a stub (`total: null`)
+since pi has no "+500k" directive; budget-guarded scripts written for Claude Code fall through
+cleanly rather than crash. Two pi-native behaviours to know about: pi persists every thinking
+change to `defaultThinkingLevel` in settings.json (ultracode's xhigh is no exception — the
+pre-ultracode level is stored in the session and restored on `/ultracode off`, even after a
+resume), and on models without an xhigh mapping pi clamps upward, so Claude models get `max` —
+reported honestly in the confirmation. Models that can't reach xhigh at all are refused, as in
+Claude Code. One caveat inherited from running scripts in-process: a workflow script that
+busy-waits synchronously would freeze the session, so the tool description instructs the model to
+always await.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Triggers, `/ultracode`, reminder injection, resume restore |
+| `keyword.ts` | **The keyword detector, transcribed from Claude Code** (pure) |
+| `reminders.ts` | **Claude Code's reminder texts, verbatim** |
+| `mode.ts` | The session-mode reminder cadence (pure) |
+| `engine.ts` | The workflow script engine — meta, agent/parallel/pipeline, caps (pure) |
+| `spawn.ts` | One subagent as a headless pi subprocess |
+| `tool.ts` | Tool registration, progress rendering, usage accounting |
+| `description.ts` | The tool's LLM-facing contract, adapted from Claude Code |
+| `config.ts` | Claude Code's constants and pi-side limits |
+| `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
