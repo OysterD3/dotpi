@@ -408,18 +408,27 @@ those attach their spend to the tool result as `usage` (a background run's tool 
 gone by the time money is spent, so its cost is reported in the result message and `/workflows`
 instead). Runs don't survive a session switch: shutdown cancels the fleet.
 
-**Subagent models are routed in natural language.** Put a standing policy in settings and the
-main agent applies it when authoring scripts, giving each agent a model *reference* that is
-resolved with pi's own `--model` rules (partial names fine, ambiguity is a loud error, aliases
-preferred over dated ids) before anything spawns — a typo fails that one agent with the reason in
-the run log, never silently the wrong model:
+**Say which models to use in the request itself.** Routing is not configured ahead of time — it is
+part of the prompt that triggers the workflow:
+
+```
+ultracode, use sonnet for implementation and fable to review — port the parser to the new AST
+ultracode audit this with haiku
+```
+
+The agent gives each subagent a model *reference* drawn from what you asked for, and every
+reference is resolved with pi's own `--model` rules (partial names fine, aliases preferred over
+dated ids, ambiguity is a loud error) before anything spawns — so a typo fails that one agent with
+the reason in the run log, never silently on the wrong model. When a triggering request names
+models, a reminder rides that turn so the instruction lands on the workflow rather than being read
+as conversation; roles you did not mention use the default subagent model, and a routing
+instruction holds for later workflows until you change it.
 
 ```jsonc
 {
   "ultracode": {
-    "keywordTrigger": true,               // optional; Claude Code: workflowKeywordTriggerEnabled
-    "model": "gpt-5.4-mini",              // optional default subagent model (a reference, resolved)
-    "models": "use sonnet for implementation, use fable to review"  // optional routing policy
+    "keywordTrigger": true,   // optional; Claude Code: workflowKeywordTriggerEnabled
+    "model": "gpt-5.4-mini"   // optional default for agents no request routes (a resolved reference)
   }
 }
 ```
@@ -451,6 +460,7 @@ always await.
 | `spawn.ts` | One subagent as a headless pi subprocess |
 | `runs.ts` | The background run registry — status, cancellation, pruning |
 | `panel.ts` | The status panel and `/workflows` report lines (pure) |
+| `routing.ts` | Spotting model names in the triggering request (pure) |
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |
 | `description.ts` | The tool's LLM-facing contract, adapted from Claude Code |

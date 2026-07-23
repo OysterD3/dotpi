@@ -10,10 +10,11 @@
  *
  * Subagent models: agent()'s model option and the ultracode.model setting are
  * REFERENCES ("sonnet", "fable", "provider/id"), resolved against the model
- * registry with pi's --model rules (models.ts) before spawning, so the user's
- * natural-language routing policy ("use sonnet for implementation, use fable
- * to review") lands on real models — or fails that agent loudly, never
- * silently on the wrong model.
+ * registry with pi's --model rules (models.ts) before spawning. Routing is
+ * said in the request that triggers the workflow ("ultracode, use sonnet for
+ * implementation and fable to review"), so the names arriving here are the
+ * ones the user used — they land on real models or fail that agent loudly,
+ * never silently on the wrong model.
  *
  * Honest accounting caveat: a background run's spend cannot ride a tool
  * result (the tool already returned), so it is reported in the result message
@@ -23,7 +24,7 @@
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { SUBAGENT_PREAMBLE, workflowDescription, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
+import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import { parseMeta, runWorkflowScript, type AgentOptions, type EngineHooks } from "./engine.ts";
 import { resolveModelReference } from "./models.ts";
 import { newProgress, RunRegistry, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
@@ -37,8 +38,6 @@ export interface WorkflowToolOptions {
 	registry: RunRegistry;
 	/** Default model reference for subagents, from settings ultracode.model. */
 	subagentModel?: () => string | undefined;
-	/** The user's natural-language routing policy, embedded in the description. */
-	modelPolicy?: string;
 	/** Called whenever any run's progress changes (drives the panel). */
 	onRunEvent?: () => void;
 }
@@ -90,7 +89,7 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 	pi.registerTool({
 		name: "workflow",
 		label: "Workflow",
-		description: workflowDescription(options.modelPolicy),
+		description: WORKFLOW_DESCRIPTION,
 		promptSnippet: WORKFLOW_PROMPT_SNIPPET,
 		executionMode: "sequential",
 		parameters: Type.Object({

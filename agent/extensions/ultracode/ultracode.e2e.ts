@@ -28,7 +28,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT } = await import("./reminders.ts");
+const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -118,10 +118,14 @@ const NO_REASONING = { provider: "x", id: "plain-model", name: "plain", reasonin
 
 const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ ultracode: block }));
 
-async function turn(text: string, source = "interactive") {
+/** One user turn: the input event, then before_agent_start with its context. */
+async function turn(text: string, source = "interactive", ctx?: unknown) {
 	await events.get("input")!({ type: "input", text, source });
-	return events.get("before_agent_start")!({ type: "before_agent_start", prompt: text });
+	return events.get("before_agent_start")!({ type: "before_agent_start", prompt: text }, ctx ?? bareCtx);
 }
+
+/** Context for turns whose model registry does not matter. */
+const bareCtx = makeCtx().ctx;
 
 // --------------------------------------------------------------- registration
 
@@ -131,7 +135,12 @@ check("workflow is sequential", tools.get("workflow")?.executionMode, "sequentia
 check("workflow has prompt snippet", typeof tools.get("workflow")?.promptSnippet, "string");
 check("description carries Ultracode section", tools.get("workflow")?.description.includes("**Ultracode.**"), true);
 check("description explains background runs", tools.get("workflow")?.description.includes("run in the BACKGROUND"), true);
-check("no policy -> no routing section", tools.get("workflow")?.description.includes("Model routing"), false);
+check("description routes models from the request", tools.get("workflow")?.description.includes("**Model routing.**"), true);
+check(
+	"routing section points at the triggering request",
+	tools.get("workflow")?.description.includes("in the request that triggers the workflow"),
+	true,
+);
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
 check("entry renderer", entryRenderers, ["ultracode"]);
@@ -140,20 +149,46 @@ for (const name of ["session_start", "input", "before_agent_start", "thinking_le
 	check(`hooks ${name}`, events.has(name), true);
 }
 
-console.log("\n--- model routing policy embeds in the description ---");
-writeSettings({ models: "use sonnet for implementation, use fable to review" });
-{
-	const { ctx } = makeCtx({ model: MODEL });
-	events.get("session_start")!({}, ctx);
-	const description = tools.get("workflow")?.description as string;
-	check("policy text embedded", description.includes("use sonnet for implementation, use fable to review"), true);
-	check("routing instructions present", description.includes("**Model routing (user policy).**"), true);
-}
+console.log("\n--- routing named in the triggering prompt ---");
 writeSettings({});
 {
-	const { ctx } = makeCtx({ model: MODEL });
+	const REGISTRY = [
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
+		{ provider: "anthropic", id: "claude-fable-5", name: "Fable 5" },
+		{ provider: "openai-codex", id: "gpt-5.4-mini", name: "GPT-5.4 mini" },
+	];
+	const { ctx } = makeCtx({ model: MODEL, registryModels: REGISTRY });
 	events.get("session_start")!({}, ctx);
-	check("policy removed when unset", (tools.get("workflow")?.description as string).includes("Model routing"), false);
+
+	const routed = await turn("ultracode, use sonnet for implementation and fable to review", "interactive", ctx);
+	const content = routed?.message?.content as string;
+	check("keyword reminder still first", content.startsWith(`<system-reminder>\n${KEYWORD_REMINDER}`), true);
+	check("routing reminder rides the same turn", content.includes(`<system-reminder>\n${routingReminder(["sonnet", "fable"])}`), true);
+
+	check(
+		"no models named -> no routing reminder",
+		(await turn("ultracode refactor the auth module", "interactive", ctx))?.message?.content,
+		`<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>`,
+	);
+	check("models named without a trigger -> nothing", await turn("is sonnet better than fable?", "interactive", ctx), undefined);
+}
+
+console.log("\n--- routing while the session mode is on ---");
+{
+	const REGISTRY = [{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5" }];
+	const { ctx } = makeCtx({ model: MODEL, registryModels: REGISTRY });
+	events.get("session_start")!({}, ctx);
+	thinkingLevel = "medium";
+	await commands.get("ultracode")!.handler("on", ctx);
+	await turn("start working", "interactive", ctx); // consumes the full enter reminder
+	const routed = await turn("audit the parser with haiku", "interactive", ctx);
+	check(
+		"mode turns pick up routing without the keyword",
+		routed?.message?.content,
+		`<system-reminder>\n${routingReminder(["haiku"])}\n</system-reminder>`,
+	);
+	await commands.get("ultracode")!.handler("off", ctx);
+	await turn("done", "interactive", ctx); // drain the exit reminder
 }
 
 // -------------------------------------------------------------- keyword turns

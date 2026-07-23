@@ -2,13 +2,12 @@
  * Resolving a workflow agent's model reference ("sonnet", "fable",
  * "openai-codex/gpt-5.4-mini") to an actual registry model.
  *
- * This lets the user's natural-language routing policy ("use sonnet for
- * implementation, use fable to review") work end to end: the main agent reads
- * the policy from the tool description and passes short references via
- * agent()'s model option; this resolver turns them into canonical
- * provider/id pairs before the subagent is spawned, so a typo or an ambiguous
- * reference fails that agent with a clear message instead of silently running
- * on the wrong model.
+ * This is what makes routing said in plain language work end to end: the user
+ * writes "use sonnet for implementation and fable to review" in the request,
+ * the main agent passes those short references via agent()'s model option, and
+ * this resolver turns them into canonical provider/id pairs before the
+ * subagent is spawned — so a typo or an ambiguous reference fails that agent
+ * with a clear message instead of silently running on the wrong model.
  *
  * The matching rules are pi's own `--model` rules, reproduced against the
  * ModelRegistry list (pi's resolver is not exported to extensions) — the same

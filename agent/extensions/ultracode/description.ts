@@ -2,12 +2,10 @@
  * The workflow tool's LLM-facing description: Claude Code's Workflow tool
  * description, cut to the features this port implements (no resume, no
  * worktree isolation, no nested workflow(), no budget directive) and with the
- * same Ultracode section the reminder texts reference. Assembled by
- * workflowDescription() so the user's model-routing policy is embedded when
- * configured.
+ * same Ultracode section the reminder texts reference.
  */
 
-const CORE = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.
+export const WORKFLOW_DESCRIPTION = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.
 
 Workflows run in the BACKGROUND: this call validates the script, starts the fleet, and returns immediately with a run id. A "workflow-result" message arrives when the run completes — NEVER fabricate or predict a pending run's results; continue with other work or end the turn and wait. The user watches progress in the status panel and can cancel via /workflows. Pass wait: true only when the result is needed before you can do anything else.
 
@@ -56,15 +54,9 @@ Quality patterns — compose freely:
 - Completeness critic: a final agent asking "what's missing?" — its findings become the next round.
 - No silent caps: if the script bounds coverage (top-N, sampling), log() what was dropped.
 
-Scale to what the user asked for: "find any bugs" → a few finders, single-vote verify; "thoroughly audit" → larger pool, 3-5 vote adversarial pass, synthesis stage. Subagents are told their final text is machine-consumed — prompt them to return raw data, not prose for humans.`;
+Scale to what the user asked for: "find any bugs" → a few finders, single-vote verify; "thoroughly audit" → larger pool, 3-5 vote adversarial pass, synthesis stage. Subagents are told their final text is machine-consumed — prompt them to return raw data, not prose for humans.
 
-/** Assemble the description, embedding the user's routing policy if set. */
-export function workflowDescription(modelPolicy?: string): string {
-	if (!modelPolicy?.trim()) return CORE;
-	return `${CORE}
-
-**Model routing (user policy).** The user has a standing policy for which models workflow subagents use: "${modelPolicy.trim()}". Honor it when authoring scripts: give each agent whose role the policy covers a matching model reference via opts.model (e.g. { model: "sonnet" } for an implementation agent, { model: "fable" } for a reviewer). Roles the policy does not cover use the default subagent model.`;
-}
+**Model routing.** The user says which models to use in the request that triggers the workflow — "ultracode, use sonnet for implementation and fable to review", "ultracode audit this with haiku". When a request assigns models to roles, honor it: give every agent filling one of those roles the matching reference via opts.model, and leave opts.model off for roles the request does not mention (those use the session's default subagent model). A routing instruction holds for later workflows in the conversation until the user changes it. If a named model is ambiguous or unavailable, that agent fails with the reason rather than running on something else, so pass the name the user used rather than guessing at a canonical id.`;
 
 export const WORKFLOW_PROMPT_SNIPPET =
 	"workflow: orchestrate fleets of subagents from a script, in the background (requires explicit user opt-in, e.g. the ultracode keyword)";

@@ -15,6 +15,15 @@ export const ENTER_SPARSE = "Ultracode is still on — use the Workflow tool; se
 
 export const EXIT = "Ultracode is off — the Workflow tool's standard opt-in rule applies again.";
 
+/**
+ * Added when the triggering request names models. The mapping is in the
+ * request itself, which the model can read; this only makes sure the routing
+ * is applied to the workflow rather than treated as conversation.
+ */
+export function routingReminder(mentions: string[]): string {
+	return `This request names models (${mentions.join(", ")}). Route the workflow accordingly: pass each agent whose role the request covers a matching model reference via the agent() model option, e.g. agent(prompt, { model: "${mentions[0]}" }).`;
+}
+
 export function systemReminder(text: string): string {
 	return `<system-reminder>\n${text}\n</system-reminder>`;
 }

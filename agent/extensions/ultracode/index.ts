@@ -6,10 +6,12 @@
  *   1. The `workflow` tool (tool.ts + engine.ts + spawn.ts): a script that
  *      orchestrates headless pi subagents with agent()/parallel()/pipeline().
  *      Runs are background by default (runs.ts) with a live status panel
- *      (panel.ts) and /workflows for inspection and cancellation; subagent
- *      models follow the user's natural-language routing policy
- *      (ultracode.models) via references resolved with pi's --model rules
- *      (models.ts).
+ *      (panel.ts) and /workflows for inspection and cancellation. Subagent
+ *      models are routed in the triggering request itself ("ultracode, use
+ *      sonnet for implementation and fable to review"): routing.ts notices
+ *      that a request names models so the reminder can bind the instruction
+ *      to that turn, and models.ts resolves the names the model passes with
+ *      pi's own --model rules.
  *   2. The triggers that opt the model into using it:
  *      - the "ultracode" KEYWORD in a typed prompt opts in that single turn
  *        (detector and reminder text verbatim from the binary; the keyword
@@ -43,7 +45,8 @@ import { DEFAULT_SETTINGS, ENTRY_TYPE, SETTINGS_KEY, type UltracodeSettings } fr
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
 import { panelLines, statusReport } from "./panel.ts";
-import { KEYWORD_REMINDER, systemReminder } from "./reminders.ts";
+import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
+import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { orphanedRunIds, RunRegistry } from "./runs.ts";
 import { registerWorkflowTool } from "./tool.ts";
 
@@ -62,7 +65,6 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 		return {
 			keywordTrigger: typeof block?.keywordTrigger === "boolean" ? block.keywordTrigger : DEFAULT_SETTINGS.keywordTrigger,
 			model: typeof block?.model === "string" ? block.model : undefined,
-			models: typeof block?.models === "string" ? block.models : undefined,
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -158,16 +160,11 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// Re-registering replaces the tool in place; done whenever settings change
-	// so the description carries the user's current model-routing policy.
-	const registerTool = () =>
-		registerWorkflowTool(pi, {
-			registry,
-			subagentModel: () => settings.model,
-			modelPolicy: settings.models,
-			onRunEvent: drawPanel,
-		});
-	registerTool();
+	registerWorkflowTool(pi, {
+		registry,
+		subagentModel: () => settings.model,
+		onRunEvent: drawPanel,
+	});
 
 	pi.registerEntryRenderer<ToggleEntry>(ENTRY_TYPE, (entry, _options, theme) =>
 		entry.data ? new Text(theme.fg("accent", `✦ ultracode ${entry.data.action}`), 0, 0) : undefined,
@@ -179,7 +176,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		settings = loadSettings(agentDir);
-		registerTool(); // refresh the description's model-routing policy
 		uiCtx = ctx;
 		keywordThisTurn = false;
 		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
@@ -215,11 +211,20 @@ export default function (pi: ExtensionAPI) {
 
 	// Reminders ride the turn as one hidden custom message, in Claude Code's
 	// attachment order: keyword first, then the session-mode reminder.
-	pi.on("before_agent_start", (_event, ctx) => {
+	pi.on("before_agent_start", (event, ctx) => {
 		uiCtx = ctx;
 		const parts: string[] = [];
-		if (keywordThisTurn && settings.keywordTrigger) parts.push(KEYWORD_REMINDER);
+		const triggered = keywordThisTurn && settings.keywordTrigger;
+		if (triggered) parts.push(KEYWORD_REMINDER);
 		keywordThisTurn = false;
+
+		// Routing is said in the request, so it is read off the request. Only
+		// on turns that actually reach for a workflow — otherwise mentioning a
+		// model in ordinary conversation would look like an instruction.
+		if (triggered || mode.isOn()) {
+			const mentions = findModelMentions(event.prompt, modelVocabulary(ctx.modelRegistry.getAll()));
+			if (mentions.length > 0) parts.push(routingReminder(mentions));
+		}
 		if (orphanedRuns.length > 0) {
 			const ids = orphanedRuns.join(", ");
 			parts.push(

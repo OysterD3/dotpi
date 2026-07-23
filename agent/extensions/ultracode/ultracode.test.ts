@@ -15,7 +15,8 @@ import { resolveModelReference } from "./models.ts";
 import { formatElapsed, panelLines, statusReport } from "./panel.ts";
 import { newProgress, orphanedRunIds, RunRegistry, type WorkflowRun } from "./runs.ts";
 import { safeStringify } from "./tool.ts";
-import { ENTER_FULL, ENTER_SPARSE, EXIT } from "./reminders.ts";
+import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
+import { findModelMentions, modelVocabulary } from "./routing.ts";
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -459,6 +460,46 @@ console.log("\n--- models: reference resolution ---");
 	check('"claude" is ambiguous', resolve("claude"), "error:ambiguous");
 	check("unknown reference errors", resolve("nope"), "error:none");
 	check("case-insensitive", resolve("SONNET"), "anthropic/claude-sonnet-5");
+}
+
+// --------------------------------------------------- routing in the request
+
+console.log("\n--- routing: model mentions in the triggering prompt ---");
+{
+	const REGISTRY = [
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
+		{ provider: "anthropic", id: "claude-fable-5", name: "Fable 5" },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5" },
+		{ provider: "openai-codex", id: "gpt-5.4-mini", name: "GPT-5.4 mini" },
+	];
+	const vocabulary = modelVocabulary(REGISTRY);
+	const mentions = (text: string) => findModelMentions(text, vocabulary);
+
+	check("vocabulary has family words", [...vocabulary].includes("sonnet") && [...vocabulary].includes("fable"), true);
+	check("vocabulary has full ids", vocabulary.has("claude-sonnet-5"), true);
+	check("vocabulary drops noise words", vocabulary.has("use") || vocabulary.has("the"), false);
+
+	check(
+		"the headline request",
+		mentions("ultracode, use sonnet for implementation and fable to review"),
+		["sonnet", "fable"],
+	);
+	check("single model", mentions("ultracode audit this with haiku"), ["haiku"]);
+	check("order follows the request", mentions("review with fable, build with sonnet"), ["fable", "sonnet"]);
+	check("full id counted once, not as fragments", mentions("use claude-sonnet-5 please"), ["claude-sonnet-5"]);
+	check("case-insensitive", mentions("use Sonnet"), ["sonnet"]);
+	check("deduped by span", mentions("sonnet, sonnet, sonnet").length, 3);
+	check("no models named", mentions("ultracode refactor the auth module"), []);
+	check("substring is not a mention", mentions("the sonnets of shakespeare"), []);
+	check("empty prompt", mentions(""), []);
+	check("empty registry", findModelMentions("use sonnet", modelVocabulary([])), []);
+	check("limit is honoured", findModelMentions("sonnet fable haiku mini sonnet fable haiku", vocabulary, 3).length, 3);
+
+	check(
+		"reminder names the models and shows the option",
+		routingReminder(["sonnet", "fable"]),
+		'This request names models (sonnet, fable). Route the workflow accordingly: pass each agent whose role the request covers a matching model reference via the agent() model option, e.g. agent(prompt, { model: "sonnet" }).',
+	);
 }
 
 // ------------------------------------------------------------ runs and panel
