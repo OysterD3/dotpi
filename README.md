@@ -305,6 +305,66 @@ session rather than writing a file that would be quietly ignored.
 | `config.ts` | Caps and labels |
 | `add-dir.test.ts` / `add-dir.e2e.ts` | Unit and end-to-end coverage |
 
+**`agent/extensions/recap/`** — adds `/recap`, a port of Claude Code's recap (its "away summary"):
+a one- or two-line plain-text summary of where the session stands.
+
+```
+/recap                         # summarise now
+```
+
+The prompt is transcribed verbatim from the Claude Code binary, so a recap leads with the overall
+goal and current task, then the one next action, in under 40 words with no markdown. It runs as a
+tool-less LLM call over a recent-biased transcript of the branch, and shows up as a display-only
+entry — information for the person returning, never fed back into the model's context.
+
+**The recap model is configurable.** Set `recap.model` in settings.json to a model reference
+(`claude-haiku-4-5`, or `anthropic/claude-haiku-4-5` to disambiguate); it falls back to the active
+session model. Resolution uses the same rules as pi's `--model`, so an ambiguous bare id is an
+error rather than a silent pick:
+
+```jsonc
+{
+  "recap": {
+    "model": "claude-haiku-4-5",   // optional; default: the active model
+    "autoOnReturn": false,          // optional; see below
+    "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
+    "minUserTurns": 3               // optional
+  }
+}
+```
+
+**Where this diverges from Claude Code, and why.** Claude Code has two doors into one generator: the
+manual `/recap`, and an automatic summary shown when you return to the terminal after being away 5+
+minutes. It knows you were away because the terminal loses and regains focus, and it generates the
+summary *while* you are away so it is ready the instant you come back. pi exposes no focus events,
+so:
+
+- `/recap` is faithful and always available.
+- Auto-on-return is approximated from wall-clock idle — the gap between the agent going idle
+  (`agent_settled`) and your next message — and generated *reactively* when you return, not
+  proactively. Because that costs a model call and a few seconds in front of your own message,
+  it is **off by default** (Claude Code's is on). Enable it with `recap.autoOnReturn: true`.
+
+The auto path reuses Claude Code's other gates exactly: a minimum of user turns before a recap is
+worthwhile (its `BIS` = 3), a minimum of turns since the last recap so the same spot is not
+recapped twice (`UIS` = 2), and never while background work is pending. A project's `.pi/settings.json`
+can turn auto-recap on for itself, but its `recap.model` is honoured only when the project is
+trusted — a clone cannot silently redirect where your transcript is sent.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Command, event wiring, the auto-on-return flow |
+| `prompts.ts` | **The recap prompt, transcribed from Claude Code** |
+| `generate.ts` | The tool-less LLM call and its outcomes |
+| `model.ts` | Resolving `recap.model` the way pi resolves `--model` (pure) |
+| `transcript.ts` | Session branch → budgeted transcript text (pure) |
+| `settings.ts` | The `recap` settings block |
+| `gate.ts` | The auto-on-return decision (pure) |
+| `state.ts` | Idle timing and a reentrancy guard |
+| `render.ts` | The recap entry's appearance (pure) |
+| `config.ts` | Limits and Claude Code's constants |
+| `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
