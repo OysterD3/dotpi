@@ -44,7 +44,9 @@ const events = new Map<string, Function>();
 const commands = new Map<string, { description?: string; handler: Function }>();
 const tools = new Map<string, any>();
 const entryRenderers: string[] = [];
+const messageRenderers: string[] = [];
 const appended: Array<{ customType: string; data: any }> = [];
+const sent: Array<{ message: any; options: any }> = [];
 let thinkingLevel = "medium";
 const thinkingLog: string[] = [];
 // Mimics pi: the applied level is the requested one clamped to what the model
@@ -56,6 +58,8 @@ const pi = {
 	registerCommand: (name: string, options: any) => commands.set(name, options),
 	registerTool: (tool: any) => tools.set(tool.name, tool),
 	registerEntryRenderer: (type: string, _renderer: Function) => entryRenderers.push(type),
+	registerMessageRenderer: (type: string, _renderer: Function) => messageRenderers.push(type),
+	sendMessage: (message: any, options: any) => sent.push({ message, options }),
 	appendEntry: (customType: string, data: unknown) => appended.push({ customType, data }),
 	getThinkingLevel: () => thinkingLevel,
 	setThinkingLevel: (level: string) => {
@@ -66,21 +70,47 @@ const pi = {
 
 ultracode(pi as any);
 
-function makeCtx(options: { model?: any; branch?: any[]; trusted?: boolean } = {}) {
+function makeCtx(
+	options: { model?: any; branch?: any[]; trusted?: boolean; registryModels?: any[]; idle?: boolean; dead?: () => boolean } = {},
+) {
 	const notices: Array<{ message: string; type: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
+	const widgets: Array<{ key: string; lines: string[] | undefined }> = [];
+	// pi's context getters call assertActive() and THROW once the session they
+	// belong to is replaced; `dead` reproduces that.
+	const live = () => {
+		if (options.dead?.()) throw new Error("Extension runtime is no longer active");
+	};
 	const ctx = {
-		cwd: CWD,
-		hasUI: true,
-		model: options.model,
-		isProjectTrusted: () => options.trusted ?? true,
+		get cwd() {
+			live();
+			return CWD;
+		},
+		get hasUI() {
+			live();
+			return true;
+		},
+		get model() {
+			live();
+			return options.model;
+		},
+		isIdle: () => {
+			live();
+			return options.idle ?? true;
+		},
+		isProjectTrusted: () => {
+			live();
+			return options.trusted ?? true;
+		},
 		sessionManager: { getBranch: () => options.branch ?? [] },
+		modelRegistry: { getAll: () => options.registryModels ?? [] },
 		ui: {
 			notify: (message: string, type = "info") => notices.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
+			setWidget: (key: string, lines: string[] | undefined) => widgets.push({ key, lines }),
 		},
 	};
-	return { ctx, notices, statuses };
+	return { ctx, notices, statuses, widgets };
 }
 
 const MODEL = { provider: "openai-codex", id: "gpt-5.4-mini", name: "mini", reasoning: true, contextWindow: 200_000 };
@@ -100,10 +130,30 @@ check("workflow tool registered", tools.has("workflow"), true);
 check("workflow is sequential", tools.get("workflow")?.executionMode, "sequential");
 check("workflow has prompt snippet", typeof tools.get("workflow")?.promptSnippet, "string");
 check("description carries Ultracode section", tools.get("workflow")?.description.includes("**Ultracode.**"), true);
+check("description explains background runs", tools.get("workflow")?.description.includes("run in the BACKGROUND"), true);
+check("no policy -> no routing section", tools.get("workflow")?.description.includes("Model routing"), false);
 check("/ultracode registered", commands.has("ultracode"), true);
+check("/workflows registered", commands.has("workflows"), true);
 check("entry renderer", entryRenderers, ["ultracode"]);
-for (const name of ["session_start", "input", "before_agent_start", "thinking_level_select"]) {
+check("result message renderer", messageRenderers.includes("workflow-result"), true);
+for (const name of ["session_start", "input", "before_agent_start", "thinking_level_select", "session_shutdown"]) {
 	check(`hooks ${name}`, events.has(name), true);
+}
+
+console.log("\n--- model routing policy embeds in the description ---");
+writeSettings({ models: "use sonnet for implementation, use fable to review" });
+{
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	const description = tools.get("workflow")?.description as string;
+	check("policy text embedded", description.includes("use sonnet for implementation, use fable to review"), true);
+	check("routing instructions present", description.includes("**Model routing (user policy).**"), true);
+}
+writeSettings({});
+{
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	check("policy removed when unset", (tools.get("workflow")?.description as string).includes("Model routing"), false);
 }
 
 // -------------------------------------------------------------- keyword turns
@@ -318,40 +368,39 @@ console.log("\n--- restore from branch ---");
 
 // ------------------------------------------------------------- workflow tool
 
-console.log("\n--- workflow tool: no-agent paths ---");
+console.log("\n--- workflow tool: wait mode ---");
 {
 	const tool = tools.get("workflow")!;
 	const { ctx } = makeCtx({ model: MODEL });
-	const updates: any[] = [];
 	const script = [
 		"export const meta = { name: 'demo', description: 'no agents', phases: [{ title: 'Go' }] }",
 		"phase('Go')",
 		"log('working')",
 		"return { answer: args.n * 2 }",
 	].join("\n");
-	const result = await tool.execute("t1", { script, args: { n: 21 } }, undefined, (u: any) => updates.push(u), ctx);
+	const result = await tool.execute("t1", { script, args: { n: 21 }, wait: true }, undefined, undefined, ctx);
 	const text = result.content[0].text as string;
-	check("summary line", text.startsWith('Workflow "demo" finished: 0 agents'), true);
+	check("summary line", /^Workflow "demo" \(wf-\d+\) finished: 0 agents/.test(text), true);
 	check("result JSON in content", text.includes('"answer": 42'), true);
 	check("details status done", result.details.status, "done");
-	check("streamed updates emitted", updates.length > 0, true);
 	check("phase recorded in details", result.details.phases.map((p: any) => p.title), ["Go"]);
 	check("log recorded in details", result.details.logs, ["working"]);
+	check("wait mode does not sendMessage", sent.length, 0);
 
 	const bad = await tool.execute("t2", { script: "return 1" }, undefined, undefined, ctx).then(
 		() => "no-throw",
 		(error: Error) => error.message,
 	);
-	check("missing meta -> error", bad, "Workflow failed: workflow script must begin with `export const meta = {...}`");
+	check("missing meta -> error", bad, "workflow script must begin with `export const meta = {...}`");
 
 	const controller = new AbortController();
 	controller.abort();
 	const abortScript = `export const meta = { name: 'a', description: 'b' }\nreturn await agent('x')`;
-	const abortedRun = await tool.execute("t3", { script: abortScript }, controller.signal, undefined, ctx).then(
+	const abortedRun = await tool.execute("t3", { script: abortScript, wait: true }, controller.signal, undefined, ctx).then(
 		() => "no-throw",
 		(error: Error) => error.message,
 	);
-	check("pre-aborted -> Workflow aborted", abortedRun, "Workflow aborted");
+	check("pre-aborted wait -> Workflow aborted", abortedRun, "Workflow aborted");
 
 	// A circular return value must not turn a finished run into a failure.
 	const circularScript = [
@@ -360,9 +409,172 @@ console.log("\n--- workflow tool: no-agent paths ---");
 		"a.self = a",
 		"return a",
 	].join("\n");
-	const circular = await tool.execute("t4", { script: circularScript }, undefined, undefined, ctx);
+	const circular = await tool.execute("t4", { script: circularScript, wait: true }, undefined, undefined, ctx);
 	check("circular result still succeeds", circular.details.status, "done");
 	check("circular marker in content", circular.content[0].text.includes('"self": "[circular]"'), true);
+
+	// An unresolvable model reference fails that agent (before any spawn), not
+	// the run — and the failure reason lands in the logs.
+	const badModelScript = [
+		"export const meta = { name: 'routing', description: 'bad model reference' }",
+		"return await agent('x', { model: 'nope' })",
+	].join("\n");
+	const routed = await tool.execute(
+		"t5",
+		{ script: badModelScript, wait: true },
+		undefined,
+		undefined,
+		makeCtx({ model: MODEL, registryModels: [MODEL] }).ctx,
+	);
+	check("unresolvable reference -> agent null", routed.content[0].text.includes("Result:\nnull"), true);
+	check("resolution error logged", routed.details.logs.some((l: string) => l.includes('"nope" matched no available model')), true);
+}
+
+console.log("\n--- workflow tool: background ---");
+{
+	const tool = tools.get("workflow")!;
+	const { ctx, widgets } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx); // panel draws through this ctx
+	sent.length = 0;
+	const script = [
+		"export const meta = { name: 'bg', description: 'background demo' }",
+		"log('ticking')",
+		"await new Promise((resolve) => setTimeout(resolve, 50))",
+		"return { ok: true }",
+	].join("\n");
+	const immediate = await tool.execute("t6", { script }, undefined, undefined, ctx);
+	const startText = immediate.content[0].text as string;
+	check("returns immediately with run id", /started in the background \(id: wf-\d+\)/.test(startText), true);
+	check("warns against fabricating results", startText.includes("do not fabricate"), true);
+	check("background details flag", immediate.details.background, true);
+	check("panel showed the run", widgets.some((w) => w.key === "workflows" && w.lines?.some((l) => l.includes("bg"))), true);
+
+	// The result message arrives once the run settles.
+	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	check("result delivered as workflow-result", sent[0]?.message.customType, "workflow-result");
+	check("delivery content carries the result", sent[0]?.message.content.includes('"ok": true'), true);
+	check("delivered message is visible", sent[0]?.message.display, true);
+	check("idle delivery triggers a turn", sent[0]?.options, { triggerTurn: true });
+	check("panel cleared when quiet", widgets.at(-1)?.lines, undefined);
+}
+
+console.log("\n--- workflow tool: /workflows and cancel ---");
+{
+	const tool = tools.get("workflow")!;
+	const { ctx, notices } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	sent.length = 0;
+	const script = [
+		"export const meta = { name: 'sleeper', description: 'cancellable' }",
+		"await new Promise((resolve) => setTimeout(resolve, 2000))",
+		"return 'slept'",
+	].join("\n");
+	const immediate = await tool.execute("t7", { script }, undefined, undefined, ctx);
+	const runId = /id: (wf-\d+)/.exec(immediate.content[0].text)![1]!;
+
+	await commands.get("workflows")!.handler("", ctx);
+	check("/workflows lists the run", notices.at(-1)?.message.includes(`${runId} sleeper`), true);
+
+	await commands.get("workflows")!.handler(`cancel ${runId}`, ctx);
+	check("cancel acknowledged", notices.at(-1)?.message, `Cancelling ${runId}`);
+
+	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	check("cancelled run reports back", sent[0]?.message.content.includes("was cancelled"), true);
+
+	await commands.get("workflows")!.handler(`cancel ${runId}`, ctx);
+	check("cancel after finish", notices.at(-1)?.message, `${runId} already finished.`);
+	await commands.get("workflows")!.handler("cancel wf-99", ctx);
+	check("cancel unknown", notices.at(-1)?.message, "No workflow wf-99. /workflows lists them.");
+	await commands.get("workflows")!.handler("bogus", ctx);
+	check("invalid /workflows argument", notices.at(-1)?.message, "Invalid argument: bogus. Usage: /workflows [cancel [id]]");
+}
+
+console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
+{
+	const tool = tools.get("workflow")!;
+	// Agent busy: the result must ride the current turn as a follow-up.
+	const { ctx } = makeCtx({ model: MODEL, idle: false });
+	events.get("session_start")!({}, ctx);
+	sent.length = 0;
+	const script = `export const meta = { name: 'midturn', description: 'busy agent' }\nreturn 'ok'`;
+	await tool.execute("t8", { script }, undefined, undefined, ctx);
+	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	check("busy agent gets a follow-up", sent[0]?.options, { deliverAs: "followUp" });
+
+	// A bad configured default fails the run at start, rather than nulling
+	// every agent into a success-shaped empty result.
+	writeSettings({ model: "sonet" });
+	const badDefault = makeCtx({ model: MODEL, registryModels: [MODEL] });
+	events.get("session_start")!({}, badDefault.ctx);
+	const outcome = await tool
+		.execute("t9", { script: `export const meta = { name: 'x', description: 'y' }\nreturn 1` }, undefined, undefined, badDefault.ctx)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("unresolvable default fails the run", outcome.includes('model "sonet" matched no available model'), true);
+	writeSettings({});
+
+	// A non-string model option is rejected with a routing-specific message.
+	const guard = makeCtx({ model: MODEL, registryModels: [MODEL] });
+	events.get("session_start")!({}, guard.ctx);
+	const guarded = await tool.execute(
+		"t10",
+		{ script: `export const meta = { name: 'g', description: 'h' }\nreturn await agent('x', { model: 42 })`, wait: true },
+		undefined,
+		undefined,
+		guard.ctx,
+	);
+	check(
+		"non-string model reference is named as such",
+		guarded.details.logs.some((l: string) => l.includes("model must be a string reference, got number")),
+		true,
+	);
+}
+
+console.log("\n--- panel survives a dead session ---");
+{
+	const tool = tools.get("workflow")!;
+	let dead = false;
+	const { ctx } = makeCtx({ model: MODEL, dead: () => dead });
+	events.get("session_start")!({}, ctx);
+	sent.length = 0;
+	const script = [
+		"export const meta = { name: 'outlives', description: 'settles after shutdown' }",
+		"await new Promise((resolve) => setTimeout(resolve, 60))",
+		"return 'late'",
+	].join("\n");
+	await tool.execute("t11", { script }, undefined, undefined, ctx);
+
+	// The session goes away mid-run: shutdown cancels, then the context dies.
+	events.get("session_shutdown")!({}, ctx);
+	dead = true;
+	// The run settles against the dead session; nothing may throw out of it.
+	let escaped: unknown;
+	const watcher = (error: unknown) => void (escaped = error);
+	process.on("uncaughtException", watcher);
+	process.on("unhandledRejection", watcher);
+	await new Promise((resolve) => setTimeout(resolve, 250));
+	process.removeListener("uncaughtException", watcher);
+	process.removeListener("unhandledRejection", watcher);
+	check("no error escapes a settle on a dead session", escaped, undefined);
+	check("no result delivered to a dead session", sent.length, 0);
+}
+
+console.log("\n--- resumed session is told about orphaned runs ---");
+{
+	const branch = [
+		{
+			type: "message",
+			message: { role: "toolResult", content: [{ type: "text", text: 'Workflow "audit" started in the background (id: wf-7).' }] },
+		},
+	];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	const correction = await turn("what did the audit find?");
+	check(
+		"correction injected once",
+		correction?.message?.content.includes("wf-7 did not survive the end of the previous session"),
+		true,
+	);
+	check("and not repeated", await turn("anything else?"), undefined);
 }
 
 rmSync(ROOT, { recursive: true, force: true });

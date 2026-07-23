@@ -28,8 +28,14 @@ export const CONFIG = {
 export interface UltracodeSettings {
 	/** Claude Code settings key ultracodeKeywordTrigger; default true. */
 	keywordTrigger: boolean;
-	/** Model reference for workflow subagents; defaults to the session model. */
+	/** Default model reference for workflow subagents; falls back to the session model. */
 	model?: string;
+	/**
+	 * Natural-language routing policy for subagent models, e.g. "use sonnet
+	 * for implementation, use fable to review". Embedded in the workflow tool
+	 * description; the main agent applies it via agent()'s model option.
+	 */
+	models?: string;
 }
 
 export const DEFAULT_SETTINGS: UltracodeSettings = {

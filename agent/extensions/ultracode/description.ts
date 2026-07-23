@@ -2,10 +2,14 @@
  * The workflow tool's LLM-facing description: Claude Code's Workflow tool
  * description, cut to the features this port implements (no resume, no
  * worktree isolation, no nested workflow(), no budget directive) and with the
- * same Ultracode section the reminder texts reference.
+ * same Ultracode section the reminder texts reference. Assembled by
+ * workflowDescription() so the user's model-routing policy is embedded when
+ * configured.
  */
 
-export const WORKFLOW_DESCRIPTION = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.
+const CORE = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.
+
+Workflows run in the BACKGROUND: this call validates the script, starts the fleet, and returns immediately with a run id. A "workflow-result" message arrives when the run completes — NEVER fabricate or predict a pending run's results; continue with other work or end the turn and wait. The user watches progress in the status panel and can cancel via /workflows. Pass wait: true only when the result is needed before you can do anything else.
 
 A workflow structures work across many agents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The script encodes that structure: what fans out, what verifies, what synthesizes.
 
@@ -21,7 +25,7 @@ For any other task — even one that would clearly benefit from parallelism — 
 Every script must begin with \`export const meta = {...}\` — a PURE object literal (no variables, calls, or interpolation) with required string fields \`name\` and \`description\`, and optionally \`phases: [{ title, detail? }]\`.
 
 Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async context — use await and top-level return):
-- agent(prompt, opts?): Promise<any> — spawn a subagent; returns its final text. opts: {label?, phase?, model? ("provider/model-id"), thinking? ("low"|"medium"|"high"|"xhigh"|"max"), schema?}. With schema (a JSON Schema object), the subagent is told to reply with ONLY matching JSON and agent() returns the parsed value, retrying once on unusable output. On failure agent() returns null (filter with .filter(Boolean)).
+- agent(prompt, opts?): Promise<any> — spawn a subagent; returns its final text. opts: {label?, phase?, model?, thinking? ("low"|"medium"|"high"|"xhigh"|"max"), schema?}. model is a REFERENCE resolved like pi's --model: "provider/id", a bare id, or a distinctive partial name ("sonnet", "fable", "haiku") — an ambiguous or unknown reference fails that agent with a clear error, so prefer distinctive names. With schema (a JSON Schema object), the subagent is told to reply with ONLY matching JSON and agent() returns the parsed value, retrying once on unusable output. On failure agent() returns null (filter with .filter(Boolean)).
 - parallel(thunks): Promise<any[]> — run tasks concurrently. This is a BARRIER: awaits all thunks. A thunk that throws resolves to null — the call itself never rejects.
 - pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Every stage callback receives (prevResult, originalItem, index). A stage that throws drops that item to null and skips its remaining stages.
 - phase(title): void — group subsequent agents under this title in progress output.
@@ -54,8 +58,16 @@ Quality patterns — compose freely:
 
 Scale to what the user asked for: "find any bugs" → a few finders, single-vote verify; "thoroughly audit" → larger pool, 3-5 vote adversarial pass, synthesis stage. Subagents are told their final text is machine-consumed — prompt them to return raw data, not prose for humans.`;
 
+/** Assemble the description, embedding the user's routing policy if set. */
+export function workflowDescription(modelPolicy?: string): string {
+	if (!modelPolicy?.trim()) return CORE;
+	return `${CORE}
+
+**Model routing (user policy).** The user has a standing policy for which models workflow subagents use: "${modelPolicy.trim()}". Honor it when authoring scripts: give each agent whose role the policy covers a matching model reference via opts.model (e.g. { model: "sonnet" } for an implementation agent, { model: "fable" } for a reviewer). Roles the policy does not cover use the default subagent model.`;
+}
+
 export const WORKFLOW_PROMPT_SNIPPET =
-	"workflow: orchestrate fleets of subagents from a script (requires explicit user opt-in, e.g. the ultracode keyword)";
+	"workflow: orchestrate fleets of subagents from a script, in the background (requires explicit user opt-in, e.g. the ultracode keyword)";
 
 /** Appended to every subagent prompt so replies come back as data. */
 export const SUBAGENT_PREAMBLE =

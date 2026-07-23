@@ -11,6 +11,10 @@
 import { findKeyword, hasUltracodeKeyword } from "./keyword.ts";
 import { conformsTo, extractJson, parseMeta, runWorkflowScript, type AgentOptions } from "./engine.ts";
 import { UltracodeMode } from "./mode.ts";
+import { resolveModelReference } from "./models.ts";
+import { formatElapsed, panelLines, statusReport } from "./panel.ts";
+import { newProgress, orphanedRunIds, RunRegistry, type WorkflowRun } from "./runs.ts";
+import { safeStringify } from "./tool.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT } from "./reminders.ts";
 
 let failures = 0;
@@ -410,6 +414,149 @@ console.log("\n--- engine: concurrency is bounded ---");
 	);
 	check("peak concurrency <= 16", peak <= 16, true);
 	check("all 40 ran", f.spawned.length, 40);
+}
+
+console.log("\n--- engine: cancel interrupts a sleeping script ---");
+{
+	const f = fakeHooks(() => "x");
+	const controller = new AbortController();
+	const startedAt = Date.now();
+	const run = runWorkflowScript(
+		`${META}await new Promise((resolve) => setTimeout(resolve, 5000))\nreturn 'slept'`,
+		undefined,
+		f.hooks,
+		controller.signal,
+	);
+	setTimeout(() => controller.abort(), 30);
+	const outcome = await run.then(
+		() => "no-throw",
+		(error) => (error instanceof Error && error.message.includes("aborted") ? "aborted" : `wrong: ${error}`),
+	);
+	check("sleeping script cancelled", outcome, "aborted");
+	check("cancellation was prompt", Date.now() - startedAt < 2000, true);
+}
+
+// ------------------------------------------------------------ model resolver
+
+console.log("\n--- models: reference resolution ---");
+{
+	const MODELS = [
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
+		{ provider: "anthropic", id: "claude-sonnet-5-20250929", name: "Sonnet 5 (dated)" },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5" },
+		{ provider: "anthropic", id: "claude-fable-5", name: "Fable 5" },
+		{ provider: "openai-codex", id: "gpt-5.4-mini", name: "GPT-5.4 mini" },
+	];
+	const resolve = (reference: string) => {
+		const outcome = resolveModelReference(reference, MODELS);
+		return outcome.ok ? `${outcome.model.provider}/${outcome.model.id}` : `error:${outcome.error.includes("matches") ? "ambiguous" : "none"}`;
+	};
+	check("canonical provider/id", resolve("anthropic/claude-sonnet-5"), "anthropic/claude-sonnet-5");
+	check("bare exact id", resolve("claude-haiku-4-5"), "anthropic/claude-haiku-4-5");
+	check('"sonnet" prefers the alias over the dated id', resolve("sonnet"), "anthropic/claude-sonnet-5");
+	check('"fable" resolves by name', resolve("fable"), "anthropic/claude-fable-5");
+	check('"mini" resolves by partial id', resolve("mini"), "openai-codex/gpt-5.4-mini");
+	check('"claude" is ambiguous', resolve("claude"), "error:ambiguous");
+	check("unknown reference errors", resolve("nope"), "error:none");
+	check("case-insensitive", resolve("SONNET"), "anthropic/claude-sonnet-5");
+}
+
+// ------------------------------------------------------------ runs and panel
+
+console.log("\n--- runs: registry ---");
+{
+	const registry = new RunRegistry();
+	const makeRun = (status: "running" | "done"): WorkflowRun => {
+		const progress = newProgress(registry.nextId(), "r");
+		progress.status = status;
+		return { progress, controller: new AbortController(), startedAt: 0, settled: Promise.resolve() };
+	};
+	const running = makeRun("running");
+	registry.add(running);
+	check("active lists running runs", registry.active().length, 1);
+	check("cancel running", registry.cancel(running.progress.runId), "cancelled");
+	check("cancel aborts the controller", running.controller.signal.aborted, true);
+	running.progress.status = "done";
+	check("cancel finished run", registry.cancel(running.progress.runId), "not-running");
+	check("cancel unknown run", registry.cancel("wf-99"), "unknown");
+	const stillRunning = makeRun("running");
+	registry.add(stillRunning);
+	for (let i = 0; i < 8; i++) registry.add(makeRun("done"));
+	// 9 finished runs pruned to 5; the running one is never pruned.
+	check("finished runs pruned to the last 5", registry.all().length, 6);
+	check("running run survives pruning", registry.get(stillRunning.progress.runId) !== undefined, true);
+}
+
+console.log("\n--- runs: orphaned background runs in a resumed branch ---");
+{
+	const started = (id: string) => ({
+		type: "message",
+		message: { role: "toolResult", content: [{ type: "text", text: `Workflow "audit" started in the background (id: ${id}).` }] },
+	});
+	const finished = (id: string) => ({
+		type: "custom_message",
+		customType: "workflow-result",
+		content: `Workflow "audit" (${id}) finished: 3 agents, 6 turns, $0.10.`,
+	});
+	const cancelled = (id: string) => ({
+		type: "custom_message",
+		customType: "workflow-result",
+		content: `Workflow "audit" (${id}) was cancelled after 1 agent ($0.01): workflow aborted`,
+	});
+	check("start with no result is orphaned", orphanedRunIds([started("wf-1")]), ["wf-1"]);
+	check("finished run is not orphaned", orphanedRunIds([started("wf-1"), finished("wf-1")]), []);
+	check("cancelled run is not orphaned", orphanedRunIds([started("wf-2"), cancelled("wf-2")]), []);
+	check(
+		"only the unresolved one is reported",
+		orphanedRunIds([started("wf-1"), finished("wf-1"), started("wf-2")]),
+		["wf-2"],
+	);
+	check("no workflow traffic -> none", orphanedRunIds([{ type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } }]), []);
+	check("empty branch -> none", orphanedRunIds([]), []);
+}
+
+console.log("\n--- tool: safeStringify ---");
+{
+	const items = [{ id: 1 }, { id: 2 }];
+	check(
+		"shared reference is NOT a cycle",
+		JSON.parse(safeStringify({ items, best: items[0] })),
+		{ items: [{ id: 1 }, { id: 2 }], best: { id: 1 } },
+	);
+	check(
+		"same object three times serializes fully",
+		JSON.parse(safeStringify([{ v: 7 }, { v: 7 }])),
+		[{ v: 7 }, { v: 7 }],
+	);
+	const cyclic: Record<string, unknown> = { name: "root" };
+	cyclic.self = cyclic;
+	check("true cycle is replaced", JSON.parse(safeStringify(cyclic)), { name: "root", self: "[circular]" });
+	const deep: any = { a: { b: { c: {} } } };
+	deep.a.b.c.back = deep.a;
+	check("deep cycle is replaced", JSON.parse(safeStringify(deep)), { a: { b: { c: { back: "[circular]" } } } });
+	const selfArray: unknown[] = [1];
+	selfArray.push(selfArray);
+	check("array cycle is replaced", JSON.parse(safeStringify(selfArray)), [1, "[circular]"]);
+	check("bigint becomes a string", JSON.parse(safeStringify({ n: 10n })), { n: "10" });
+	check("undefined result", safeStringify(undefined), "(the script returned no value)");
+}
+
+console.log("\n--- panel ---");
+{
+	check("elapsed seconds", formatElapsed(42_000), "42s");
+	check("elapsed minutes", formatElapsed(65_000), "1m05s");
+	check("elapsed hours", formatElapsed(3_720_000), "1h02m");
+	check("no runs -> panel hidden", panelLines([], 0), undefined);
+
+	const progress = newProgress("wf-1", "review");
+	progress.phases.push({ title: "Find", agents: [{ label: "a", status: "done" }, { label: "b", status: "running" }] });
+	progress.usage.cost = 0.1234;
+	const run: WorkflowRun = { progress, controller: new AbortController(), startedAt: 0, settled: Promise.resolve() };
+	const lines = panelLines([run], 65_000)!;
+	check("panel line carries id, phases, cost, elapsed", lines[0], "◆ wf-1 review  Find 1/2  1 running  $0.1234  1m05s");
+	check("panel hint line", lines.at(-1)?.includes("/workflows"), true);
+	check("status report includes finished shape", statusReport([run], 65_000).startsWith("◆ wf-1 review — Find 1/2"), true);
+	check("status report empty message", statusReport([], 0), "No workflows in this session.");
 }
 
 // ------------------------------------------------------------- mode cadence

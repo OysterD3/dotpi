@@ -394,14 +394,32 @@ one retry on unusable output). Each subagent is a headless `pi --mode json -p --
 --no-extensions --no-skills` subprocess in the project directory — pi's own vendor pattern — so a
 wedged agent cannot take down the session, subagents cannot recurse into further workflows, and
 project trust is forwarded (`--approve` only when the parent session trusts the project).
-Concurrency is Claude Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps; subagent
-spend is attached to the tool result as `usage`, so it shows up in `/session` totals.
+Concurrency is Claude Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps.
+
+**Workflows don't block the session.** The tool validates the script, starts the fleet, and
+returns immediately with a run id; the main agent keeps working while a status panel above the
+editor shows each run's phases, agent counts, spend, and elapsed time. `/workflows` lists runs,
+`/workflows cancel <id>` stops one (cancelling interrupts even a sleeping script, and kills its
+subprocesses). When a run settles — finished, failed, or cancelled — its outcome comes back to the
+model as a `workflow-result` message: a follow-up if the agent is mid-turn, a turn of its own if
+the session is idle, so results get processed the way a task notification would. The model can
+pass `wait: true` for the rare workflow whose result it needs before doing anything else; only
+those attach their spend to the tool result as `usage` (a background run's tool result is long
+gone by the time money is spent, so its cost is reported in the result message and `/workflows`
+instead). Runs don't survive a session switch: shutdown cancels the fleet.
+
+**Subagent models are routed in natural language.** Put a standing policy in settings and the
+main agent applies it when authoring scripts, giving each agent a model *reference* that is
+resolved with pi's own `--model` rules (partial names fine, ambiguity is a loud error, aliases
+preferred over dated ids) before anything spawns — a typo fails that one agent with the reason in
+the run log, never silently the wrong model:
 
 ```jsonc
 {
   "ultracode": {
     "keywordTrigger": true,               // optional; Claude Code: workflowKeywordTriggerEnabled
-    "model": "openai-codex/gpt-5.4-mini"  // optional subagent model; default: the session model
+    "model": "gpt-5.4-mini",              // optional default subagent model (a reference, resolved)
+    "models": "use sonnet for implementation, use fable to review"  // optional routing policy
   }
 }
 ```
@@ -425,13 +443,16 @@ always await.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Triggers, `/ultracode`, reminder injection, resume restore |
+| `index.ts` | Triggers, `/ultracode`, `/workflows`, panel wiring, resume restore |
 | `keyword.ts` | **The keyword detector, transcribed from Claude Code** (pure) |
 | `reminders.ts` | **Claude Code's reminder texts, verbatim** |
 | `mode.ts` | The session-mode reminder cadence (pure) |
 | `engine.ts` | The workflow script engine — meta, agent/parallel/pipeline, caps (pure) |
 | `spawn.ts` | One subagent as a headless pi subprocess |
-| `tool.ts` | Tool registration, progress rendering, usage accounting |
+| `runs.ts` | The background run registry — status, cancellation, pruning |
+| `panel.ts` | The status panel and `/workflows` report lines (pure) |
+| `models.ts` | Model references resolved with pi's `--model` rules (pure) |
+| `tool.ts` | Tool registration, background starts, result delivery, rendering |
 | `description.ts` | The tool's LLM-facing contract, adapted from Claude Code |
 | `config.ts` | Claude Code's constants and pi-side limits |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |

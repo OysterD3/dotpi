@@ -360,7 +360,19 @@ export async function runWorkflowScript(
 	const fn = runInNewContext(`(async () => { "use strict";\n${body}\n})`, sandbox, { timeout: 5000 }) as () => Promise<unknown>;
 
 	try {
-		const result = await fn();
+		// Race the body against the abort signal: a cancelled run must settle
+		// promptly even when the script is sleeping rather than awaiting an
+		// agent. The body keeps running as unobserved dead code afterwards
+		// (vm code cannot be preempted), but every later agent() it makes
+		// throws immediately and race()'s subscription keeps its eventual
+		// rejection from surfacing as a host unhandledRejection.
+		const body = fn();
+		const abortedRun = new Promise<never>((_resolve, reject) => {
+			const fail = () => reject(new WorkflowFatalError("workflow aborted"));
+			if (controller.signal.aborted) fail();
+			else controller.signal.addEventListener("abort", fail, { once: true });
+		});
+		const result = await Promise.race([body, abortedRun]);
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
 		return { meta, result, agentCount };
 	} finally {

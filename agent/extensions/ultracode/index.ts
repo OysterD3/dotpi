@@ -5,6 +5,11 @@
  *
  *   1. The `workflow` tool (tool.ts + engine.ts + spawn.ts): a script that
  *      orchestrates headless pi subagents with agent()/parallel()/pipeline().
+ *      Runs are background by default (runs.ts) with a live status panel
+ *      (panel.ts) and /workflows for inspection and cancellation; subagent
+ *      models follow the user's natural-language routing policy
+ *      (ultracode.models) via references resolved with pi's --model rules
+ *      (models.ts).
  *   2. The triggers that opt the model into using it:
  *      - the "ultracode" KEYWORD in a typed prompt opts in that single turn
  *        (detector and reminder text verbatim from the binary; the keyword
@@ -37,7 +42,9 @@ import { Text } from "@earendil-works/pi-tui";
 import { DEFAULT_SETTINGS, ENTRY_TYPE, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
+import { panelLines, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, systemReminder } from "./reminders.ts";
+import { orphanedRunIds, RunRegistry } from "./runs.ts";
 import { registerWorkflowTool } from "./tool.ts";
 
 const BADGE = "✦ ultracode";
@@ -55,6 +62,7 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 		return {
 			keywordTrigger: typeof block?.keywordTrigger === "boolean" ? block.keywordTrigger : DEFAULT_SETTINGS.keywordTrigger,
 			model: typeof block?.model === "string" ? block.model : undefined,
+			models: typeof block?.models === "string" ? block.models : undefined,
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -106,14 +114,60 @@ export function restoreFromBranch(
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	const mode = new UltracodeMode();
-	let settings: UltracodeSettings = { ...DEFAULT_SETTINGS };
+	const registry = new RunRegistry();
+	let settings: UltracodeSettings = loadSettings(agentDir);
 	let keywordThisTurn = false;
 	let settingLevel = false;
 	let previousLevel: string | undefined;
+	/** Background runs a resumed transcript is still waiting on; see below. */
+	let orphanedRuns: string[] = [];
 	/** The level ultracode actually applied ("xhigh", or "max" when clamped up). */
 	let appliedLevel: string | undefined;
 
-	registerWorkflowTool(pi, { subagentModel: () => settings.model });
+	// ------------------------------------------------------------ status panel
+
+	/** The freshest context whose ui the panel can draw through. */
+	let uiCtx: ExtensionContext | undefined;
+	let panelTimer: ReturnType<typeof setInterval> | undefined;
+
+	const stopPanelTimer = () => {
+		if (!panelTimer) return;
+		clearInterval(panelTimer);
+		panelTimer = undefined;
+	};
+
+	const drawPanel = () => {
+		// Every field of a context belonging to a replaced session throws
+		// (pi's getters call assertActive), and this runs from timers and from
+		// run-settled callbacks that can outlive the session — an escape here
+		// would take the process down. A dead context simply stops drawing.
+		try {
+			if (!uiCtx?.hasUI) return;
+			const lines = panelLines(registry.active(), Date.now());
+			uiCtx.ui.setWidget("workflows", lines);
+			// Tick while runs are active so elapsed times move; stop when quiet.
+			if (lines && !panelTimer) {
+				panelTimer = setInterval(drawPanel, 2000);
+				(panelTimer as { unref?: () => void }).unref?.();
+			} else if (!lines) {
+				stopPanelTimer();
+			}
+		} catch {
+			uiCtx = undefined;
+			stopPanelTimer();
+		}
+	};
+
+	// Re-registering replaces the tool in place; done whenever settings change
+	// so the description carries the user's current model-routing policy.
+	const registerTool = () =>
+		registerWorkflowTool(pi, {
+			registry,
+			subagentModel: () => settings.model,
+			modelPolicy: settings.models,
+			onRunEvent: drawPanel,
+		});
+	registerTool();
 
 	pi.registerEntryRenderer<ToggleEntry>(ENTRY_TYPE, (entry, _options, theme) =>
 		entry.data ? new Text(theme.fg("accent", `✦ ultracode ${entry.data.action}`), 0, 0) : undefined,
@@ -125,10 +179,27 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		settings = loadSettings(agentDir);
+		registerTool(); // refresh the description's model-routing policy
+		uiCtx = ctx;
 		keywordThisTurn = false;
-		previousLevel = restoreFromBranch(mode, ctx.sessionManager.getBranch() as Array<Record<string, any>>);
+		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
+		previousLevel = restoreFromBranch(mode, branch);
 		appliedLevel = mode.isOn() ? pi.getThinkingLevel() : undefined;
+		// Background runs do not survive a session ending. The transcript told
+		// the model to wait for their results, so the correction has to be said
+		// out loud — otherwise it waits for a message that can never arrive.
+		orphanedRuns = orphanedRunIds(branch);
 		setBadge(ctx);
+		drawPanel();
+	});
+
+	// Runs cannot outlive their session: subprocesses die with the abort. The
+	// context is dropped here too — it becomes unusable the moment the session
+	// is replaced, and cancelled runs settle after this point.
+	pi.on("session_shutdown", () => {
+		registry.cancelAll();
+		stopPanelTimer();
+		uiCtx = undefined;
 	});
 
 	// Claude Code scans the text as typed, before any command expansion, and
@@ -144,10 +215,18 @@ export default function (pi: ExtensionAPI) {
 
 	// Reminders ride the turn as one hidden custom message, in Claude Code's
 	// attachment order: keyword first, then the session-mode reminder.
-	pi.on("before_agent_start", () => {
+	pi.on("before_agent_start", (_event, ctx) => {
+		uiCtx = ctx;
 		const parts: string[] = [];
 		if (keywordThisTurn && settings.keywordTrigger) parts.push(KEYWORD_REMINDER);
 		keywordThisTurn = false;
+		if (orphanedRuns.length > 0) {
+			const ids = orphanedRuns.join(", ");
+			parts.push(
+				`The background workflow${orphanedRuns.length === 1 ? "" : "s"} ${ids} did not survive the end of the previous session, so ${orphanedRuns.length === 1 ? "its result message will" : "their result messages will"} never arrive. Do not keep waiting for ${orphanedRuns.length === 1 ? "it" : "them"}: start the work again if it is still needed.`,
+			);
+			orphanedRuns = [];
+		}
 		const modeReminder = mode.reminderForTurn();
 		if (modeReminder) parts.push(modeReminder);
 		if (parts.length === 0) return;
@@ -231,6 +310,35 @@ export default function (pi: ExtensionAPI) {
 		appliedLevel = undefined;
 		setBadge(ctx);
 	};
+
+	pi.registerCommand("workflows", {
+		description: "Show background workflow runs, or cancel one (/workflows cancel <id>)",
+		getArgumentCompletions: (prefix: string) => {
+			const options = ["cancel", ...registry.active().map((run) => `cancel ${run.progress.runId}`)];
+			return options.filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value }));
+		},
+		handler: async (args: string, ctx) => {
+			uiCtx = ctx;
+			const [verb, target] = args.trim().split(/\s+/);
+			if (verb === "cancel") {
+				if (!target) {
+					const count = registry.cancelAll();
+					ctx.ui.notify(count > 0 ? `Cancelling ${count} workflow${count === 1 ? "" : "s"}` : "No running workflows.", "info");
+					return;
+				}
+				const outcome = registry.cancel(target);
+				if (outcome === "cancelled") ctx.ui.notify(`Cancelling ${target}`, "info");
+				else if (outcome === "not-running") ctx.ui.notify(`${target} already finished.`, "info");
+				else ctx.ui.notify(`No workflow ${target}. /workflows lists them.`, "error");
+				return;
+			}
+			if (verb) {
+				ctx.ui.notify(`Invalid argument: ${verb}. Usage: /workflows [cancel [id]]`, "error");
+				return;
+			}
+			ctx.ui.notify(statusReport(registry.all(), Date.now()), "info");
+		},
+	});
 
 	pi.registerCommand("ultracode", {
 		description: "Toggle ultracode: xhigh thinking + standing workflow orchestration",
