@@ -44,7 +44,8 @@ export default function (pi: ExtensionAPI) {
 		const has = active.includes(TOOL_NAME);
 		if (configured && !has) pi.setActiveTools([...new Set([...active, TOOL_NAME])]);
 		else if (!configured && has) pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
-		if (ctx.hasUI) ctx.ui.setStatus("subagents", configured ? `✦ subagents: ${settings.agents.length}` : undefined);
+		// No status chip: clear any a prior version left on the bar.
+		if (ctx.hasUI) ctx.ui.setStatus("subagents", undefined);
 	};
 
 	/** Reload from disk, refresh the tool's listing, and re-sync activation. */
