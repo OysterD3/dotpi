@@ -8,11 +8,12 @@
  * file read.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	DEFAULT_SETTINGS,
 	SETTINGS_KEY,
+	STORE_FILE,
 	type SubagentDef,
 	type SubagentDefaults,
 	type SubagentsSettings,
@@ -21,7 +22,14 @@ import {
 
 export interface ParseResult {
 	settings: SubagentsSettings;
+	/** "store" = agent/subagents.json, "settings" = the settings.json fallback, "none" = neither. */
+	source: "store" | "settings" | "none";
 	issues: string[];
+}
+
+/** Absolute path of the pi-managed store file. */
+export function storePath(agentDir: string): string {
+	return join(agentDir, STORE_FILE);
 }
 
 function asString(value: unknown): string | undefined {
@@ -57,7 +65,12 @@ function parseDefaults(raw: unknown, issues: string[]): SubagentDefaults {
 	};
 }
 
-export function parseSubagents(raw: unknown): ParseResult {
+export interface Parsed {
+	settings: SubagentsSettings;
+	issues: string[];
+}
+
+export function parseSubagents(raw: unknown): Parsed {
 	const issues: string[] = [];
 	if (!raw || typeof raw !== "object") return { settings: { ...DEFAULT_SETTINGS }, issues };
 	const block = raw as Record<string, unknown>;
@@ -107,13 +120,57 @@ export function parseSubagents(raw: unknown): ParseResult {
 	return { settings: { defaults, agents }, issues };
 }
 
+/**
+ * Load the subagents, file first. The pi-managed agent/subagents.json wins; if
+ * it is absent the settings.json `subagents` block is read as a fallback (so
+ * manually-authored config and anything that predates the store still work). A
+ * present-but-malformed store is reported, not silently bypassed.
+ */
 export function loadSubagents(agentDir: string): ParseResult {
+	const path = storePath(agentDir);
+	if (existsSync(path)) {
+		try {
+			const raw = JSON.parse(readFileSync(path, "utf8"));
+			const parsed = parseSubagents(raw);
+			return { ...parsed, source: "store" };
+		} catch {
+			return { settings: { ...DEFAULT_SETTINGS }, source: "store", issues: [`${STORE_FILE} is not valid JSON — fix it or remove it`] };
+		}
+	}
 	try {
 		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		return parseSubagents(raw?.[SETTINGS_KEY]);
+		if (raw?.[SETTINGS_KEY] !== undefined) {
+			const parsed = parseSubagents(raw[SETTINGS_KEY]);
+			return { ...parsed, source: "settings" };
+		}
 	} catch {
-		return { settings: { ...DEFAULT_SETTINGS }, issues: [] };
+		/* no readable settings.json — treat as no config */
 	}
+	return { settings: { ...DEFAULT_SETTINGS }, source: "none", issues: [] };
+}
+
+/** Serialize a subagent, omitting empty optional fields for a clean store file. */
+function cleanAgent(agent: SubagentDef): Record<string, unknown> {
+	const out: Record<string, unknown> = { name: agent.name };
+	if (agent.model) out.model = agent.model;
+	if (agent.reasoning) out.reasoning = agent.reasoning;
+	out.purpose = agent.purpose;
+	if (agent.tools && agent.tools.length > 0) out.tools = agent.tools;
+	if (agent.prompt) out.prompt = agent.prompt;
+	return out;
+}
+
+/** Write the block to agent/subagents.json (pretty, trailing newline, git-friendly). */
+export function saveSubagents(agentDir: string, settings: SubagentsSettings): void {
+	const out: Record<string, unknown> = {};
+	if (settings.defaults.model || settings.defaults.reasoning) {
+		const defaults: Record<string, unknown> = {};
+		if (settings.defaults.model) defaults.model = settings.defaults.model;
+		if (settings.defaults.reasoning) defaults.reasoning = settings.defaults.reasoning;
+		out.defaults = defaults;
+	}
+	out.agents = settings.agents.map(cleanAgent);
+	writeFileSync(storePath(agentDir), `${JSON.stringify(out, null, 2)}\n`);
 }
 
 /** The model/reasoning a subagent will actually run with, applying defaults. */

@@ -1,0 +1,39 @@
+{
+  "defaults": {
+    "model": "gpt-5.6-luna",
+    "reasoning": "high"
+  },
+  "agents": [
+    {
+      "name": "code-explorer",
+      "reasoning": "high",
+      "purpose": "Read-only codebase discovery and investigation",
+      "tools": ["read", "grep", "find", "ls"]
+    },
+    {
+      "name": "quick-implementer",
+      "reasoning": "high",
+      "purpose": "Small, well-defined changes in one or two files",
+      "tools": ["read", "grep", "find", "ls", "edit", "write", "bash"]
+    },
+    {
+      "name": "implementer",
+      "reasoning": "high",
+      "purpose": "Features and bug fixes with tests and validation",
+      "tools": ["read", "grep", "find", "ls", "edit", "write", "bash"]
+    },
+    {
+      "name": "code-reviewer",
+      "model": "gpt-5.6-sol",
+      "reasoning": "low",
+      "purpose": "Review diffs for correctness, security, and quality",
+      "tools": ["read", "grep", "find", "ls", "bash"]
+    },
+    {
+      "name": "commit-pusher",
+      "reasoning": "low",
+      "purpose": "Stage, commit, and push completed changes",
+      "tools": ["read", "bash"]
+    }
+  ]
+}

@@ -13,8 +13,15 @@
  * workflow uses, here driven by standing definitions instead of a script.
  */
 
-/** settings.json key for the subagents block. */
+/** settings.json key for the subagents block (a read fallback for manual config). */
 export const SETTINGS_KEY = "subagents";
+
+/**
+ * The file pi manages through /subagents. It holds the whole block
+ * ({ defaults, agents }) and takes precedence over the settings.json fallback,
+ * so interactive edits never churn settings.json.
+ */
+export const STORE_FILE = "subagents.json";
 
 /** The dispatch tool name (Claude Code's is `Task`; pi has no built-in `task`). */
 export const TOOL_NAME = "task";

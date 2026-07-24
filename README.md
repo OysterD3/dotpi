@@ -617,33 +617,39 @@ commit-pusher      gpt-5.6-luna  Low        Stage, commit, and push completed ch
 Each subagent runs as a headless `pi` subprocess with its `--model`, `--thinking` (the reasoning
 level), and `--tools` (the allowlist), plus its role prompt via `--append-system-prompt` — the same
 spawn mechanism the ultracode workflow uses, here driven by standing definitions instead of a script.
-A subagent that pins no model inherits the session model; `subagents.defaults` supplies a shared
+A subagent that pins no model inherits the session model; `defaults` supplies a shared
 model/reasoning for the ones that omit them. The `task` tool is offered only when at least one
 subagent is configured (active-tool sync, like the advisor), so an empty config adds nothing to the
 prompt, and its description lists the available subagents so the model knows what it can delegate to.
 
-Definitions live in `agent/settings.json` so they travel with the rest of this config. A bad entry
-is dropped with a reason (shown under `/subagents`), not fatal — one typo does not disable the rest.
+**Configure inside pi, not by hand.** `/subagents add | edit | remove` walks through pi's dialogs —
+name, model (picked from your registry), reasoning, purpose, tools (all / read-only / custom), and an
+optional role prompt — and writes `agent/subagents.json`. That file is the source of truth and takes
+precedence over a `subagents` block in `settings.json`, which is kept only as a read fallback for
+manual or legacy config; the first interactive edit migrates such a block into the store. A bad entry
+is dropped with a reason (shown under `/subagents`), never fatal. The store ships seeded with the set
+below — edit or clear it with `/subagents`:
 
 ```jsonc
+// agent/subagents.json — managed by /subagents (pretty-printed, git-friendly)
 {
-  "subagents": {
-    "defaults": { "model": "gpt-5.6-luna", "reasoning": "high" },   // optional; applied to agents that omit them
-    "agents": [
-      { "name": "code-explorer", "reasoning": "high", "tools": ["read", "grep", "find", "ls"],
-        "purpose": "Read-only codebase discovery and investigation" },
-      { "name": "code-reviewer", "model": "gpt-5.6-sol", "reasoning": "low",
-        "purpose": "Review diffs for correctness, security, and quality" }
-    ]
-  }
+  "defaults": { "model": "gpt-5.6-luna", "reasoning": "high" },
+  "agents": [
+    { "name": "code-explorer", "reasoning": "high", "tools": ["read", "grep", "find", "ls"],
+      "purpose": "Read-only codebase discovery and investigation" },
+    { "name": "code-reviewer", "model": "gpt-5.6-sol", "reasoning": "low", "tools": ["read", "grep", "find", "ls", "bash"],
+      "purpose": "Review diffs for correctness, security, and quality" }
+    // …
+  ]
 }
 ```
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Load, tool registration, active-tool sync, `/subagents`, status chip |
+| `index.ts` | Load, tool registration, active-tool sync, `/subagents add\|edit\|remove`, status chip |
+| `manage.ts` | The interactive wizard over pi's dialogs (pure of pi imports; scriptable in tests) |
 | `tool.ts` | The `task` dispatch tool: validate, resolve the pinned model, spawn, return the report + usage |
-| `registry.ts` | Parse and validate the definitions; apply defaults (pure) |
+| `registry.ts` | Parse/validate the definitions, the file-first store (`subagents.json`), and its save (pure) |
 | `panel.ts` | The Subagent / Model / Reasoning / Purpose table (pure) |
 | `models.ts` | Model reference resolution (pure) |
 | `spawn.ts` | The headless `pi` subagent subprocess (model, reasoning, tools, role prompt) |
