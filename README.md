@@ -724,6 +724,43 @@ which is expected here.
 | `config.ts` | Settings and the tool list |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
 
+**`agent/extensions/memory/`** — gives pi memory by reading Claude Code's.
+
+Claude Code keeps per-project memory in `~/.claude/projects/<slug>/memory/`: a `MEMORY.md` index it
+loads into context each session, plus per-fact markdown files with YAML frontmatter
+(`name` / `description` / `type`, body with **Why:** / **How to apply:**). This finds the store that
+matches pi's current project — by the same `cwd → slug` encoding Claude Code uses (every
+non-alphanumeric char becomes `-`, so `/Users/me/.pi` → `-Users-me--pi`, with an underscore-preserving
+fallback) — reads the index and facts, and **appends them to pi's system prompt** each turn (via
+`before_agent_start`, so it's cached, not resent as a message). A global `~/.claude/CLAUDE.md` is
+folded in when present. pi already loads project `CLAUDE.md`/`AGENTS.md` as context files, so those
+aren't touched — this adds the dedicated memory store on top.
+
+`/memory` shows what's loaded and from where; `/memory show` prints the block; `/memory reload`
+re-reads. Verified against a real store (an 8-fact project loaded cleanly at 10.5 KB).
+
+Reading Claude Code's memory is the "for a start" scope; writing pi's own memory can layer on later
+over the same format and location.
+
+```jsonc
+{
+  "memory": {
+    "enabled": true,        // optional; master switch
+    "includeFacts": true,   // optional; full fact bodies, not just the MEMORY.md index
+    "maxChars": 24000,      // optional; budget for the injected block (oldest facts dropped past it)
+    "claudeHome": "~/.claude" // optional; where Claude Code's store lives
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Load on session start, append to the system prompt, `/memory`, status chip |
+| `locate.ts` | `cwd → slug` and finding the matching memory directory (pure) |
+| `load.ts` | Read MEMORY.md + fact files, parse frontmatter, budgeted assembly (pure) |
+| `config.ts` | Settings and the injected-block header |
+| `memory.test.ts` | Locating, parsing, assembly, settings, and wiring coverage |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
