@@ -655,6 +655,38 @@ below — edit or clear it with `/subagents`:
 | `spawn.ts` | The headless `pi` subagent subprocess (model, reasoning, tools, role prompt) |
 | `subagents.test.ts` | Unit and wiring coverage (`subagents.live.ts` spawns a real subagent) |
 
+**`agent/extensions/self-update/`** — keeps a machine current by pulling this repo in the background
+at session start, so once a device has cloned it stays up to date with no manual step.
+
+Because `~/.pi` **is** the git repo, "update" is a `git pull` in its root. On session start (interactive
+only — headless subagents load no extensions), throttled to `intervalHours` across launches via a
+gitignored timestamp, it runs `git pull --rebase --autostash` fire-and-forget and notifies **only when
+HEAD actually moved** (`pi config updated (N new commits) — restart pi or /reload to apply`). New code
+applies on the next launch or `/reload`.
+
+`--rebase --autostash` is what makes it safe on a machine that edits its own config: pi rewrites
+`settings.json` at runtime, so the tree is usually dirty; autostash tucks those changes aside, pulls,
+and reapplies them. If the pull fails (offline, or a real conflict) the rebase is aborted so the tree
+is left clean, and the run stays silent — a stale checkout beats a nagging banner or a half-rebased
+repo. It's disabled where it can't help (no `pi.exec`, non-interactive) and can be turned off entirely.
+
+```jsonc
+{
+  "selfUpdate": {
+    "enabled": true,       // optional; master switch
+    "intervalHours": 6     // optional; 0 = check every start
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | session_start gating (interactive, enabled, throttled) and the fire-and-forget run |
+| `update.ts` | resolve root → remember HEAD → pull → report only if HEAD moved; abort on failure (pure of pi) |
+| `state.ts` | the throttle timestamp and `isDue` (pure) |
+| `config.ts` | defaults and constants |
+| `self-update.test.ts` | Throttle, settings, the flow against scripted git, and session_start gating |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
@@ -666,18 +698,38 @@ built-in dotenv support.
 | `load.ts` | File discovery, permission check, applying to `process.env` |
 
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
-and `agent/skills/` (symlinks into `~/.agents/skills`, which is shared with other agents and lives elsewhere).
+`agent/skills/` (symlinks into `~/.agents/skills`, shared with other agents and living elsewhere), and
+`agent/settings.json` — because pi rewrites it at runtime (thinking level, model, `lastChangelogVersion`),
+so tracking it would churn and fight `git pull`. The tracked `agent/settings.example.json` is the
+template; copy it per machine. The shared permissions policy lives in that template.
 
 ## Install on a new machine
 
 ```sh
-git clone https://github.com/OysterD3/dotpi.git ~/.pi
+# 1. Clone this config into place (it IS ~/.pi, with agent/ inside)
+git clone git@github.com:OysterD3/dotpi.git ~/.pi     # or https://github.com/OysterD3/dotpi.git
+
+# 2. Create the per-machine settings from the template
+cp ~/.pi/agent/settings.example.json ~/.pi/agent/settings.json
+
+# 3. Authenticate this machine (auth.json is gitignored — each machine logs in itself)
+pi          # then /login;  and set up agent/.env from agent/.env.example if you use web-search
 ```
 
-If `~/.pi` already exists, clone elsewhere and copy `agent/themes`, `agent/extensions`,
-and whatever you want out of `agent/settings.json` into your own `~/.pi/agent/`.
+If `~/.pi` already exists (pi created it), move it aside first — `mv ~/.pi ~/.pi.bak` — then clone and
+copy your machine-local `agent/auth.json` and `agent/.env` back in.
 
 Extensions and themes are picked up automatically by filename — no registration step.
+
+**Staying in sync.** The `self-update` extension pulls this repo in the background at startup, so a
+cloned machine keeps itself current (see its section above). To update by hand, or on demand:
+
+```sh
+git -C ~/.pi pull --rebase --autostash    # then restart pi or /reload
+```
+
+Model, thinking level, and other per-machine settings stay local (untracked `settings.json`); shared
+things — extensions, themes, the permissions policy template, subagents — travel with the repo.
 
 ## Customising
 
