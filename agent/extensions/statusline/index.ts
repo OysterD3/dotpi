@@ -116,12 +116,10 @@ export default function (pi: ExtensionAPI) {
 						);
 					}
 
-					// Statuses set by other extensions via ctx.ui.setStatus(). The built-in
-					// footer shows these; a custom footer replaces it entirely, so without
-					// this they would silently vanish (e.g. /goal's active indicator).
-					for (const status of footerData.getExtensionStatuses().values()) {
-						if (status) parts1.push(paint(theme, CONFIG.colors.status, status));
-					}
+					// Extension status chips (set via ctx.ui.setStatus()) are deliberately
+					// NOT rendered: the footer ends at the git segment. A custom footer
+					// replaces the built-in one, so simply not drawing them here hides
+					// every extension's chip at once, present and future.
 
 					if (version) parts1.push(paint(theme, CONFIG.colors.version, `v${version}`));
 					const line1 = parts1.join(paint(theme, CONFIG.colors.separator, "  │  "));
