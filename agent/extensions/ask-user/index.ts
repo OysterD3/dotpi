@@ -53,7 +53,9 @@ export default function (pi: ExtensionAPI) {
 		const has = tools.includes(TOOL_NAME);
 		if (active && !has) pi.setActiveTools([...new Set([...tools, TOOL_NAME])]);
 		else if (!active && has) pi.setActiveTools(tools.filter((name) => name !== TOOL_NAME));
-		if (ctx.hasUI) ctx.ui.setStatus("ask-user", active ? "✦ ask-user" : undefined);
+		// No status chip: whether ask_user is available is not worth a permanent
+		// footer slot. Clear any chip a prior version left behind.
+		if (ctx.hasUI) ctx.ui.setStatus("ask-user", undefined);
 		return active;
 	};
 
