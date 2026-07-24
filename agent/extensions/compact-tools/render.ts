@@ -68,10 +68,6 @@ export function callLine(name: string, args: Record<string, unknown>, theme: The
 		}
 		case "bash":
 			return `${title("$ ")}${theme.fg("accent", elide(String(args.command ?? ""), CONFIG.callMaxChars))}`;
-		case "edit":
-			return `${title("edit ")}${path(args.path)}`;
-		case "write":
-			return `${title("write ")}${path(args.path)}${theme.fg("dim", ` (${String(args.content ?? "").split("\n").length} lines)`)}`;
 		case "grep": {
 			let text = `${title("grep ")}${theme.fg("accent", elide(String(args.pattern ?? ""), CONFIG.callMaxChars))}`;
 			if (args.path) text += theme.fg("dim", ` in ${args.path}`);
@@ -115,21 +111,6 @@ export function resultLine(name: string, result: Result, expanded: boolean, them
 			head += theme.fg("dim", ` (${lines} line${lines === 1 ? "" : "s"})`);
 			return withDetail(head, text, expanded, theme, expandedLines);
 		}
-		case "edit": {
-			const diff = (result.details as { diff?: string })?.diff;
-			if (!diff) return theme.fg("success", "applied");
-			const diffLines = diff.split("\n");
-			let adds = 0;
-			let dels = 0;
-			for (const line of diffLines) {
-				if (line.startsWith("+") && !line.startsWith("+++")) adds++;
-				if (line.startsWith("-") && !line.startsWith("---")) dels++;
-			}
-			const head = `${theme.fg("success", `+${adds}`)}${theme.fg("dim", " / ")}${theme.fg("error", `-${dels}`)}`;
-			return withDetail(head, diff, expanded, theme, expandedLines, "dim");
-		}
-		case "write":
-			return theme.fg("success", "written");
 		case "grep":
 		case "find":
 		case "ls": {

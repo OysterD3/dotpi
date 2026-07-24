@@ -1,7 +1,8 @@
 /**
  * Tests for compact-tools: the pure summary builders (call and result lines,
  * collapsed and expanded), settings parsing, and the wiring against a fake pi
- * (registers all seven built-ins when enabled, none when disabled).
+ * (registers the five read-only/exec built-ins when enabled — write and edit are
+ * left to pi's own renderers — and none when disabled).
  *
  * Run: jiti agent/extensions/compact-tools/compact-tools.test.ts
  */
@@ -42,8 +43,6 @@ check("read shows the path", callLine("read", { path: "src/foo.ts" }, T), "read 
 check("read shows offset/limit", callLine("read", { path: "a.ts", offset: 5, limit: 10 }, T), "read a.ts (offset=5, limit=10)");
 check("bash shows the command", callLine("bash", { command: "pnpm test" }, T), "$ pnpm test");
 checkTrue("bash elides a very long command", callLine("bash", { command: "x".repeat(300) }, T).endsWith("…"));
-check("edit shows the path", callLine("edit", { path: "a.ts" }, T), "edit a.ts");
-check("write shows path and line count", callLine("write", { path: "a.ts", content: "l1\nl2\nl3" }, T), "write a.ts (3 lines)");
 check("grep shows pattern and path", callLine("grep", { pattern: "TODO", path: "src" }, T), "grep TODO in src");
 check("ls shows the path", callLine("ls", { path: "src" }, T), "ls src");
 check("ls defaults path to .", callLine("ls", {}, T), "ls .");
@@ -59,9 +58,6 @@ check("read notes truncation", resultLine("read", textResult("a\nb", { truncatio
 check("read shows image", resultLine("read", { content: [{ type: "image" }] }, false, T, 100), "image");
 check("bash success", resultLine("bash", textResult("out1\nout2\nexit code: 0"), false, T, 100), "done (3 lines)");
 check("bash non-zero exit", resultLine("bash", textResult("boom\nexit code: 2"), false, T, 100), "exit 2 (2 lines)");
-check("edit diff stats", resultLine("edit", textResult("done", { diff: "--- a\n+++ b\n+added one\n+added two\n-removed" }), false, T, 100), "+2 / -1");
-check("edit with no diff", resultLine("edit", textResult("ok", {}), false, T, 100), "applied");
-check("write", resultLine("write", textResult("Wrote 10 bytes"), false, T, 100), "written");
 check("grep plural", resultLine("grep", textResult("a.ts:1:x\nb.ts:2:y"), false, T, 100), "2 matches");
 check("grep singular", resultLine("grep", textResult("a.ts:1:x"), false, T, 100), "1 match");
 check("find plural", resultLine("find", textResult("a\nb\nc"), false, T, 100), "3 results");
@@ -107,7 +103,7 @@ function makePi() {
 	writeSettings({});
 	const h = makePi();
 	extension(h.pi as never);
-	check("registers all seven built-ins", h.tools.map((t) => t.name).sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+	check("registers the five compacted built-ins (not write/edit)", h.tools.map((t) => t.name).sort(), ["bash", "find", "grep", "ls", "read"]);
 	checkTrue("each has compact render + delegated execute", h.tools.every((t) => typeof t.renderCall === "function" && typeof t.renderResult === "function" && typeof t.execute === "function"));
 
 	// renderResult returns a real component that renders text.

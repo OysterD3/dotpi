@@ -687,22 +687,27 @@ repo. It's disabled where it can't help (no `pi.exec`, non-interactive) and can 
 | `config.ts` | defaults and constants |
 | `self-update.test.ts` | Throttle, settings, the flow against scripted git, and session_start gating |
 
-**`agent/extensions/compact-tools/`** — one-line tool rows; detail on demand.
+**`agent/extensions/compact-tools/`** — one-line rows for the noisy tools; detail on demand.
 
 pi already collapses tool output and expands it with **ctrl+o** ("Toggle tool output"), but the
-collapsed view still shows up to ~10 lines per call. This shrinks every built-in tool to a **single
-summary line** when collapsed, and shows the detail only once the row is expanded:
+collapsed view still shows up to ~10 lines per call. This shrinks the **read-only / exec** built-ins
+to a **single summary line** when collapsed, and shows the detail only once the row is expanded:
 
 ```
 read src/foo.ts            42 lines
 $ pnpm test                done (18 lines)
-edit src/foo.ts            +12 / -3
 grep TODO in src           7 matches
+ls src                     9 entries
 ```
 
-It re-registers each built-in (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) under its own
-name, **delegates execution unchanged** to the original SDK tool (`create*Tool`), and replaces only
-the rendering — the pattern from pi's own `examples/extensions/built-in-tool-renderer.ts`. Execution,
+**`write` and `edit` are left alone on purpose** — their whole point is the change they make, so
+pi's own renderers stay in place: a write shows a syntax-highlighted preview of the new file
+(`Wrote 96 lines …`, then `… +86 lines`), and an edit shows its coloured `+`/`-` diff. Compacting is
+only for tools whose output is context to skim, not a change to see.
+
+It re-registers each compacted built-in (`read`, `bash`, `grep`, `find`, `ls`) under its own name,
+**delegates execution unchanged** to the original SDK tool (`create*Tool`), and replaces only the
+rendering — the pattern from pi's own `examples/extensions/built-in-tool-renderer.ts`. Execution,
 diffs, the file-mutation queue: all untouched. Press **ctrl+o** to expand a row (the summaries then
 show up to `expandedLines` of detail). One honest limitation: pi has no mouse handling, so expansion
 is the keypress, not a click; and pi prints a one-time startup warning when a built-in is overridden,
@@ -719,9 +724,9 @@ which is expected here.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Re-registers the seven built-ins, delegating execute; wires the compact renderers |
+| `index.ts` | Re-registers the five compacted built-ins, delegating execute; wires the compact renderers |
 | `render.ts` | The per-tool call/result summary strings, collapsed and expanded (pure) |
-| `config.ts` | Settings and the tool list |
+| `config.ts` | Settings and the tool list (write/edit excluded) |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
 
 **`agent/extensions/memory/`** — gives pi memory by reading Claude Code's.
