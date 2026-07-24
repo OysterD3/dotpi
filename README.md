@@ -467,6 +467,46 @@ always await.
 | `config.ts` | Claude Code's constants and pi-side limits |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
 
+**`agent/extensions/elapsed/`** — how long the agent has been working, and how long it took.
+
+pi's working row says only `⠋ Working...`, which tells you nothing about whether that has been true
+for two seconds or two minutes, and nothing records the cost of a turn once it finishes. Both are
+filled in, modelled on Claude Code:
+
+```
+⠋ Working... 1m 4s          while the agent runs, updated once a second
+✻ Cooked for 1m 4s          when the turn settles, dimmed, in the transcript
+```
+
+The duration format is transcribed from Claude Code's `formatDuration`, so the two read alike: a
+hard cut at one minute, seconds **floored** below it (a ticking counter never shows a second that
+has not fully passed) and **rounded with carry** above it, and days never showing seconds. The
+end-of-turn verb is drawn from Claude Code's own pool — Baked, Brewed, Churned, Cogitated, Cooked,
+Crunched, Sautéed, Worked.
+
+That line is a display-only custom entry, so it stays in your scrollback and never enters the
+model's context: how long a turn took is information for you, not for it. Timing runs from the
+first `agent_start` to `agent_settled`, which is the true end of a run — after retries, compaction,
+and queued continuations — so a turn interrupted by a compaction is reported as one turn, not two.
+
+```jsonc
+{
+  "elapsed": {
+    "workingTimer": true,      // optional; the live counter
+    "showTurnDuration": true,  // optional; Claude Code's key name for the end-of-turn line
+    "minTurnMs": 0             // optional; skip the line for turns shorter than this
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Turn timing, the tick, and the settings block |
+| `duration.ts` | **Claude Code's `formatDuration`, transcribed** (pure) |
+| `render.ts` | The end-of-turn line and its verb pool (pure) |
+| `config.ts` | Tick period and Claude Code's constants |
+| `elapsed.test.ts` | Unit and wiring coverage |
+
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
 blocked waiting for your approval, so a permission prompt in a pane you are not looking at raises
 the session's "needs input" chip and a banner instead of waiting silently.
