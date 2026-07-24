@@ -120,6 +120,19 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
+		// Announced only once a human is certain to be blocked — after the grant
+		// and no-UI paths have had their say. Anything wanting to surface the
+		// wait (the cmux bridge, a desktop notifier) subscribes to this rather
+		// than reimplementing the decision.
+		pi.events.emit("permissions:ask", {
+			tool: event.toolName,
+			target,
+			reason: decision.reason,
+			findings: findings.map((finding) => finding.id),
+			sessionId: ctx.sessionManager.getSessionId() ?? undefined,
+			cwd: ctx.cwd,
+		});
+
 		const options = buildOptions(event.toolName, target, decision);
 		const choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label));
 		const picked = options.find((option) => option.label === choice);

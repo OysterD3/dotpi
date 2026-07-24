@@ -467,6 +467,40 @@ always await.
 | `config.ts` | Claude Code's constants and pi-side limits |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
 
+**`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
+blocked waiting for your approval, so a permission prompt in a pane you are not looking at raises
+the session's "needs input" chip and a banner instead of waiting silently.
+
+cmux installs its own bridge at `agent/extensions/cmux-session.ts`, which reports session start,
+prompt submit, and stop — but not the one state worth interrupting you for. cmux's own docs list pi
+as having no approval integration; this fills that gap. It is a separate extension deliberately:
+cmux's file says "DO NOT EDIT MANUALLY", and that is true — the file on disk is byte-for-byte a
+template embedded in the cmux binary, rewritten on install, so an edit there would disappear on the
+next upgrade. This one is yours and survives.
+
+The coupling goes through pi's inter-extension event bus, not through cmux: `permissions` announces
+`permissions:ask` at the moment a human is certain to be blocked (after grants and the headless
+fallback have had their say), knowing nothing about cmux, and this extension translates that into a
+`cmux hooks pi notification`. Anything else wanting the same signal — a desktop notifier, a webhook —
+subscribes to the same channel. It sends asynchronously, unlike cmux's own `spawnSync` bridge, since
+this is the one place in pi where a subprocess would sit in front of a waiting human. Gating matches
+cmux's file exactly: nothing happens outside a cmux surface (`CMUX_SURFACE_ID`), and
+`CMUX_PI_HOOKS_DISABLED=1` silences both.
+
+Verified against the shipped cmux binary: `notification_type: "permission_prompt"` is load-bearing —
+without it you get an "Attention" banner and the session stays marked *running*. One honest
+limitation: nothing re-marks the session as running once you answer. cmux exposes no event that
+clears the flag (a second `prompt-submit` appears to work but unbalances cmux's own depth counter and
+leaves the session wedged as busy — measured), so the chip clears when the turn ends and cmux's
+bridge sends `stop`.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Bus subscription and the fire-and-forget send |
+| `notify.ts` | Payload and banner text (pure) |
+| `config.ts` | The cmux protocol constants and env-var names |
+| `cmux-notify.test.ts` | Unit and wiring coverage |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
