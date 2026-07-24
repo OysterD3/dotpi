@@ -687,6 +687,43 @@ repo. It's disabled where it can't help (no `pi.exec`, non-interactive) and can 
 | `config.ts` | defaults and constants |
 | `self-update.test.ts` | Throttle, settings, the flow against scripted git, and session_start gating |
 
+**`agent/extensions/compact-tools/`** — one-line tool rows; detail on demand.
+
+pi already collapses tool output and expands it with **ctrl+o** ("Toggle tool output"), but the
+collapsed view still shows up to ~10 lines per call. This shrinks every built-in tool to a **single
+summary line** when collapsed, and shows the detail only once the row is expanded:
+
+```
+read src/foo.ts            42 lines
+$ pnpm test                done (18 lines)
+edit src/foo.ts            +12 / -3
+grep TODO in src           7 matches
+```
+
+It re-registers each built-in (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) under its own
+name, **delegates execution unchanged** to the original SDK tool (`create*Tool`), and replaces only
+the rendering — the pattern from pi's own `examples/extensions/built-in-tool-renderer.ts`. Execution,
+diffs, the file-mutation queue: all untouched. Press **ctrl+o** to expand a row (the summaries then
+show up to `expandedLines` of detail). One honest limitation: pi has no mouse handling, so expansion
+is the keypress, not a click; and pi prints a one-time startup warning when a built-in is overridden,
+which is expected here.
+
+```jsonc
+{
+  "compactTools": {
+    "enabled": true,        // optional; false restores pi's default rendering
+    "expandedLines": 100    // optional; lines of detail shown when a row is expanded
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Re-registers the seven built-ins, delegating execute; wires the compact renderers |
+| `render.ts` | The per-tool call/result summary strings, collapsed and expanded (pure) |
+| `config.ts` | Settings and the tool list |
+| `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
