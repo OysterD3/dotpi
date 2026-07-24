@@ -597,6 +597,58 @@ client; this reconstructs them from the documented behavior.
 | `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
 | `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
 
+**`agent/extensions/subagents/`** — Claude Code's subagents, made configurable. You define a set of
+named subagents, each pinned to a model, a reasoning (thinking) level, a purpose, and optionally a
+tool allowlist and a role prompt; the main agent delegates a scoped task to one by name through the
+`task` tool (Claude Code's `subagent_type`), and it runs in its own context and reports back.
+
+`/subagents` shows the table:
+
+```
+Subagent           Model         Reasoning  Purpose
+───────────────────────────────────────────────────
+code-explorer      gpt-5.6-luna  High       Read-only codebase discovery and investigation
+quick-implementer  gpt-5.6-luna  High       Small, well-defined changes in one or two files
+implementer        gpt-5.6-luna  High       Features and bug fixes with tests and validation
+code-reviewer      gpt-5.6-sol   Low        Review diffs for correctness, security, and quality
+commit-pusher      gpt-5.6-luna  Low        Stage, commit, and push completed changes
+```
+
+Each subagent runs as a headless `pi` subprocess with its `--model`, `--thinking` (the reasoning
+level), and `--tools` (the allowlist), plus its role prompt via `--append-system-prompt` — the same
+spawn mechanism the ultracode workflow uses, here driven by standing definitions instead of a script.
+A subagent that pins no model inherits the session model; `subagents.defaults` supplies a shared
+model/reasoning for the ones that omit them. The `task` tool is offered only when at least one
+subagent is configured (active-tool sync, like the advisor), so an empty config adds nothing to the
+prompt, and its description lists the available subagents so the model knows what it can delegate to.
+
+Definitions live in `agent/settings.json` so they travel with the rest of this config. A bad entry
+is dropped with a reason (shown under `/subagents`), not fatal — one typo does not disable the rest.
+
+```jsonc
+{
+  "subagents": {
+    "defaults": { "model": "gpt-5.6-luna", "reasoning": "high" },   // optional; applied to agents that omit them
+    "agents": [
+      { "name": "code-explorer", "reasoning": "high", "tools": ["read", "grep", "find", "ls"],
+        "purpose": "Read-only codebase discovery and investigation" },
+      { "name": "code-reviewer", "model": "gpt-5.6-sol", "reasoning": "low",
+        "purpose": "Review diffs for correctness, security, and quality" }
+    ]
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Load, tool registration, active-tool sync, `/subagents`, status chip |
+| `tool.ts` | The `task` dispatch tool: validate, resolve the pinned model, spawn, return the report + usage |
+| `registry.ts` | Parse and validate the definitions; apply defaults (pure) |
+| `panel.ts` | The Subagent / Model / Reasoning / Purpose table (pure) |
+| `models.ts` | Model reference resolution (pure) |
+| `spawn.ts` | The headless `pi` subagent subprocess (model, reasoning, tools, role prompt) |
+| `subagents.test.ts` | Unit and wiring coverage (`subagents.live.ts` spawns a real subagent) |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
