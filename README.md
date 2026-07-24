@@ -541,6 +541,62 @@ bridge sends `stop`.
 | `config.ts` | The cmux protocol constants and env-var names |
 | `cmux-notify.test.ts` | Unit and wiring coverage |
 
+**`agent/extensions/advisor/`** — Claude Code's Advisor Tool, ported. A zero-parameter `advisor`
+tool that lets the agent pause and consult a **stronger reviewer model** on the whole session so far,
+at the moments that matter — before committing to an approach, when stuck, and before declaring done.
+
+```
+Assistant  → called advisor()
+Result of advisor:
+  Biggest issue: don't use yaml.load on a user upload — use safe_load. …
+```
+
+In Claude Code the advisor is a server-side beta tool: the API request carries a
+`{type:"advisor_20260301", name:"advisor", model}` schema and Anthropic's API forwards the whole
+conversation to that model. pi has no such server tool, so the forwarding is done in the client — the
+tool flattens the session branch (task, every tool call, every result) and runs the reviewer as a
+**tool-less headless `pi` call** (`--no-tools`, so it advises and cannot act). What the agent sees is
+identical: call `advisor()`, wait, get advice back.
+
+The reviewer model is **configurable and required** — that is the whole feature. With none set the
+tool is not offered, mirroring Claude Code (its `Lyo()` returns nothing when `advisorModel` is unset,
+and no tool is attached). Set it three ways, in priority order:
+
+- `/advisor <model>` — a session override (also `/advisor off` / `on` / `status`)
+- `--advisor <model>` — a CLI flag for one run (Claude Code's own flag name)
+- `advisor.model` — the durable default in `agent/settings.json`
+
+Model names resolve with pi's own `--model` rules (`opus`, `sonnet`, `openai-codex/gpt-5.6-sol`),
+against the live registry. Claude Code's validation is ported as far as it ports: the one
+provider-agnostic hard rule — an advisor **cannot be the very model it advises** (Claude Code's `Czg`)
+— is enforced (the tool degrades to a note rather than self-reviewing); the "advisor must be at least
+as capable" rank check reduces to *allow*, because pi's registry carries no `advisor_rank` for
+arbitrary providers and Claude Code itself allows when a rank is unknown.
+
+The main-agent guidance (when and how to call it) is Claude Code's text **verbatim**, placed in the
+tool description so it rides in the system prompt. The reviewer-side prompt is **authored, not
+transcribed** — Claude Code runs the reviewer server-side, so its instructions never ship in the
+client; this reconstructs them from the documented behavior.
+
+```jsonc
+{
+  "advisor": {
+    "model": "opus",     // required to enable; the reviewer model (Claude Code: advisorModel)
+    "enabled": true      // optional kill switch (Claude Code: CLAUDE_CODE_DISABLE_ADVISOR_TOOL)
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Settings, `--advisor` flag, `/advisor` command, active-tool sync, status chip |
+| `tool.ts` | The `advisor` tool: resolve, enforce advisor ≠ current model, forward, return advice + usage |
+| `transcript.ts` | Session branch → budgeted transcript, with tool results, oldest dropped first (pure) |
+| `guidance.ts` | **Claude Code's tool guidance, verbatim** + the authored reviewer prompt |
+| `models.ts` | Model reference resolution and the `Czg` same-model rule (pure) |
+| `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
+| `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
+
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.
 
