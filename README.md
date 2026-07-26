@@ -390,23 +390,60 @@ reminders are counted so a resumed session continues the cadence instead of re-a
 The **`workflow` tool** is the thing the reminders point at: the model writes a plain-JS script
 with `export const meta = {...}` and orchestrates subagents with `agent()`, `parallel()`, and
 `pipeline()` (plus `phase()`/`log()` for progress and an optional JSON `schema` per agent, with
-one retry on unusable output). Each subagent is a headless `pi --mode json -p --no-session
---no-extensions --no-skills` subprocess in the project directory — pi's own vendor pattern — so a
-wedged agent cannot take down the session, subagents cannot recurse into further workflows, and
-project trust is forwarded (`--approve` only when the parent session trusts the project).
-Concurrency is Claude Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps.
+one retry on unusable output). Each subagent is a headless `pi --mode json -p --no-extensions
+--no-skills` subprocess in the project directory — pi's own vendor pattern — so a wedged agent
+cannot take down the session, subagents cannot recurse into further workflows, and project trust
+is forwarded (`--approve` only when the parent session trusts the project). Concurrency is Claude
+Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps; all of those are settings.
 
-**Workflows don't block the session.** The tool validates the script, starts the fleet, and
-returns immediately with a run id; the main agent keeps working while a status panel above the
-editor shows each run's phases, agent counts, spend, and elapsed time. `/workflows` lists runs,
-`/workflows cancel <id>` stops one (cancelling interrupts even a sleeping script, and kills its
-subprocesses). When a run settles — finished, failed, or cancelled — its outcome comes back to the
-model as a `workflow-result` message: a follow-up if the agent is mid-turn, a turn of its own if
-the session is idle, so results get processed the way a task notification would. The model can
-pass `wait: true` for the rare workflow whose result it needs before doing anything else; only
-those attach their spend to the tool result as `usage` (a background run's tool result is long
-gone by the time money is spent, so its cost is reported in the result message and `/workflows`
-instead). Runs don't survive a session switch: shutdown cancels the fleet.
+**Every run is a directory.** `~/.pi/agent/workflow-runs/<runId>/` holds `run.json` (the row
+`/workflows` lists), `journal.jsonl` (an append-only record of every agent, log line and result),
+`script.js` verbatim, and `agents/` — a `--session-dir` in which **each subagent keeps a real pi
+session**. That last part is the difference between a fleet you can debug and one you can only
+watch: a finished agent's transcript renders with `pi --export` like any other session, tool calls
+and all, and its full stderr sits beside it. Run ids are `wf-<base36 ms>-<n>`, unique across
+processes and legal as pi `--session-id`s, which is how agent sessions are named `<runId>-a<n>`.
+
+**Runs resume.** A run that failed, was cancelled, or died with its session keeps its journal, and
+`resumeFromRunId` replays it: every agent whose prompt and options are unchanged returns its stored
+result instantly, while new, edited and previously *failed* agents actually run. Matching is by
+content hash rather than call order — `pipeline()` has no barrier, so the index an agent receives
+depends on when earlier stages finished, and only a content key is stable under that. The price is
+determinism: `Date.now()`, argless `new Date()` and `Math.random()` throw inside a script (a script
+that truly needs them sets `deterministic: false` in its meta and gives up resume). Claude Code
+bans the same three for the same reason.
+
+**Agents can be forked context.** `agent(prompt, { context: { parent: 6, files: [...], text: ... } })`
+seeds that agent's session with recent turns of the conversation, whole files, or literal
+background, instead of the script pasting everything into a prompt string. It is built with pi's
+own `SessionManager` as a user message plus a one-line assistant acknowledgement — both are
+required, since providers reject consecutive user messages and pi only flushes a session to disk
+once it holds an assistant turn. `agentType` borrows a standing definition from `subagents.json`
+(its tools, role prompt, model and reasoning level), and `tools` pins an allowlist directly.
+
+**Workflows don't block the session.** The tool validates the script — meta *and* a compile check,
+so a syntax error fails the call rather than arriving minutes later as a failed run — starts the
+fleet, and returns immediately with a run id; the main agent keeps working while a status panel
+above the editor shows each run's phases, agent counts, spend, and elapsed time. When a run settles
+its outcome comes back to the model as a `workflow-result` message: a follow-up if the agent is
+mid-turn, a turn of its own if the session is idle, so results get processed the way a task
+notification would. The model can pass `wait: true` for the rare workflow whose result it needs
+before doing anything else; only those attach their spend to the tool result as `usage` (a
+background run's tool result is long gone by the time money is spent, so its cost is reported in
+the result message and `/workflows` instead).
+
+**`/workflows` is a control panel, not a list.** It opens a centred overlay: runs on the left
+(every run the store knows about, including ones from previous sessions), then one run's phases and
+agents, then one agent. `↑↓` selects, `→`/`←` moves between levels, `p` pauses or resumes, `c`
+cancels, `g` toggles the log pane, `x` exports the selected agent's transcript to HTML, and `R`
+puts a resume instruction in the editor for you to send. Pausing is live: in-flight agents finish
+and new ones park at a gate, so a run can be held mid-fleet and let go again. The subcommands
+remain for scripting: `/workflows list|show <id>|pause <id>|resume <id>|cancel [id]`.
+
+Runs still do not survive a session switch — shutdown cancels the fleet — but that is no longer
+silent. A run whose owning process is gone is reconciled to `interrupted` on next start, and the
+model is told which ids died *and that each is resumable*, rather than the old approach of scraping
+its own transcript for the sentence that announced them.
 
 **Say which models to use in the request itself.** Routing is not configured ahead of time — it is
 part of the prompt that triggers the workflow:
@@ -428,16 +465,29 @@ instruction holds for later workflows until you change it.
 {
   "ultracode": {
     "keywordTrigger": true,   // optional; Claude Code: workflowKeywordTriggerEnabled
-    "model": "gpt-5.4-mini"   // optional default for agents no request routes (a resolved reference)
+    "model": "gpt-5.4-mini",  // optional default for agents no request routes (a resolved reference)
+    "limits": {               // all optional; anything absent keeps its default
+      "maxConcurrency": 8,    // default min(16, cores − 2)
+      "maxAgentsPerRun": 1000,
+      "maxItemsPerCall": 4096,
+      "agentTimeoutMs": 600000,
+      "schemaRetries": 1,
+      "retainRuns": 50,          // run directories kept before the oldest are pruned
+      "contextBudgetChars": 60000,  // ceiling on what one agent may be forked
+      "fileBudgetChars": 20000      // ceiling per embedded file
+    }
   }
 }
 ```
 
+Saved workflows live in `~/.pi/agent/workflows/<name>.js` and run by `name`; any file on disk runs
+by `scriptPath`.
+
 **Where this diverges from Claude Code, and why.** Reminders arrive as hidden custom messages
 (pi's plan-mode pattern) rather than attachments — same text, same position, invisible in the
-transcript UI. Workflow runs have no resume journal and no worktree isolation (pi has neither
-primitive; a failed run re-runs from the top, so the tool description steers toward several small
-workflows). The keyword has no alt+w dismiss and no live composer highlight — pi extensions see
+transcript UI. Workflow runs have no worktree isolation (pi has no such primitive), so a fleet that
+edits files in parallel can still conflict. The keyword has no alt+w dismiss and no live composer
+highlight — pi extensions see
 input only on submit — and a prompt steered into a *running* turn cannot carry the keyword
 reminder (steered input never reaches `before_agent_start`). `budget` is a stub (`total: null`)
 since pi has no "+500k" directive; budget-guarded scripts written for Claude Code fall through
@@ -456,10 +506,15 @@ always await.
 | `keyword.ts` | **The keyword detector, transcribed from Claude Code** (pure) |
 | `reminders.ts` | **Claude Code's reminder texts, verbatim** |
 | `mode.ts` | The session-mode reminder cadence (pure) |
-| `engine.ts` | The workflow script engine — meta, agent/parallel/pipeline, caps (pure) |
-| `spawn.ts` | One subagent as a headless pi subprocess |
-| `runs.ts` | The background run registry — status, cancellation, pruning |
-| `panel.ts` | The status panel and `/workflows` report lines (pure) |
+| `engine.ts` | The workflow script engine — meta, agent/parallel/pipeline, replay, pause, caps (pure) |
+| `store.ts` | The on-disk run store: run.json, journal, script, agent sessions |
+| `journal.ts` | Journal records and the content-keyed replay index (pure) |
+| `context.ts` | What an agent is forked — rendering (pure) and session seeding |
+| `agents.ts` | `agentType` resolved against `subagents.json` (pure) |
+| `tui.ts` | **The `/workflows` control panel** — runs, agents, pause/cancel/export |
+| `spawn.ts` | One subagent as a headless pi subprocess, with its own session |
+| `runs.ts` | The in-process run registry — status, pause gate, cancellation |
+| `panel.ts` | The status panel, the text report, and journal→view rebuilding (pure) |
 | `routing.ts` | Spotting model names in the triggering request (pure) |
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |

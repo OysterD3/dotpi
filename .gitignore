@@ -8,6 +8,11 @@ agent/auth.json
 # /rewind checkpoints: copies of your working files, per session. Never publish.
 agent/file-history/
 
+# Workflow run store: journals, results, and a full pi session per subagent —
+# the same class of content as agent/sessions/. Never publish. Saved workflow
+# SCRIPTS live in agent/workflows/ and are tracked; only the runs are ignored.
+agent/workflow-runs/
+
 # Per-machine settings: pi rewrites this at runtime (thinking level, model, etc.),
 # so it churns and would fight `git pull`. Copy agent/settings.example.json to
 # agent/settings.json on a new machine and adjust.

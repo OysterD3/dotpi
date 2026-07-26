@@ -15,7 +15,10 @@
  *     (prevResult, originalItem, index);
  *   - a single parallel()/pipeline() call accepts at most 4096 items;
  *   - budget is a stub ({total: null}) since pi has no "+500k" directive:
- *     budget-guarded loops written for Claude Code fall through cleanly.
+ *     budget-guarded loops written for Claude Code fall through cleanly;
+ *   - Date.now()/Math.random()/argless new Date() throw, so a journal can be
+ *     replayed (opt out per script with `deterministic: false` in meta, at the
+ *     cost of that run being unresumable).
  *
  * Safety properties this file is responsible for:
  *   - an agent() promise the script never awaits can NOT become a host
@@ -26,21 +29,44 @@
  *   - an external abort always fails the run, even if the script swallowed
  *     every error.
  *
- * Deviations (documented in README.md): no resume journal, no worktree
- * isolation, no nested workflow() (it throws), Date.now()/Math.random() are
- * allowed (Claude Code bans them only to keep resume deterministic). The
- * script body itself runs unbounded on the host event loop — a synchronous
- * infinite loop in a script wedges the session (same trust level as extension
- * code; the tool description tells the model to always await, never busy-wait).
+ * Three seams the host drives (all optional, all in EngineHooks):
+ *   - replay(key) serves a previous run's result instead of spawning (resume);
+ *   - waitWhilePaused() parks a call before it spawns (live pause);
+ *   - agentSettled() reports the full outcome, which is what the journal
+ *     records.
+ * `globals` injects extra sandbox bindings, so an extension can add helpers
+ * without editing this file.
+ *
+ * Deviations (documented in README.md): no worktree isolation and no nested
+ * workflow() (it throws). The script body itself runs unbounded on the host
+ * event loop — a synchronous infinite loop in a script wedges the session (same
+ * trust level as extension code; the tool description tells the model to always
+ * await, never busy-wait).
  */
 import { runInNewContext } from "node:vm";
-import { CONFIG } from "./config.ts";
+import { DEFAULT_LIMITS, type Limits } from "./config.ts";
+import { agentKey } from "./journal.ts";
 
 export interface WorkflowMeta {
 	name: string;
 	description: string;
 	phases?: Array<{ title: string; detail?: string }>;
 	whenToUse?: string;
+	/**
+	 * Default true. Set false to allow Date.now()/Math.random() in the script,
+	 * accepting that the run cannot be resumed from its journal.
+	 */
+	deterministic?: boolean;
+}
+
+/** What one agent may be forked with. See context.ts for how it is built. */
+export interface AgentContext {
+	/** Turns of the parent conversation to carry: a count, or "all". */
+	parent?: number | "all";
+	/** Files to embed, by path relative to the project (or absolute). */
+	files?: string[];
+	/** Literal text to prepend, e.g. findings from an earlier stage. */
+	text?: string;
 }
 
 export interface AgentOptions {
@@ -49,23 +75,65 @@ export interface AgentOptions {
 	model?: string;
 	thinking?: string;
 	schema?: Record<string, unknown>;
+	/** A name from subagents.json: supplies tools, role prompt, model. */
+	agentType?: string;
+	/** Explicit tool allowlist, overriding the agentType's. */
+	tools?: string[];
+	context?: AgentContext;
 }
 
 /** Conditions that must fail the whole run instead of nulling one agent. */
 export class WorkflowFatalError extends Error {}
 
+export interface AgentOutcome {
+	index: number;
+	key: string;
+	label: string;
+	phase?: string;
+	options: AgentOptions;
+	status: "done" | "failed" | "replayed";
+	value?: unknown;
+	error?: string;
+	startedAt: number;
+	endedAt: number;
+	/** Spawn attempts made (schema retries count); 0 for a replayed agent. */
+	attempts: number;
+}
+
 export interface EngineHooks {
 	/** Spawn one subagent; returns its final text. Throws on spawn failure. */
-	spawn: (prompt: string, options: AgentOptions, index: number, signal: AbortSignal) => Promise<string>;
+	spawn: (prompt: string, options: AgentOptions, index: number, signal: AbortSignal, attempt: number) => Promise<string>;
 	/** One agent() call is starting (schema retries reuse the same index). */
 	agentStart?: (index: number, label: string, phase: string | undefined) => void;
 	/** The agent() call settled; ok is false when it resolved to null. */
 	agentEnd?: (index: number, ok: boolean) => void;
+	/** Full outcome of an agent() call — what the journal records. */
+	agentSettled?: (outcome: AgentOutcome) => void;
+	/** Serve a cached result for this content key instead of spawning. */
+	replay?: (key: string) => { hit: true; value: unknown } | { hit: false };
+	/** Park a call while the run is paused; resolves when it may proceed. */
+	waitWhilePaused?: (signal: AbortSignal) => Promise<void>;
 	log: (message: string) => void;
 	phase: (title: string) => void;
 }
 
+export interface EngineOptions {
+	limits?: Limits;
+	/** Extra sandbox bindings, merged after the built-in globals. */
+	globals?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------- meta
+
+/**
+ * `export` is stripped from every top-level declaration, not just meta's: a
+ * script that also exports a schema constant is otherwise a syntax error, and
+ * models write those. Only line-leading `export` before a declaration keyword
+ * is touched, so the word inside a string or comment survives.
+ */
+function stripExports(source: string): string {
+	return source.replace(/^[ \t]*export[ \t]+(?=(?:const|let|var|function|class|async)\b)/gm, "");
+}
 
 /**
  * Extract the `export const meta = {...}` literal that must open the script.
@@ -116,9 +184,30 @@ export function parseMeta(script: string): { meta: WorkflowMeta; body: string } 
 	if (!record || typeof record.name !== "string" || typeof record.description !== "string") {
 		throw new Error("workflow meta requires string `name` and `description`");
 	}
-	// Strip the `export ` so the body parses as plain script code.
-	const body = script.slice(0, match.index) + script.slice(match.index).replace(/^\s*export\s+/, "");
-	return { meta: record as unknown as WorkflowMeta, body };
+	return { meta: record as unknown as WorkflowMeta, body: stripExports(script) };
+}
+
+function wrapBody(body: string): string {
+	return `(async () => { "use strict";\n${body}\n})`;
+}
+
+/**
+ * Compile the body without running it, so a syntax error fails the tool call
+ * synchronously instead of arriving minutes later as a failed background run.
+ */
+export function compileBody(body: string, sandbox: Record<string, unknown> = {}): () => Promise<unknown> {
+	return runInNewContext(wrapBody(body), sandbox, { timeout: 5000 }) as () => Promise<unknown>;
+}
+
+/** parseMeta plus a compile check. Throws with the reason if either fails. */
+export function validateScript(script: string): { meta: WorkflowMeta; body: string } {
+	const parsed = parseMeta(script);
+	try {
+		compileBody(parsed.body);
+	} catch (error) {
+		throw new Error(`workflow script does not compile: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return parsed;
 }
 
 // -------------------------------------------------------------------- engine
@@ -204,6 +293,40 @@ export interface RunResult {
 	meta: WorkflowMeta;
 	result: unknown;
 	agentCount: number;
+	/** Agents served from a previous run's journal rather than spawned. */
+	replayedCount: number;
+}
+
+/**
+ * The sandbox bindings that make a run replayable. Date.now(), argless
+ * new Date() and Math.random() are the three ways a script can produce a
+ * different call sequence on a rerun, so under determinism they throw with the
+ * fix in the message rather than silently poisoning the journal.
+ */
+function deterministicBindings(): Record<string, unknown> {
+	const refuse = (what: string, instead: string) => () => {
+		throw new WorkflowFatalError(`${what} is unavailable in a workflow script (it would break resume) — ${instead}`);
+	};
+	const math: Record<string, unknown> = {};
+	for (const name of Object.getOwnPropertyNames(Math)) {
+		math[name] = (Math as unknown as Record<string, unknown>)[name];
+	}
+	math.random = refuse("Math.random()", "vary the prompt or label by index instead");
+
+	const DateProxy = new Proxy(Date, {
+		construct(target, argumentList, newTarget) {
+			if (argumentList.length === 0) {
+				refuse("new Date()", "pass timestamps in through args")();
+			}
+			return Reflect.construct(target, argumentList, newTarget);
+		},
+		get(target, property, receiver) {
+			if (property === "now") return refuse("Date.now()", "pass timestamps in through args");
+			return Reflect.get(target, property, receiver);
+		},
+	});
+
+	return { Math: math, Date: DateProxy };
 }
 
 export async function runWorkflowScript(
@@ -211,10 +334,13 @@ export async function runWorkflowScript(
 	args: unknown,
 	hooks: EngineHooks,
 	signal?: AbortSignal,
+	engineOptions: EngineOptions = {},
 ): Promise<RunResult> {
 	const { meta, body } = parseMeta(script);
-	const semaphore = new Semaphore(CONFIG.maxConcurrency);
+	const limits = engineOptions.limits ?? DEFAULT_LIMITS;
+	const semaphore = new Semaphore(limits.maxConcurrency);
 	let agentCount = 0;
+	let replayedCount = 0;
 
 	// Everything spawned runs against this controller so that when the run
 	// settles — normally, fatally, or by external abort — agents the script
@@ -231,46 +357,99 @@ export async function runWorkflowScript(
 			throw new WorkflowFatalError("agent() requires a non-empty prompt string");
 		}
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-		if (agentCount >= CONFIG.maxAgentsPerRun) {
-			throw new WorkflowFatalError(`workflow exceeded the ${CONFIG.maxAgentsPerRun}-agent cap`);
+		if (agentCount >= limits.maxAgentsPerRun) {
+			throw new WorkflowFatalError(`workflow exceeded the ${limits.maxAgentsPerRun}-agent cap`);
 		}
 		const index = ++agentCount;
+		const label = options.label ?? `agent ${index}`;
+		const key = agentKey(prompt, options as unknown as Record<string, unknown>);
+		const startedAt = Date.now();
+
+		// Pause first: a paused run must not race ahead through cached results
+		// either, or unpausing would find the script somewhere unexpected.
+		if (hooks.waitWhilePaused) await hooks.waitWhilePaused(controller.signal);
+		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+
+		// A replay costs nothing, so it happens outside the concurrency gate.
+		const cached = hooks.replay?.(key);
+		if (cached?.hit) {
+			replayedCount++;
+			hooks.agentStart?.(index, label, options.phase);
+			hooks.agentEnd?.(index, true);
+			hooks.agentSettled?.({
+				index,
+				key,
+				label,
+				phase: options.phase,
+				options,
+				status: "replayed",
+				value: cached.value,
+				startedAt,
+				endedAt: Date.now(),
+				attempts: 0,
+			});
+			return cached.value;
+		}
+
 		return semaphore.run(async () => {
 			if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-			hooks.agentStart?.(index, options.label ?? `agent ${index}`, options.phase);
+			hooks.agentStart?.(index, label, options.phase);
 			let ok = false;
+			let value: unknown;
+			let failure: string | undefined;
+			// Counted here rather than returned, so a FAILED agent still reports
+			// how many attempts it burned — that is exactly when you want to know.
+			let attempts = 0;
+			const spawnOnce = (request: string, attempt: number) => {
+				attempts++;
+				return hooks.spawn(request, options, index, controller.signal, attempt);
+			};
 			try {
-				let value: unknown;
-				if (!options.schema) {
-					value = await hooks.spawn(prompt, options, index, controller.signal);
-				} else {
-					value = await runSchemaAgent(prompt, options, index);
-				}
+				value = options.schema ? await runSchemaAgent(prompt, options, label, spawnOnce) : await spawnOnce(prompt, 0);
 				ok = true;
 				return value;
 			} catch (error) {
 				if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-				hooks.log(`agent ${options.label ?? index} failed: ${error instanceof Error ? error.message : String(error)}`);
+				failure = error instanceof Error ? error.message : String(error);
+				hooks.log(`agent ${label} failed: ${failure}`);
 				return null;
 			} finally {
 				hooks.agentEnd?.(index, ok);
+				hooks.agentSettled?.({
+					index,
+					key,
+					label,
+					phase: options.phase,
+					options,
+					status: ok ? "done" : "failed",
+					value: ok ? value : undefined,
+					error: failure,
+					startedAt,
+					endedAt: Date.now(),
+					attempts,
+				});
 			}
 		});
 	}
 
-	async function runSchemaAgent(prompt: string, options: AgentOptions, index: number): Promise<unknown> {
+	async function runSchemaAgent(
+		prompt: string,
+		options: AgentOptions,
+		label: string,
+		spawnOnce: (request: string, attempt: number) => Promise<string>,
+	): Promise<unknown> {
 		const schema = options.schema!;
 		let request = prompt + schemaInstruction(schema);
 		for (let attempt = 0; ; attempt++) {
-			const reply = await hooks.spawn(request, options, index, controller.signal);
+			const reply = await spawnOnce(request, attempt);
 			try {
 				const value = extractJson(reply);
 				if (!conformsTo(value, schema)) throw new Error("JSON did not match the schema");
 				return value;
 			} catch (error) {
-				if (attempt >= CONFIG.schemaRetries) throw error;
+				if (attempt >= limits.schemaRetries) throw error;
 				const reason = error instanceof Error ? error.message : String(error);
-				hooks.log(`agent ${options.label ?? index}: retrying, ${reason}`);
+				hooks.log(`agent ${label}: retrying, ${reason}`);
 				request = `${prompt}${schemaInstruction(schema)}\n\nYour previous reply could not be used (${reason}). Reply again with ONLY the JSON value.`;
 			}
 		}
@@ -297,8 +476,8 @@ export async function runWorkflowScript(
 
 	const parallel = async (thunks: unknown): Promise<unknown[]> => {
 		if (!Array.isArray(thunks)) throw new Error("parallel() takes an array of functions");
-		if (thunks.length > CONFIG.maxItemsPerCall) {
-			throw new Error(`parallel() accepts at most ${CONFIG.maxItemsPerCall} items, got ${thunks.length}`);
+		if (thunks.length > limits.maxItemsPerCall) {
+			throw new Error(`parallel() accepts at most ${limits.maxItemsPerCall} items, got ${thunks.length}`);
 		}
 		return guardAll(
 			thunks.map(async (thunk) => {
@@ -315,8 +494,8 @@ export async function runWorkflowScript(
 
 	const pipeline = async (items: unknown, ...stages: unknown[]): Promise<unknown[]> => {
 		if (!Array.isArray(items)) throw new Error("pipeline() takes an array of items");
-		if (items.length > CONFIG.maxItemsPerCall) {
-			throw new Error(`pipeline() accepts at most ${CONFIG.maxItemsPerCall} items, got ${items.length}`);
+		if (items.length > limits.maxItemsPerCall) {
+			throw new Error(`pipeline() accepts at most ${limits.maxItemsPerCall} items, got ${items.length}`);
 		}
 		const callbacks = stages.filter((s): s is (prev: unknown, item: unknown, index: number) => unknown => typeof s === "function");
 		return guardAll(
@@ -335,7 +514,7 @@ export async function runWorkflowScript(
 		);
 	};
 
-	const sandbox = {
+	const sandbox: Record<string, unknown> = {
 		agent,
 		parallel,
 		pipeline,
@@ -352,12 +531,14 @@ export async function runWorkflowScript(
 		structuredClone,
 		setTimeout,
 		clearTimeout,
+		...(meta.deterministic === false ? {} : deterministicBindings()),
+		...(engineOptions.globals ?? {}),
 	};
 
 	// The vm timeout bounds COMPILATION only: evaluating this expression just
 	// creates the closure. The body itself runs unbounded on the host event
 	// loop when fn() is awaited — see the header comment.
-	const fn = runInNewContext(`(async () => { "use strict";\n${body}\n})`, sandbox, { timeout: 5000 }) as () => Promise<unknown>;
+	const fn = compileBody(body, sandbox);
 
 	try {
 		// Race the body against the abort signal: a cancelled run must settle
@@ -366,15 +547,15 @@ export async function runWorkflowScript(
 		// (vm code cannot be preempted), but every later agent() it makes
 		// throws immediately and race()'s subscription keeps its eventual
 		// rejection from surfacing as a host unhandledRejection.
-		const body = fn();
+		const running = fn();
 		const abortedRun = new Promise<never>((_resolve, reject) => {
 			const fail = () => reject(new WorkflowFatalError("workflow aborted"));
 			if (controller.signal.aborted) fail();
 			else controller.signal.addEventListener("abort", fail, { once: true });
 		});
-		const result = await Promise.race([body, abortedRun]);
+		const result = await Promise.race([running, abortedRun]);
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-		return { meta, result, agentCount };
+		return { meta, result, agentCount, replayedCount };
 	} finally {
 		// Cancel anything the script started and never awaited, then wait for
 		// those agents to wind down so no subprocess outlives the tool call.

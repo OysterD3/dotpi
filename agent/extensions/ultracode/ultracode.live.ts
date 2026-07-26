@@ -12,7 +12,7 @@
  * dependencies of this repo):
  *     jiti agent/extensions/ultracode/ultracode.live.ts
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -24,8 +24,12 @@ process.argv[1] =
 
 const { registerWorkflowTool } = await import("./tool.ts");
 const { RunRegistry } = await import("./runs.ts");
+const { DEFAULT_LIMITS } = await import("./config.ts");
+const { listRuns, readJournalLines } = await import("./store.ts");
 
 const CWD = mkdtempSync(join(tmpdir(), "ultracode-live-"));
+/** A throwaway agent dir, so the run store does not touch the real ~/.pi. */
+const AGENT_DIR = mkdtempSync(join(tmpdir(), "ultracode-live-agent-"));
 
 const runtime = await ModelRuntime.create({
 	authPath: "/Users/oysterlee/.pi/agent/auth.json",
@@ -43,7 +47,11 @@ const fakePi = {
 	registerMessageRenderer: () => {},
 	sendMessage: (message: any, options: any) => sent.push({ message, options }),
 };
-registerWorkflowTool(fakePi as any, { registry });
+registerWorkflowTool(fakePi as any, {
+	registry,
+	agentDir: AGENT_DIR,
+	settings: () => ({ keywordTrigger: true, limits: DEFAULT_LIMITS }),
+});
 const tool = tools.get("workflow")!;
 
 const ctx = {
@@ -53,6 +61,9 @@ const ctx = {
 	isProjectTrusted: () => false,
 	isIdle: () => true,
 	modelRegistry: { getAll: () => models },
+	// The run snapshots the branch for context forking and the session file for
+	// lineage; a headless harness has neither.
+	sessionManager: { getBranch: () => [], getSessionFile: () => undefined },
 };
 
 let failures = 0;
@@ -115,8 +126,43 @@ try {
 } catch (error) {
 	failures++;
 	console.log(`FAIL  background threw: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+// ------------------------------------------------- store, transcripts, resume
+
+try {
+	const stored = listRuns(AGENT_DIR);
+	check("both runs were stored", stored.length === 2, stored.map((meta) => meta.runId));
+	const first = stored.find((meta) => meta.name === "live-check");
+	check("run.json records the outcome", first?.status === "done", first?.status);
+	check("run.json records spend", (first?.usage.cost ?? 0) > 0, first?.usage);
+
+	const records = readJournalLines(AGENT_DIR, first!.runId) as any[];
+	const agents = records.filter((record) => record.kind === "agent");
+	check("the journal has both agents", agents.length === 2, agents.length);
+	check("agents recorded their results", agents.every((record) => record.result !== undefined), agents);
+
+	// Every agent should have left a real pi session behind — that is what
+	// makes a finished run debuggable.
+	const transcripts = readdirSync(join(AGENT_DIR, "workflow-runs", first!.runId, "agents")).filter((name) => name.endsWith(".jsonl"));
+	check("each agent left a transcript", transcripts.length >= 2, transcripts);
+
+	// Resume: the same script against the previous journal should spawn nothing.
+	const before = Date.now();
+	const resumed = await tool.execute("live3", { script: waitScript, wait: true, resumeFromRunId: first!.runId }, undefined, undefined, ctx);
+	const resumeMs = Date.now() - before;
+	const details = resumed.details;
+	check("resume finished", details.status === "done", details.status);
+	check("resume replayed both agents", details.replayedCount === 2, details.replayedCount);
+	check("resume spawned nothing", details.usage.cost === 0, details.usage);
+	check("resume was fast", resumeMs < 5000, resumeMs);
+	check("resume reproduced the result", /"value": ?5/.test(resumed.content[0].text), resumed.content[0].text);
+} catch (error) {
+	failures++;
+	console.log(`FAIL  store/resume threw: ${error instanceof Error ? error.message : String(error)}`);
 } finally {
 	rmSync(CWD, { recursive: true, force: true });
+	rmSync(AGENT_DIR, { recursive: true, force: true });
 }
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

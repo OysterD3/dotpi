@@ -5,13 +5,16 @@
  *
  *   1. The `workflow` tool (tool.ts + engine.ts + spawn.ts): a script that
  *      orchestrates headless pi subagents with agent()/parallel()/pipeline().
- *      Runs are background by default (runs.ts) with a live status panel
- *      (panel.ts) and /workflows for inspection and cancellation. Subagent
- *      models are routed in the triggering request itself ("ultracode, use
- *      sonnet for implementation and fable to review"): routing.ts notices
- *      that a request names models so the reminder can bind the instruction
- *      to that turn, and models.ts resolves the names the model passes with
- *      pi's own --model rules.
+ *      Runs are background by default (runs.ts), durable on disk (store.ts +
+ *      journal.ts), resumable by replaying a journal, pausable while in
+ *      flight, and driven from a control TUI (tui.ts) that /workflows opens.
+ *      Agents can be forked a slice of this conversation (context.ts) and can
+ *      borrow a standing subagent definition (agents.ts). Subagent models are
+ *      routed in the triggering request itself ("ultracode, use sonnet for
+ *      implementation and fable to review"): routing.ts notices that a request
+ *      names models so the reminder can bind the instruction to that turn, and
+ *      models.ts resolves the names the model passes with pi's own --model
+ *      rules.
  *   2. The triggers that opt the model into using it:
  *      - the "ultracode" KEYWORD in a typed prompt opts in that single turn
  *        (detector and reminder text verbatim from the binary; the keyword
@@ -27,28 +30,32 @@
  * before_agent_start — pi's own plan-mode pattern — so they reach the model as
  * <system-reminder> blocks without appearing in the transcript UI.
  *
- * Deviations from Claude Code, documented in README.md: no resume/journal for
- * workflow runs, no worktree isolation, no alt+w keyword dismissal, and the
- * keyword is detected on the pre-expansion text of interactive input only.
+ * Deviations from Claude Code, documented in README.md: no worktree isolation,
+ * no alt+w keyword dismissal, and the keyword is detected on the pre-expansion
+ * text of interactive input only.
  *
  * Settings (agent settings.json):
  *   ultracode.keywordTrigger  boolean, default true (Claude Code:
  *                             workflowKeywordTriggerEnabled)
  *   ultracode.model           "provider/model-id" for workflow subagents;
  *                             defaults to the session model
+ *   ultracode.limits          overrides for concurrency, caps, timeouts,
+ *                             retention and context budgets (config.ts)
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DEFAULT_SETTINGS, ENTRY_TYPE, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
+import { DEFAULT_SETTINGS, ENTRY_TYPE, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
-import { panelLines, statusReport } from "./panel.ts";
+import { interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
-import { orphanedRunIds, RunRegistry } from "./runs.ts";
+import { allAgents, RunRegistry } from "./runs.ts";
+import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir } from "./store.ts";
 import { registerWorkflowTool } from "./tool.ts";
+import { WorkflowsOverlay } from "./tui.ts";
 
 const BADGE = "✦ ultracode";
 
@@ -65,6 +72,7 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 		return {
 			keywordTrigger: typeof block?.keywordTrigger === "boolean" ? block.keywordTrigger : DEFAULT_SETTINGS.keywordTrigger,
 			model: typeof block?.model === "string" ? block.model : undefined,
+			limits: resolveLimits(block?.limits),
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -121,8 +129,8 @@ export default function (pi: ExtensionAPI) {
 	let keywordThisTurn = false;
 	let settingLevel = false;
 	let previousLevel: string | undefined;
-	/** Background runs a resumed transcript is still waiting on; see below. */
-	let orphanedRuns: string[] = [];
+	/** Runs a dead session left in flight; the store knows this as fact. */
+	let interruptedNote: string | undefined;
 	/** The level ultracode actually applied ("xhigh", or "max" when clamped up). */
 	let appliedLevel: string | undefined;
 
@@ -162,7 +170,8 @@ export default function (pi: ExtensionAPI) {
 
 	registerWorkflowTool(pi, {
 		registry,
-		subagentModel: () => settings.model,
+		agentDir,
+		settings: () => settings,
 		onRunEvent: drawPanel,
 	});
 
@@ -181,10 +190,11 @@ export default function (pi: ExtensionAPI) {
 		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
 		previousLevel = restoreFromBranch(mode, branch);
 		appliedLevel = mode.isOn() ? pi.getThinkingLevel() : undefined;
-		// Background runs do not survive a session ending. The transcript told
-		// the model to wait for their results, so the correction has to be said
-		// out loud — otherwise it waits for a message that can never arrive.
-		orphanedRuns = orphanedRunIds(branch);
+		// Background runs do not survive a session ending. The store records
+		// which ones died with their process, so the correction can be said out
+		// loud — and, unlike before, each one names a resumable run id.
+		ensureStore(agentDir);
+		interruptedNote = interruptedNotice(reconcile(agentDir));
 		setBadge(ctx);
 		drawPanel();
 	});
@@ -225,12 +235,9 @@ export default function (pi: ExtensionAPI) {
 			const mentions = findModelMentions(event.prompt, modelVocabulary(ctx.modelRegistry.getAll()));
 			if (mentions.length > 0) parts.push(routingReminder(mentions));
 		}
-		if (orphanedRuns.length > 0) {
-			const ids = orphanedRuns.join(", ");
-			parts.push(
-				`The background workflow${orphanedRuns.length === 1 ? "" : "s"} ${ids} did not survive the end of the previous session, so ${orphanedRuns.length === 1 ? "its result message will" : "their result messages will"} never arrive. Do not keep waiting for ${orphanedRuns.length === 1 ? "it" : "them"}: start the work again if it is still needed.`,
-			);
-			orphanedRuns = [];
+		if (interruptedNote) {
+			parts.push(interruptedNote);
+			interruptedNote = undefined;
 		}
 		const modeReminder = mode.reminderForTurn();
 		if (modeReminder) parts.push(modeReminder);
@@ -316,15 +323,51 @@ export default function (pi: ExtensionAPI) {
 		setBadge(ctx);
 	};
 
+	/** Live runs keyed by id, so the report can mix memory with the store. */
+	const liveRuns = () => new Map(registry.all().map((run) => [run.progress.runId, run]));
+
 	pi.registerCommand("workflows", {
-		description: "Show background workflow runs, or cancel one (/workflows cancel <id>)",
+		description: "Open the workflow control panel, or act on a run (/workflows pause|resume|cancel|show <id>)",
 		getArgumentCompletions: (prefix: string) => {
-			const options = ["cancel", ...registry.active().map((run) => `cancel ${run.progress.runId}`)];
+			const verbs = ["list", "show", "pause", "resume", "cancel"];
+			const ids = listRuns(agentDir).map((meta) => meta.runId);
+			const options = [...verbs, ...verbs.flatMap((verb) => (verb === "list" ? [] : ids.map((id) => `${verb} ${id}`)))];
 			return options.filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value }));
 		},
 		handler: async (args: string, ctx) => {
 			uiCtx = ctx;
-			const [verb, target] = args.trim().split(/\s+/);
+			const [verb, target] = args.trim().split(/\s+/).filter(Boolean);
+
+			if (!verb) {
+				if (!ctx.hasUI) {
+					ctx.ui.notify(statusReport(listRuns(agentDir), liveRuns(), Date.now()), "info");
+					return;
+				}
+				await ctx.ui.custom<undefined>(
+					(tui, theme, _keybindings, done) =>
+						new WorkflowsOverlay(
+							{
+								agentDir,
+								registry,
+								notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
+								setEditorText: (text) => ctx.ui.setEditorText(text),
+								requestRender: () => tui.requestRender(),
+								rows: () => tui.terminal.rows,
+							},
+							theme,
+							done,
+						),
+					{ overlay: true, overlayOptions: { anchor: "center", width: "80%", minWidth: 48, maxHeight: "80%" } },
+				);
+				drawPanel();
+				return;
+			}
+
+			if (verb === "list") {
+				ctx.ui.notify(statusReport(listRuns(agentDir), liveRuns(), Date.now()), "info");
+				return;
+			}
+
 			if (verb === "cancel") {
 				if (!target) {
 					const count = registry.cancelAll();
@@ -334,14 +377,51 @@ export default function (pi: ExtensionAPI) {
 				const outcome = registry.cancel(target);
 				if (outcome === "cancelled") ctx.ui.notify(`Cancelling ${target}`, "info");
 				else if (outcome === "not-running") ctx.ui.notify(`${target} already finished.`, "info");
-				else ctx.ui.notify(`No workflow ${target}. /workflows lists them.`, "error");
+				else ctx.ui.notify(`${target} is not running in this session. /workflows list shows every run.`, "error");
 				return;
 			}
-			if (verb) {
-				ctx.ui.notify(`Invalid argument: ${verb}. Usage: /workflows [cancel [id]]`, "error");
+
+			if (verb === "pause" || verb === "resume") {
+				if (!target) {
+					ctx.ui.notify(`Usage: /workflows ${verb} <id>`, "error");
+					return;
+				}
+				const outcome = verb === "pause" ? registry.pause(target) : registry.resume(target);
+				if (outcome === "paused") ctx.ui.notify(`${target} pausing — in-flight agents finish, new ones wait.`, "info");
+				else if (outcome === "resumed") ctx.ui.notify(`${target} resumed.`, "info");
+				else if (outcome === "already") ctx.ui.notify(`${target} is already ${verb === "pause" ? "paused" : "running"}.`, "info");
+				else if (outcome === "not-running") ctx.ui.notify(`${target} has finished.`, "info");
+				else ctx.ui.notify(`${target} is not running in this session.`, "error");
 				return;
 			}
-			ctx.ui.notify(statusReport(registry.all(), Date.now()), "info");
+
+			if (verb === "show") {
+				if (!target) {
+					ctx.ui.notify("Usage: /workflows show <id>", "error");
+					return;
+				}
+				const meta = readMeta(agentDir, target);
+				if (!meta) {
+					ctx.ui.notify(`No run ${target}. /workflows list shows every run.`, "error");
+					return;
+				}
+				const live = registry.get(target);
+				const progress = live?.progress ?? progressFromJournal(meta, readJournalLines(agentDir, target));
+				const lines = [
+					`${meta.runId} ${meta.name} — ${meta.status}${meta.resumedFrom ? ` (resumed ${meta.resumedFrom})` : ""}`,
+					`${meta.agentCount} agent(s), ${progress.replayedCount} replayed, ${meta.usage.turns} turns, $${meta.usage.cost.toFixed(4)}`,
+					`store: ${runDir(agentDir, target)}`,
+					"",
+					...allAgents(progress).map(
+						(agent) => `  ${agent.status.padEnd(8)} ${agent.label}${agent.model ? ` · ${agent.model}` : ""}${agent.error ? ` · ${agent.error}` : ""}`,
+					),
+				];
+				if (progress.error) lines.push("", progress.error);
+				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+
+			ctx.ui.notify(`Invalid argument: ${verb}. Usage: /workflows [list|show|pause|resume|cancel [id]]`, "error");
 		},
 	});
 

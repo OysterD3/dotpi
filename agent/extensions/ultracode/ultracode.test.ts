@@ -8,13 +8,35 @@
  * installed, or pi's own package dir):
  *     jiti agent/extensions/ultracode/ultracode.test.ts
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { findKeyword, hasUltracodeKeyword } from "./keyword.ts";
-import { conformsTo, extractJson, parseMeta, runWorkflowScript, type AgentOptions } from "./engine.ts";
+import { parseAgentTypes } from "./agents.ts";
+import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, type AgentOptions } from "./engine.ts";
+import { branchSections, buildContextBundle, renderParent } from "./context.ts";
+import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
+import { DEFAULT_LIMITS, resolveLimits } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
-import { formatElapsed, panelLines, statusReport } from "./panel.ts";
-import { newProgress, orphanedRunIds, RunRegistry, type WorkflowRun } from "./runs.ts";
-import { safeStringify } from "./tool.ts";
+import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
+import { newProgress, PauseGate, RunRegistry, type AgentRow, type WorkflowRun } from "./runs.ts";
+import { buildArgs, stderrDetail } from "./spawn.ts";
+import {
+	agentSessionId,
+	createRun,
+	isSettled,
+	listRuns,
+	newRunId,
+	pruneRuns,
+	readMeta,
+	reconcile,
+	appendJournalLine,
+	readJournalLines,
+	type RunMeta,
+} from "./store.ts";
+import { resolveScript, safeStringify } from "./tool.ts";
+import { WorkflowsOverlay } from "./tui.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
@@ -504,56 +526,82 @@ console.log("\n--- routing: model mentions in the triggering prompt ---");
 
 // ------------------------------------------------------------ runs and panel
 
-console.log("\n--- runs: registry ---");
+console.log("\n--- runs: registry, pause and cancel ---");
 {
 	const registry = new RunRegistry();
-	const makeRun = (status: "running" | "done"): WorkflowRun => {
-		const progress = newProgress(registry.nextId(), "r");
+	const makeRun = (id: string, status: "running" | "done" | "paused"): WorkflowRun => {
+		const progress = newProgress(id, "r");
 		progress.status = status;
-		return { progress, controller: new AbortController(), startedAt: 0, settled: Promise.resolve() };
+		return { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 	};
-	const running = makeRun("running");
+	const running = makeRun("wf-a", "running");
 	registry.add(running);
 	check("active lists running runs", registry.active().length, 1);
-	check("cancel running", registry.cancel(running.progress.runId), "cancelled");
+	check("pause a running run", registry.pause("wf-a"), "paused");
+	check("pause sets the gate", running.gate.isPaused(), true);
+	// The gate is the authority: a run pauses before any agent observes it, so
+	// pausing and resuming between agents has to work.
+	check("pausing twice", registry.pause("wf-a"), "already");
+	check("resume before the pause was observed", registry.resume("wf-a"), "resumed");
+	check("resume clears the gate", running.gate.isPaused(), false);
+	check("resuming a running run", registry.resume("wf-a"), "already");
+	running.progress.status = "paused";
+	check("paused runs stay active", registry.active().length, 1);
+	running.progress.status = "running";
+	check("cancel running", registry.cancel("wf-a"), "cancelled");
 	check("cancel aborts the controller", running.controller.signal.aborted, true);
 	running.progress.status = "done";
-	check("cancel finished run", registry.cancel(running.progress.runId), "not-running");
+	check("cancel finished run", registry.cancel("wf-a"), "not-running");
 	check("cancel unknown run", registry.cancel("wf-99"), "unknown");
-	const stillRunning = makeRun("running");
-	registry.add(stillRunning);
-	for (let i = 0; i < 8; i++) registry.add(makeRun("done"));
-	// 9 finished runs pruned to 5; the running one is never pruned.
-	check("finished runs pruned to the last 5", registry.all().length, 6);
-	check("running run survives pruning", registry.get(stillRunning.progress.runId) !== undefined, true);
+	check("pause unknown run", registry.pause("wf-99"), "unknown");
 }
 
-console.log("\n--- runs: orphaned background runs in a resumed branch ---");
+console.log("\n--- runs: the pause gate ---");
 {
-	const started = (id: string) => ({
-		type: "message",
-		message: { role: "toolResult", content: [{ type: "text", text: `Workflow "audit" started in the background (id: ${id}).` }] },
+	const gate = new PauseGate();
+	const controller = new AbortController();
+	check("open gate does not block", await Promise.race([gate.wait(controller.signal).then(() => "through"), Promise.resolve("through")]), "through");
+
+	gate.pause();
+	let released = false;
+	const parked = gate.wait(controller.signal).then(() => void (released = true));
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	check("paused gate parks the caller", released, false);
+	check("gate reports one waiter", gate.waiting(), 1);
+	gate.resume();
+	await parked;
+	check("resume releases the waiter", released, true);
+
+	// A cancelled run must never leave an agent parked forever.
+	const gate2 = new PauseGate();
+	const controller2 = new AbortController();
+	gate2.pause();
+	const parked2 = gate2.wait(controller2.signal);
+	controller2.abort();
+	await parked2;
+	check("abort releases a parked waiter", true, true);
+}
+
+console.log("\n--- runs: interrupted runs from the store ---");
+{
+	const meta = (runId: string): RunMeta => ({
+		runId,
+		name: "audit",
+		status: "interrupted",
+		cwd: "/p",
+		pid: 1,
+		startedAt: 0,
+		agentCount: 2,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
 	});
-	const finished = (id: string) => ({
-		type: "custom_message",
-		customType: "workflow-result",
-		content: `Workflow "audit" (${id}) finished: 3 agents, 6 turns, $0.10.`,
-	});
-	const cancelled = (id: string) => ({
-		type: "custom_message",
-		customType: "workflow-result",
-		content: `Workflow "audit" (${id}) was cancelled after 1 agent ($0.01): workflow aborted`,
-	});
-	check("start with no result is orphaned", orphanedRunIds([started("wf-1")]), ["wf-1"]);
-	check("finished run is not orphaned", orphanedRunIds([started("wf-1"), finished("wf-1")]), []);
-	check("cancelled run is not orphaned", orphanedRunIds([started("wf-2"), cancelled("wf-2")]), []);
-	check(
-		"only the unresolved one is reported",
-		orphanedRunIds([started("wf-1"), finished("wf-1"), started("wf-2")]),
-		["wf-2"],
-	);
-	check("no workflow traffic -> none", orphanedRunIds([{ type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } }]), []);
-	check("empty branch -> none", orphanedRunIds([]), []);
+	check("no interrupted runs -> no notice", interruptedNotice([]), undefined);
+	const one = interruptedNotice([meta("wf-1")])!;
+	check("names the run", one.includes("wf-1"), true);
+	check("says it is resumable", one.includes('resumeFromRunId: "wf-1"'), true);
+	check("singular phrasing", one.includes("its result message will"), true);
+	const two = interruptedNotice([meta("wf-1"), meta("wf-2")])!;
+	check("names both runs", two.includes("wf-1, wf-2"), true);
+	check("plural phrasing", two.includes("their result messages will"), true);
 }
 
 console.log("\n--- tool: safeStringify ---");
@@ -589,15 +637,549 @@ console.log("\n--- panel ---");
 	check("elapsed hours", formatElapsed(3_720_000), "1h02m");
 	check("no runs -> panel hidden", panelLines([], 0), undefined);
 
+	const row = (index: number, label: string, status: AgentRow["status"]): AgentRow => ({ index, label, status, startedAt: 0 });
 	const progress = newProgress("wf-1", "review");
-	progress.phases.push({ title: "Find", agents: [{ label: "a", status: "done" }, { label: "b", status: "running" }] });
+	progress.phases.push({ title: "Find", agents: [row(1, "a", "done"), row(2, "b", "running")] });
 	progress.usage.cost = 0.1234;
-	const run: WorkflowRun = { progress, controller: new AbortController(), startedAt: 0, settled: Promise.resolve() };
+	const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 	const lines = panelLines([run], 65_000)!;
 	check("panel line carries id, phases, cost, elapsed", lines[0], "◆ wf-1 review  Find 1/2  1 running  $0.1234  1m05s");
 	check("panel hint line", lines.at(-1)?.includes("/workflows"), true);
-	check("status report includes finished shape", statusReport([run], 65_000).startsWith("◆ wf-1 review — Find 1/2"), true);
-	check("status report empty message", statusReport([], 0), "No workflows in this session.");
+
+	// A replayed agent counts as done in every summary.
+	const resumed = newProgress("wf-2", "review");
+	resumed.phases.push({ title: "Find", agents: [row(1, "a", "replayed"), row(2, "b", "done")] });
+	const resumedRun: WorkflowRun = {
+		progress: resumed,
+		controller: new AbortController(),
+		gate: new PauseGate(),
+		startedAt: 0,
+		settled: Promise.resolve(),
+	};
+	check("replayed agents count as done", panelLines([resumedRun], 0)![0]!.includes("Find 2/2"), true);
+
+	const meta: RunMeta = {
+		runId: "wf-1",
+		name: "review",
+		status: "running",
+		cwd: "/p",
+		pid: 1,
+		startedAt: 0,
+		agentCount: 2,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1234, totalTokens: 0, turns: 4 },
+	};
+	const live = new Map([["wf-1", run]]);
+	check("status report shows a live run's phases", statusReport([meta], live, 65_000).startsWith("◆ wf-1 review — Find 1/2"), true);
+	check(
+		"status report falls back to stored totals",
+		statusReport([{ ...meta, status: "done", endedAt: 65_000 }], new Map(), 65_000),
+		"✓ wf-1 review — done · 2 agents · $0.1234 · 1m05s",
+	);
+	check("status report empty message", statusReport([], new Map(), 0), "No workflow runs recorded.");
+}
+
+// ------------------------------------------------------------------ new: store
+
+console.log("\n--- store: ids ---");
+{
+	const a = newRunId(1000);
+	const b = newRunId(1000);
+	check("ids are unique within a millisecond", a !== b, true);
+	check("ids sort by time", newRunId(1000) < newRunId(2000), true);
+	// pi requires /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/ for --session-id,
+	// and agent session ids are built from the run id.
+	const legal = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+	check("run id is a legal session id", legal.test(a), true);
+	check("agent session id is legal", legal.test(agentSessionId(a, 7)), true);
+	check("retry session id is legal", legal.test(agentSessionId(a, 7, 2)), true);
+	check("retries get distinct ids", agentSessionId(a, 7) !== agentSessionId(a, 7, 1), true);
+	check("settled statuses", [isSettled("running"), isSettled("paused"), isSettled("done"), isSettled("interrupted")], [false, false, true, true]);
+}
+
+console.log("\n--- store: round trip, listing, pruning, reconcile ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-store-"));
+	try {
+		const make = (runId: string, status: RunMeta["status"], startedAt: number, pid = process.pid): RunMeta => ({
+			runId,
+			name: `run-${runId}`,
+			status,
+			cwd: "/p",
+			pid,
+			startedAt,
+			agentCount: 1,
+			usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5, totalTokens: 3, turns: 1 },
+		});
+
+		createRun(dir, make("wf-1", "done", 100), "export const meta = {}\n");
+		createRun(dir, make("wf-2", "done", 200), "x");
+		createRun(dir, make("wf-3", "running", 300, 999_999), "y");
+
+		check("readMeta round trips", readMeta(dir, "wf-1")?.name, "run-wf-1");
+		check("unknown run reads as undefined", readMeta(dir, "nope"), undefined);
+		check("listRuns is newest first", listRuns(dir).map((meta) => meta.runId), ["wf-3", "wf-2", "wf-1"]);
+
+		appendJournalLine(dir, "wf-1", { kind: "log", seq: 1, t: 0, message: "hello" });
+		appendJournalLine(dir, "wf-1", { kind: "phase", seq: 2, t: 0, title: "Find" });
+		check("journal round trips", readJournalLines(dir, "wf-1").length, 2);
+		check("journal of an unknown run is empty", readJournalLines(dir, "nope"), []);
+
+		// A run whose owning pid is gone becomes interrupted; live ones are left be.
+		const interrupted = reconcile(dir);
+		check("dead pid becomes interrupted", interrupted.map((meta) => meta.runId), ["wf-3"]);
+		check("status persisted", readMeta(dir, "wf-3")?.status, "interrupted");
+		check("reconcile is idempotent", reconcile(dir).length, 0);
+
+		pruneRuns(dir, 1);
+		check("pruning keeps the newest settled runs", listRuns(dir).map((meta) => meta.runId), ["wf-3"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// ---------------------------------------------------------------- new: journal
+
+console.log("\n--- journal: keys and replay ---");
+{
+	check("stable stringify sorts keys", stableStringify({ b: 1, a: 2 }), '{"a":2,"b":1}');
+	check("stable stringify drops undefined", stableStringify({ a: undefined, b: 1 }), '{"b":1}');
+	check("same prompt and options -> same key", agentKey("p", { model: "sonnet" }), agentKey("p", { model: "sonnet" }));
+	check("key ignores key order", agentKey("p", { model: "a", schema: { x: 1 } }), agentKey("p", { schema: { x: 1 }, model: "a" }));
+	check("relabelling does not change the key", agentKey("p", { label: "one" }), agentKey("p", { label: "two" }));
+	check("a different phase does not change the key", agentKey("p", { phase: "A" }), agentKey("p", { phase: "B" }));
+	check("a different prompt changes the key", agentKey("p", {}) !== agentKey("q", {}), true);
+	check("a different model changes the key", agentKey("p", { model: "a" }) !== agentKey("p", { model: "b" }), true);
+	check("a different context changes the key", agentKey("p", { context: { parent: 2 } }) !== agentKey("p", { context: { parent: 3 } }), true);
+}
+
+console.log("\n--- journal: the replay index ---");
+{
+	const record = (seq: number, key: string, status: "done" | "failed", result?: unknown) => ({
+		kind: "agent" as const,
+		seq,
+		t: 0,
+		index: seq,
+		key,
+		label: `a${seq}`,
+		status,
+		result,
+		startedAt: 0,
+		endedAt: 1,
+	});
+	const index = new ReplayIndex([record(1, "k1", "done", "one"), record(2, "k2", "failed"), record(3, "k1", "done", "two")]);
+	check("only successful agents are replayable", index.size, 2);
+	check("first take", index.take("k1"), { hit: true, record: record(1, "k1", "done", "one") });
+	check("repeats replay in journal order", (index.take("k1") as { record: { result: unknown } }).record.result, "two");
+	check("a third take misses", index.take("k1"), { hit: false });
+	check("a failed agent is not replayed", index.take("k2"), { hit: false });
+	check("an unknown key misses", index.take("nope"), { hit: false });
+	check("hits are counted", index.hitCount, 2);
+	check("out-of-order records replay in seq order", new ReplayIndex([record(3, "k", "done", "b"), record(1, "k", "done", "a")]).take("k"), {
+		hit: true,
+		record: record(1, "k", "done", "a"),
+	});
+}
+
+console.log("\n--- journal: rebuilding a run's view ---");
+{
+	const meta: RunMeta = {
+		runId: "wf-1",
+		name: "review",
+		status: "done",
+		cwd: "/p",
+		pid: 1,
+		startedAt: 0,
+		endedAt: 10,
+		agentCount: 2,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.02, totalTokens: 0, turns: 2 },
+	};
+	const progress = progressFromJournal(meta, [
+		{ kind: "phase", seq: 1, t: 0, title: "Find" },
+		{ kind: "agent", seq: 2, t: 0, index: 2, key: "k", label: "b", phase: "Find", status: "done", startedAt: 0, endedAt: 5 },
+		{ kind: "agent", seq: 3, t: 0, index: 1, key: "k", label: "a", phase: "Find", status: "done", startedAt: 0, endedAt: 4, replayed: true },
+		{ kind: "log", seq: 4, t: 0, message: "done" },
+		{ kind: "agent", seq: 5, t: 0, index: 3, key: "k", label: "c", status: "failed", error: "boom", startedAt: 0, endedAt: 6 },
+	]);
+	check("phases are rebuilt", progress.phases.map((phase) => phase.title), ["Find", "Agents"]);
+	check("agents sort by index inside a phase", progress.phases[0]!.agents.map((agent) => agent.label), ["a", "b"]);
+	check("replayed agents are marked", progress.phases[0]!.agents[0]!.status, "replayed");
+	check("replayed agents are counted", progress.replayedCount, 1);
+	check("a phaseless agent lands under Agents", progress.phases[1]!.agents[0]!.label, "c");
+	check("failures carry their reason", progress.phases[1]!.agents[0]!.error, "boom");
+	check("logs are rebuilt", progress.logs, ["done"]);
+	check("totals come from run.json", progress.usage.cost, 0.02);
+	check("a journal-less run still renders", progressFromJournal(meta, []).phases, []);
+}
+
+// ---------------------------------------------------------------- new: context
+
+console.log("\n--- context: rendering the parent branch ---");
+{
+	const message = (role: string, text: string) => ({ type: "message", message: { role, content: [{ type: "text", text }] } });
+	const branch = [
+		message("user", "first"),
+		message("assistant", "second"),
+		{ type: "custom", message: undefined },
+		message("user", "third"),
+		message("assistant", ""),
+	];
+	check("only user and assistant text becomes sections", branchSections(branch), ["User: first", "Assistant: second", "User: third"]);
+	check("a string content body works", branchSections([{ type: "message", message: { role: "user", content: "plain" } }]), ["User: plain"]);
+	check("the last N turns are kept", renderParent(branch, 2, 10_000), "Assistant: second\n\nUser: third");
+	check('"all" keeps everything', renderParent(branch, "all", 10_000).split("\n\n").length, 3);
+	check("zero turns renders nothing", renderParent(branch, 0, 10_000), "");
+	// A tight budget drops the OLDEST first and says how many went.
+	const tight = renderParent(branch, "all", 20);
+	check("budget keeps the newest", tight.endsWith("User: third"), true);
+	check("budget announces what it dropped", tight.startsWith("[2 earlier message(s) omitted]"), true);
+	check("empty branch renders nothing", renderParent([], "all", 100), "");
+}
+
+console.log("\n--- context: the seed bundle ---");
+{
+	const limits = { contextBudgetChars: 10_000, fileBudgetChars: 1000 };
+	const branch = [{ type: "message", message: { role: "user", content: [{ type: "text", text: "the ask" }] } }];
+	check("nothing requested -> no bundle", buildContextBundle({ context: {}, branch, cwd: "/p", limits }), undefined);
+
+	const text = buildContextBundle({ context: { text: "findings" }, branch, cwd: "/p", limits })!;
+	check("literal text is carried", text.includes("## Context\n\nfindings"), true);
+	check("the bundle explains itself", text.startsWith("The following is context forked from"), true);
+
+	const parent = buildContextBundle({ context: { parent: 1 }, branch, cwd: "/p", limits })!;
+	check("parent turns are carried", parent.includes("## Conversation so far\n\nUser: the ask"), true);
+
+	const missing = buildContextBundle({ context: { files: ["definitely-not-here.txt"] }, branch, cwd: "/p", limits })!;
+	check("an unreadable file is reported, not fatal", missing.includes("could not be read"), true);
+
+	const real = buildContextBundle({ context: { files: ["config.ts"] }, branch, cwd: import.meta.dirname, limits })!;
+	check("a real file is embedded", real.includes("### config.ts"), true);
+	check("sections are ordered text, files, parent", real.indexOf("## Files") < (real.indexOf("## Conversation") + 1e9), true);
+
+	const squeezed = buildContextBundle({ context: { text: "x".repeat(50) }, branch, cwd: "/p", limits: { contextBudgetChars: 60, fileBudgetChars: 10 } })!;
+	check("the whole bundle is capped", squeezed.endsWith("… [context truncated]"), true);
+}
+
+// ----------------------------------------------------------------- new: engine
+
+console.log("\n--- engine: validation and exports ---");
+{
+	check(
+		"a second export does not break the body",
+		(await runWorkflowScript(`${META}export const SCHEMA = { type: 'object' }\nreturn SCHEMA.type`, undefined, fakeHooks(() => "x").hooks)).result,
+		"object",
+	);
+	check(
+		"an exported function works too",
+		(await runWorkflowScript(`${META}export function f() { return 3 }\nreturn f()`, undefined, fakeHooks(() => "x").hooks)).result,
+		3,
+	);
+	check("the word export inside a string survives", parseMeta(`${META}return "export const x"`).body.includes('"export const x"'), true);
+	// A syntax error must fail validation, not a background run minutes later.
+	check(
+		"validateScript catches a syntax error",
+		(() => {
+			try {
+				validateScript(`${META}return (\n`);
+				return "no-throw";
+			} catch (error) {
+				return (error as Error).message.startsWith("workflow script does not compile") ? "threw" : "wrong-error";
+			}
+		})(),
+		"threw",
+	);
+	check("validateScript passes a good script", validateScript(`${META}return 1`).meta.name, "t");
+}
+
+console.log("\n--- engine: determinism ---");
+{
+	const bans = async (expression: string) => {
+		const outcome = await runWorkflowScript(`${META}return ${expression}`, undefined, fakeHooks(() => "x").hooks).then(
+			() => "allowed",
+			(error: Error) => (error.message.includes("would break resume") ? "banned" : `other: ${error.message}`),
+		);
+		return outcome;
+	};
+	check("Date.now() is banned", await bans("Date.now()"), "banned");
+	check("argless new Date() is banned", await bans("new Date().getTime()"), "banned");
+	check("Math.random() is banned", await bans("Math.random()"), "banned");
+	check("Math still works otherwise", (await runWorkflowScript(`${META}return Math.max(1, 2)`, undefined, fakeHooks(() => "x").hooks)).result, 2);
+	check(
+		"new Date(value) still works",
+		(await runWorkflowScript(`${META}return new Date(0).getUTCFullYear()`, undefined, fakeHooks(() => "x").hooks)).result,
+		1970,
+	);
+	// Scripts can opt out, and then they simply are not resumable.
+	const opted = `export const meta = { name: 't', description: 'd', deterministic: false }\nreturn typeof Date.now()`;
+	check("a script can opt out", (await runWorkflowScript(opted, undefined, fakeHooks(() => "x").hooks)).result, "number");
+}
+
+console.log("\n--- engine: replay ---");
+{
+	const f = fakeHooks(() => "live");
+	const served = new Map([[agentKey("cached", {}), "from-journal"]]);
+	const hooks = {
+		...f.hooks,
+		replay: (key: string) => (served.has(key) ? { hit: true as const, value: served.get(key) } : { hit: false as const }),
+	};
+	const run = await runWorkflowScript(`${META}const a = await agent('cached')\nconst b = await agent('fresh')\nreturn [a, b]`, undefined, hooks);
+	check("a cache hit returns the stored value", run.result, ["from-journal", "live"]);
+	check("a replayed agent is not spawned", f.spawned.map((call) => call.prompt), ["fresh"]);
+	check("replays are counted", run.replayedCount, 1);
+	check("replayed agents still count toward the total", run.agentCount, 2);
+	check("a replayed agent reports lifecycle events", f.lifecycle.filter((entry) => entry.event === "start").length, 2);
+}
+
+console.log("\n--- engine: pause ---");
+{
+	const f = fakeHooks(() => "x");
+	let paused = true;
+	let parked = 0;
+	const hooks = {
+		...f.hooks,
+		waitWhilePaused: async () => {
+			if (!paused) return;
+			parked++;
+			while (paused) await new Promise((resolve) => setTimeout(resolve, 2));
+		},
+	};
+	const run = runWorkflowScript(`${META}return await agent('one')`, undefined, hooks);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	check("a paused run spawns nothing", f.spawned.length, 0);
+	check("the call is parked", parked, 1);
+	paused = false;
+	check("unpausing lets it through", (await run).result, "x");
+}
+
+console.log("\n--- engine: settled outcomes ---");
+{
+	const outcomes: Array<{ label: string; status: string; attempts: number }> = [];
+	const f = fakeHooks((prompt: string) => (prompt.includes("bad") ? Promise.reject(new Error("nope")) : "ok"));
+	const hooks = {
+		...f.hooks,
+		agentSettled: (outcome: { label: string; status: string; attempts: number }) =>
+			void outcomes.push({ label: outcome.label, status: outcome.status, attempts: outcome.attempts }),
+	};
+	await runWorkflowScript(`${META}await agent('good', { label: 'g' })\nawait agent('bad', { label: 'b' })\nreturn 1`, undefined, hooks);
+	check("every agent reports an outcome", outcomes, [
+		{ label: "g", status: "done", attempts: 1 },
+		{ label: "b", status: "failed", attempts: 1 },
+	]);
+
+	// A schema agent that never produces usable JSON must report every attempt
+	// it burned, not zero.
+	const retried: number[] = [];
+	const g = fakeHooks(() => "not json");
+	await runWorkflowScript(`${META}await agent('x', { schema: { type: 'object', required: ['a'] } })\nreturn 1`, undefined, {
+		...g.hooks,
+		agentSettled: (outcome: { attempts: number }) => void retried.push(outcome.attempts),
+	});
+	check("a failed schema agent counts its retries", retried, [2]);
+}
+
+// ------------------------------------------------------------- new: agent types
+
+console.log("\n--- agents: the subagent registry ---");
+{
+	const registry = parseAgentTypes({
+		defaults: { model: "gpt-5", reasoning: "high" },
+		agents: [
+			{ name: "explorer", purpose: "look", tools: ["read", "grep"], reasoning: "low", model: "haiku" },
+			{ name: "bad-level", purpose: "x", reasoning: "turbo" },
+			{ name: "", purpose: "nameless" },
+			"not an object",
+		],
+	});
+	check("valid agents are kept", [...registry.types.keys()], ["explorer", "bad-level"]);
+	check("tools are carried", registry.types.get("explorer")?.tools, ["read", "grep"]);
+	check("reasoning maps to a thinking level", registry.types.get("explorer")?.thinking, "low");
+	check("an invalid level is dropped, not fatal", registry.types.get("bad-level")?.thinking, undefined);
+	check("defaults are parsed", registry.defaults, { model: "gpt-5", thinking: "high" });
+	check("junk parses to an empty registry", parseAgentTypes(null).types.size, 0);
+}
+
+// ---------------------------------------------------------------- new: plumbing
+
+console.log("\n--- config: settings-driven limits ---");
+{
+	check("no overrides -> defaults", resolveLimits(undefined), DEFAULT_LIMITS);
+	check("an override is applied", resolveLimits({ maxConcurrency: 3 }).maxConcurrency, 3);
+	check("other limits keep their default", resolveLimits({ maxConcurrency: 3 }).maxAgentsPerRun, DEFAULT_LIMITS.maxAgentsPerRun);
+	check("a non-positive override is ignored", resolveLimits({ maxConcurrency: 0 }).maxConcurrency, DEFAULT_LIMITS.maxConcurrency);
+	check("a non-numeric override is ignored", resolveLimits({ maxConcurrency: "lots" }).maxConcurrency, DEFAULT_LIMITS.maxConcurrency);
+	check("unknown keys are ignored", resolveLimits({ nonsense: 5 }), DEFAULT_LIMITS);
+}
+
+console.log("\n--- spawn: argument building ---");
+{
+	const base = { prompt: "do it", cwd: "/p", approved: false };
+	check("no session dir -> ephemeral", buildArgs(base).includes("--no-session"), true);
+	const kept = buildArgs({ ...base, sessionDir: "/runs/agents", sessionId: "wf-1-a1" });
+	check("a session dir keeps the transcript", kept.includes("--no-session"), false);
+	check("session dir is passed", kept.slice(kept.indexOf("--session-dir"), kept.indexOf("--session-dir") + 2), ["--session-dir", "/runs/agents"]);
+	check("session id is passed", kept.slice(kept.indexOf("--session-id"), kept.indexOf("--session-id") + 2), ["--session-id", "wf-1-a1"]);
+	const withTools = buildArgs({ ...base, tools: ["read", "grep"] });
+	check("tools are joined", withTools.slice(withTools.indexOf("--tools"), withTools.indexOf("--tools") + 2), ["--tools", "read,grep"]);
+	check("a role prompt is passed", buildArgs({ ...base, appendSystemPrompt: "you are x" }).includes("--append-system-prompt"), true);
+	check("trust is forwarded", buildArgs({ ...base, approved: true }).includes("--approve"), true);
+	check("the prompt is last", buildArgs(base).at(-1), "do it");
+	check("extensions stay off", buildArgs(base).includes("--no-extensions"), true);
+
+	// The new-session notice must not be reported as the cause of a failure.
+	check(
+		"the session-id notice is filtered out",
+		stderrDetail("Warning: No project session found with id 'wf-1-a1'; creating a new session with that id."),
+		"",
+	);
+	check("a real error still surfaces", stderrDetail("Warning: No project session found with id 'x'\nmodel is overloaded"), "model is overloaded");
+	check("empty stderr", stderrDetail("   "), "");
+}
+
+console.log("\n--- tool: where a script comes from ---");
+{
+	check("inline script", resolveScript({ script: "s" }, "/agent").source, "inline");
+	check(
+		"nothing given is an error",
+		(() => {
+			try {
+				resolveScript({}, "/agent");
+				return "no-throw";
+			} catch (error) {
+				return (error as Error).message.includes("requires one of") ? "threw" : "wrong-error";
+			}
+		})(),
+		"threw",
+	);
+	check(
+		"an unknown saved name names the directory it looked in",
+		(() => {
+			try {
+				resolveScript({ name: "nope" }, "/agent");
+				return "no-throw";
+			} catch (error) {
+				return (error as Error).message.includes("/agent/workflows") ? "threw" : `wrong: ${(error as Error).message}`;
+			}
+		})(),
+		"threw",
+	);
+	check(
+		"an unreadable path is reported",
+		(() => {
+			try {
+				resolveScript({ scriptPath: "/definitely/not/here.js" }, "/agent");
+				return "no-throw";
+			} catch (error) {
+				return (error as Error).message.startsWith("cannot read scriptPath") ? "threw" : "wrong-error";
+			}
+		})(),
+		"threw",
+	);
+	check(
+		"resuming a run with no stored script is an error",
+		(() => {
+			try {
+				resolveScript({ resumeFromRunId: "wf-missing" }, mkdtempSync(join(tmpdir(), "wf-empty-")));
+				return "no-throw";
+			} catch (error) {
+				return (error as Error).message.includes("stored script is missing") ? "threw" : "wrong-error";
+			}
+		})(),
+		"threw",
+	);
+}
+
+// -------------------------------------------------------------------- new: TUI
+
+console.log("\n--- tui: the control overlay ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-"));
+	try {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.25, totalTokens: 0, turns: 2 };
+		createRun(dir, { runId: "wf-1", name: "review", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 5000, agentCount: 2, usage }, "s");
+		createRun(dir, { runId: "wf-2", name: "audit", status: "error", cwd: "/p", pid: process.pid, startedAt: 100, endedAt: 200, agentCount: 1, usage, error: "boom" }, "s");
+		appendJournalLine(dir, "wf-1", { kind: "phase", seq: 1, t: 0, title: "Find" });
+		appendJournalLine(dir, "wf-1", {
+			kind: "agent",
+			seq: 2,
+			t: 0,
+			index: 1,
+			key: "k",
+			label: "finder",
+			phase: "Find",
+			model: "openai/gpt-5",
+			status: "done",
+			startedAt: 0,
+			endedAt: 2000,
+			sessionFile: "/tmp/agent.jsonl",
+		});
+
+		const notices: string[] = [];
+		const editor: string[] = [];
+		let closed = false;
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const overlay = new WorkflowsOverlay(
+			{
+				agentDir: dir,
+				registry: new RunRegistry(),
+				notify: (message) => void notices.push(message),
+				setEditorText: (text) => void editor.push(text),
+				requestRender: () => {},
+				rows: () => 40,
+			},
+			theme,
+			() => void (closed = true),
+		);
+
+		const text = () => overlay.render(80).join("\n");
+		check("the run list opens first", text().includes("✦ Workflows"), true);
+		check("both runs are listed, newest first", /wf-2 audit[\s\S]*wf-1 review/.test(text()), true);
+		check("the newest is selected", text().includes("▸ ✗ wf-2"), true);
+
+		overlay.handleInput("j");
+		check("j moves down", text().includes("▸ ✓ wf-1"), true);
+
+		overlay.handleInput("l");
+		check("→ opens the run", text().includes("Find  1/1"), true);
+		check("its agents are listed", text().includes("finder"), true);
+
+		overlay.handleInput("g");
+		check("g shows the log pane", text().includes("no log lines"), true);
+		overlay.handleInput("g");
+
+		overlay.handleInput("l");
+		check("→ opens the agent", text().includes("openai/gpt-5"), true);
+		check("agent detail shows elapsed", text().includes("2s"), true);
+		check("agent detail shows its transcript", text().includes("/tmp/agent.jsonl"), true);
+
+		overlay.handleInput("h");
+		check("← goes back to the run", text().includes("Find  1/1"), true);
+
+		// A run this process is not driving cannot be paused or cancelled, and
+		// says so rather than pretending.
+		overlay.handleInput("p");
+		check("pausing a foreign run is refused", text().includes("not running in this session"), true);
+
+		overlay.handleInput("R");
+		check("R writes a resume instruction", editor[0]?.includes('resumeFromRunId: "wf-1"'), true);
+		check("R explains itself", notices[0]?.includes("press enter to send it"), true);
+		check("R closes the overlay", closed, true);
+
+		overlay.dispose();
+
+		// An empty store still renders rather than throwing.
+		const empty = mkdtempSync(join(tmpdir(), "wf-tui-empty-"));
+		const blank = new WorkflowsOverlay(
+			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, setEditorText: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		check("an empty store renders", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
+		blank.handleInput("l");
+		check("drilling into nothing is a no-op", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
+		blank.dispose();
+		rmSync(empty, { recursive: true, force: true });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 // ------------------------------------------------------------- mode cadence

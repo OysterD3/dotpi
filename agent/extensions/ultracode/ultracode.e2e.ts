@@ -12,7 +12,7 @@
  * Reads settings from a scratch agent dir via PI_CODING_AGENT_DIR and never
  * writes outside it.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,12 +70,17 @@ const pi = {
 
 ultracode(pi as any);
 
+/** Colourless theme: renderers are checked for content, not for escape codes. */
+const theme = { fg: (_key: string, text: string) => text, bold: (text: string) => text };
+
 function makeCtx(
 	options: { model?: any; branch?: any[]; trusted?: boolean; registryModels?: any[]; idle?: boolean; dead?: () => boolean } = {},
 ) {
 	const notices: Array<{ message: string; type: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
 	const widgets: Array<{ key: string; lines: string[] | undefined }> = [];
+	const customs: Array<{ options: any }> = [];
+	const editorText: string[] = [];
 	// pi's context getters call assertActive() and THROW once the session they
 	// belong to is replaced; `dead` reproduces that.
 	const live = () => {
@@ -102,15 +107,29 @@ function makeCtx(
 			live();
 			return options.trusted ?? true;
 		},
-		sessionManager: { getBranch: () => options.branch ?? [] },
+		sessionManager: { getBranch: () => options.branch ?? [], getSessionFile: () => join(CWD, "session.jsonl") },
 		modelRegistry: { getAll: () => options.registryModels ?? [] },
 		ui: {
 			notify: (message: string, type = "info") => notices.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
 			setWidget: (key: string, lines: string[] | undefined) => widgets.push({ key, lines }),
+			setEditorText: (text: string) => editorText.push(text),
+			// The overlay is recorded and closed at once: this harness checks that
+			// /workflows reaches for it, not how it draws.
+			custom: async (factory: any, options: any) => {
+				customs.push({ options });
+				const component = factory(
+					{ requestRender: () => {}, terminal: { rows: 40, columns: 120 } },
+					theme,
+					{},
+					() => {},
+				);
+				component.dispose?.();
+				return undefined;
+			},
 		},
 	};
-	return { ctx, notices, statuses, widgets };
+	return { ctx, notices, statuses, widgets, customs, editorText };
 }
 
 const MODEL = { provider: "openai-codex", id: "gpt-5.4-mini", name: "mini", reasoning: true, contextWindow: 200_000 };
@@ -415,7 +434,7 @@ console.log("\n--- workflow tool: wait mode ---");
 	].join("\n");
 	const result = await tool.execute("t1", { script, args: { n: 21 }, wait: true }, undefined, undefined, ctx);
 	const text = result.content[0].text as string;
-	check("summary line", /^Workflow "demo" \(wf-\d+\) finished: 0 agents/.test(text), true);
+	check("summary line", /^Workflow "demo" \(wf-[a-z0-9]+-\d+\) finished: 0 agents/.test(text), true);
 	check("result JSON in content", text.includes('"answer": 42'), true);
 	check("details status done", result.details.status, "done");
 	check("phase recorded in details", result.details.phases.map((p: any) => p.title), ["Go"]);
@@ -479,7 +498,7 @@ console.log("\n--- workflow tool: background ---");
 	].join("\n");
 	const immediate = await tool.execute("t6", { script }, undefined, undefined, ctx);
 	const startText = immediate.content[0].text as string;
-	check("returns immediately with run id", /started in the background \(id: wf-\d+\)/.test(startText), true);
+	check("returns immediately with run id", /started in the background \(id: wf-[a-z0-9]+-\d+\)/.test(startText), true);
 	check("warns against fabricating results", startText.includes("do not fabricate"), true);
 	check("background details flag", immediate.details.background, true);
 	check("panel showed the run", widgets.some((w) => w.key === "workflows" && w.lines?.some((l) => l.includes("bg"))), true);
@@ -493,10 +512,10 @@ console.log("\n--- workflow tool: background ---");
 	check("panel cleared when quiet", widgets.at(-1)?.lines, undefined);
 }
 
-console.log("\n--- workflow tool: /workflows and cancel ---");
+console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 {
 	const tool = tools.get("workflow")!;
-	const { ctx, notices } = makeCtx({ model: MODEL });
+	const { ctx, notices, customs } = makeCtx({ model: MODEL });
 	events.get("session_start")!({}, ctx);
 	sent.length = 0;
 	const script = [
@@ -505,23 +524,90 @@ console.log("\n--- workflow tool: /workflows and cancel ---");
 		"return 'slept'",
 	].join("\n");
 	const immediate = await tool.execute("t7", { script }, undefined, undefined, ctx);
-	const runId = /id: (wf-\d+)/.exec(immediate.content[0].text)![1]!;
+	const runId = /id: (wf-[a-z0-9]+-\d+)/.exec(immediate.content[0].text)![1]!;
 
+	// Bare /workflows opens the control TUI as a centred overlay.
 	await commands.get("workflows")!.handler("", ctx);
-	check("/workflows lists the run", notices.at(-1)?.message.includes(`${runId} sleeper`), true);
+	check("/workflows opens an overlay", customs.at(-1)?.options?.overlay, true);
+	check("overlay is centred and bounded", customs.at(-1)?.options?.overlayOptions?.anchor, "center");
+
+	await commands.get("workflows")!.handler("list", ctx);
+	check("/workflows list names the run", notices.at(-1)?.message.includes(`${runId} sleeper`), true);
+
+	await commands.get("workflows")!.handler(`pause ${runId}`, ctx);
+	check("pause acknowledged", notices.at(-1)?.message.startsWith(`${runId} pausing`), true);
+	await commands.get("workflows")!.handler(`resume ${runId}`, ctx);
+	check("resume acknowledged", notices.at(-1)?.message, `${runId} resumed.`);
+	await commands.get("workflows")!.handler("pause", ctx);
+	check("pause needs an id", notices.at(-1)?.message, "Usage: /workflows pause <id>");
+
+	await commands.get("workflows")!.handler(`show ${runId}`, ctx);
+	check("show reports the store path", notices.at(-1)?.message.includes(`workflow-runs/${runId}`), true);
 
 	await commands.get("workflows")!.handler(`cancel ${runId}`, ctx);
 	check("cancel acknowledged", notices.at(-1)?.message, `Cancelling ${runId}`);
 
 	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
 	check("cancelled run reports back", sent[0]?.message.content.includes("was cancelled"), true);
+	check("cancelled run offers a resume", sent[0]?.message.content.includes(`resumeFromRunId: "${runId}"`), true);
 
 	await commands.get("workflows")!.handler(`cancel ${runId}`, ctx);
 	check("cancel after finish", notices.at(-1)?.message, `${runId} already finished.`);
 	await commands.get("workflows")!.handler("cancel wf-99", ctx);
-	check("cancel unknown", notices.at(-1)?.message, "No workflow wf-99. /workflows lists them.");
+	check("cancel unknown", notices.at(-1)?.message, "wf-99 is not running in this session. /workflows list shows every run.");
+	await commands.get("workflows")!.handler("show wf-99", ctx);
+	check("show unknown", notices.at(-1)?.message, "No run wf-99. /workflows list shows every run.");
 	await commands.get("workflows")!.handler("bogus", ctx);
-	check("invalid /workflows argument", notices.at(-1)?.message, "Invalid argument: bogus. Usage: /workflows [cancel [id]]");
+	check("invalid /workflows argument", notices.at(-1)?.message, "Invalid argument: bogus. Usage: /workflows [list|show|pause|resume|cancel [id]]");
+}
+
+console.log("\n--- workflow tool: the run store ---");
+{
+	const tool = tools.get("workflow")!;
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	const script = [
+		"export const meta = { name: 'stored', description: 'leaves a trail' }",
+		"phase('Only')",
+		"log('a line')",
+		"return { n: 1 }",
+	].join("\n");
+	const result = await tool.execute("t11", { script, wait: true }, undefined, undefined, ctx);
+	const runId = result.details.runId as string;
+	const dir = join(AGENT, "workflow-runs", runId);
+
+	check("run directory exists", existsSync(dir), true);
+	check("script is stored verbatim", readFileSync(join(dir, "script.js"), "utf8"), script);
+	const meta = JSON.parse(readFileSync(join(dir, "run.json"), "utf8"));
+	check("run.json records the outcome", meta.status, "done");
+	check("run.json records the owning pid", meta.pid, process.pid);
+	const journal = readFileSync(join(dir, "journal.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+	check("journal records start and end", [journal[0].event, journal.at(-1).event], ["start", "end"]);
+	check("journal records the phase", journal.some((record: any) => record.kind === "phase" && record.title === "Only"), true);
+	check("journal records the log line", journal.some((record: any) => record.kind === "log" && record.message === "a line"), true);
+	check("journal sequence is monotonic", journal.every((record: any, i: number) => i === 0 || record.seq > journal[i - 1].seq), true);
+
+	// Resuming with no agents to replay still runs and records its lineage.
+	const resumed = await tool.execute("t12", { wait: true, resumeFromRunId: runId }, undefined, undefined, ctx);
+	check("resume reuses the stored script", resumed.details.name, "stored");
+	check("resume records its parent", resumed.details.resumedFrom, runId);
+	check("resume reproduced the result", (resumed.content[0].text as string).includes('"n": 1'), true);
+
+	// A saved workflow can be run by name.
+	mkdirSync(join(AGENT, "workflows"), { recursive: true });
+	writeFileSync(join(AGENT, "workflows", "saved.js"), `export const meta = { name: 'saved', description: 'from disk' }\nreturn 'hi'`);
+	const byName = await tool.execute("t13", { name: "saved", wait: true }, undefined, undefined, ctx);
+	check("a saved workflow runs by name", (byName.content[0].text as string).includes('"hi"'), true);
+	const missing = await tool
+		.execute("t14", { name: "nope", wait: true }, undefined, undefined, ctx)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("an unknown saved name is an error", missing.includes('no saved workflow named "nope"'), true);
+
+	// A syntax error must fail the CALL, not arrive later as a failed run.
+	const broken = await tool
+		.execute("t15", { script: `export const meta = { name: 'b', description: 'b' }\nreturn (` }, undefined, undefined, ctx)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("a syntax error fails the tool call", broken.startsWith("workflow script does not compile"), true);
 }
 
 console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
@@ -593,23 +679,58 @@ console.log("\n--- panel survives a dead session ---");
 	check("no result delivered to a dead session", sent.length, 0);
 }
 
-console.log("\n--- resumed session is told about orphaned runs ---");
+console.log("\n--- resumed session is told about interrupted runs ---");
 {
-	const branch = [
-		{
-			type: "message",
-			message: { role: "toolResult", content: [{ type: "text", text: 'Workflow "audit" started in the background (id: wf-7).' }] },
-		},
-	];
-	const { ctx } = makeCtx({ model: MODEL, branch });
+	// A run left behind by a process that is gone: status "running" on disk with
+	// a pid nothing owns. session_start reconciles it and the next turn says so.
+	const orphanDir = join(AGENT, "workflow-runs", "wf-orphan-1");
+	mkdirSync(orphanDir, { recursive: true });
+	writeFileSync(
+		join(orphanDir, "run.json"),
+		JSON.stringify({
+			runId: "wf-orphan-1",
+			name: "audit",
+			status: "running",
+			cwd: CWD,
+			pid: 999_999,
+			startedAt: Date.now(),
+			agentCount: 2,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.5, totalTokens: 0, turns: 2 },
+		}),
+	);
+
+	const { ctx } = makeCtx({ model: MODEL });
 	events.get("session_start")!({}, ctx);
+	check("the store marks it interrupted", JSON.parse(readFileSync(join(orphanDir, "run.json"), "utf8")).status, "interrupted");
+
 	const correction = await turn("what did the audit find?");
 	check(
 		"correction injected once",
-		correction?.message?.content.includes("wf-7 did not survive the end of the previous session"),
+		correction?.message?.content.includes("wf-orphan-1 did not survive the end of the previous session"),
 		true,
 	);
+	check("and it names the resume path", correction?.message?.content.includes('resumeFromRunId: "wf-orphan-1"'), true);
 	check("and not repeated", await turn("anything else?"), undefined);
+
+	// A run owned by a LIVE process belongs to another session: leave it alone.
+	const liveDir = join(AGENT, "workflow-runs", "wf-live-1");
+	mkdirSync(liveDir, { recursive: true });
+	writeFileSync(
+		join(liveDir, "run.json"),
+		JSON.stringify({
+			runId: "wf-live-1",
+			name: "other",
+			status: "running",
+			cwd: CWD,
+			pid: process.pid,
+			startedAt: Date.now(),
+			agentCount: 0,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
+		}),
+	);
+	events.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
+	check("a live run is left alone", JSON.parse(readFileSync(join(liveDir, "run.json"), "utf8")).status, "running");
+	check("and no correction is raised for it", await turn("still there?"), undefined);
 }
 
 rmSync(ROOT, { recursive: true, force: true });
