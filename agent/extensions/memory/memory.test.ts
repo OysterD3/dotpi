@@ -40,8 +40,8 @@ function checkTrue(label: string, got: boolean) {
 // ------------------------------------------------------------------- locate
 
 console.log("--- locate: cwd -> slug ---");
-check("dotfile path (matches the real -Users--pi form)", projectSlugs("/Users/oysterlee/.pi")[0], "-Users-oysterlee--pi");
-check("hyphens survive", projectSlugs("/Users/oysterlee/acme/acme-api")[0], "-Users-oysterlee-acme-acme-api");
+check("dotfile path (matches the real -Users--pi form)", projectSlugs("/Users/me/.pi")[0], "-Users-me--pi");
+check("hyphens survive", projectSlugs("/Users/me/acme/acme-api")[0], "-Users-me-acme-acme-api");
 check("underscore path yields two candidates", projectSlugs("/work/my_proj"), ["-work-my-proj", "-work-my_proj"]);
 
 // Lay out a fake Claude Code store.

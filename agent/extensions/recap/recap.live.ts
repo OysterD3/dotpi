@@ -10,14 +10,15 @@
  * Run directly:
  *     pnpm dlx jiti agent/extensions/recap/recap.live.ts
  */
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { RECAP_SYSTEM, recapRequest } from "./prompts.ts";
 import { buildTranscript } from "./transcript.ts";
 
 const runtime = await ModelRuntime.create({
-	authPath: "/Users/oysterlee/.pi/agent/auth.json",
-	modelsStorePath: "/Users/oysterlee/.pi/agent/models-store.json",
+	authPath: join(getAgentDir(), "auth.json"),
+	modelsStorePath: join(getAgentDir(), "models-store.json"),
 });
 
 const model =

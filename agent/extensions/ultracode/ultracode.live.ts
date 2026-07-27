@@ -12,15 +12,19 @@
  * dependencies of this repo):
  *     jiti agent/extensions/ultracode/ultracode.live.ts
  */
+import { createRequire } from "node:module";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { dirname, join } from "node:path";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 // piInvocation() resolves the pi binary from process.argv[1], which inside a
-// running pi is pi's own entry script. Reproduce that condition here.
+// running pi is pi's own entry script. Reproduce that condition here, resolving
+// against the same basis as the static import above — if that import loaded,
+// this resolves too. The package only exports ".", so cli.js is taken from
+// beside the resolved entry rather than requested as a subpath.
 process.argv[1] =
-	"/Users/oysterlee/Library/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.81.1/8c1adef989f2d9abbd49ba1abe62d1ade279fa2c19c1265a0ffed8b50758c8aa/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
+	process.env.PI_CLI ??
+	join(dirname(createRequire(import.meta.url).resolve("@earendil-works/pi-coding-agent")), "cli.js");
 
 const { registerWorkflowTool } = await import("./tool.ts");
 const { RunRegistry } = await import("./runs.ts");
@@ -32,8 +36,8 @@ const CWD = mkdtempSync(join(tmpdir(), "ultracode-live-"));
 const AGENT_DIR = mkdtempSync(join(tmpdir(), "ultracode-live-agent-"));
 
 const runtime = await ModelRuntime.create({
-	authPath: "/Users/oysterlee/.pi/agent/auth.json",
-	modelsStorePath: "/Users/oysterlee/.pi/agent/models-store.json",
+	authPath: join(getAgentDir(), "auth.json"),
+	modelsStorePath: join(getAgentDir(), "models-store.json"),
 });
 const models = runtime.getModels("openai-codex");
 const model = models.find((m) => m.id === "gpt-5.4-mini") ?? models[0];

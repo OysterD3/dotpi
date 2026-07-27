@@ -1,0 +1,25 @@
+name: gitleaks
+
+# The local pre-commit hook is opt-in per clone (core.hooksPath) and can be
+# skipped with --no-verify, so this is the backstop that always runs.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history on purpose: a credential in an old commit is still
+          # published, and a shallow clone would never see it.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

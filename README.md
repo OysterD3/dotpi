@@ -16,7 +16,8 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 Each extension is a folder whose `index.ts` is the entry point; every sibling file is a plain
 helper module. That is pi's documented multi-file layout, and it's required here — pi auto-loads
 *every* top-level `extensions/*.ts` as its own extension, so a helper sitting beside an entry point
-would be loaded as an extension and fail.
+would be loaded as an extension and fail. The lone top-level file is `cmux-session.ts`, which is
+cmux's own generated bridge rather than one of ours — see `agent/extensions/cmux-notify/` below.
 
 **`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the

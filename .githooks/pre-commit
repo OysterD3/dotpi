@@ -1,0 +1,34 @@
+#!/bin/sh
+# Secret guard for this public repo. This directory lives inside ~/.pi, where pi
+# writes auth.json and .env — one bad `git add -A` publishes a credential, and
+# git history keeps it even after a later delete.
+#
+# Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# Bypass a false positive with:  git commit --no-verify
+set -eu
+
+if command -v gitleaks >/dev/null 2>&1; then
+	if ! gitleaks protect --staged --redact --no-banner; then
+		echo "" >&2
+		echo "gitleaks blocked this commit. Fix the finding, or override with: git commit --no-verify" >&2
+		exit 1
+	fi
+	exit 0
+fi
+
+# Fallback when gitleaks is absent. Deliberately narrow: only added lines, only
+# token shapes that are unambiguous. A backstop, not a scanner — install the
+# real thing with `brew install gitleaks`.
+added=$(git diff --cached -U0 --diff-filter=ACM | sed -n 's/^+//p')
+[ -z "$added" ] && exit 0
+
+if printf '%s\n' "$added" | grep -qE 'sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[bpar]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[A-Za-z0-9_-]{30,}|glpat-[A-Za-z0-9_-]{15,}|BEGIN [A-Z ]*PRIVATE KEY'; then
+	echo "Possible secret in staged changes (built-in fallback scan)." >&2
+	echo "Review it, or override with: git commit --no-verify" >&2
+	exit 1
+fi
+
+echo "note: gitleaks not installed; used the built-in fallback scan. brew install gitleaks" >&2
+exit 0

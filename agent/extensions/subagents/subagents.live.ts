@@ -9,21 +9,25 @@
  * Run with jiti from a directory where pi's packages resolve:
  *     jiti agent/extensions/subagents/subagents.live.ts
  */
+import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { dirname, join } from "node:path";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+// Resolved against the same basis as the static import above. The package only
+// exports ".", so cli.js is taken from beside the resolved entry point.
 process.argv[1] =
-	"/Users/oysterlee/Library/pnpm/store/v11/links/@earendil-works/pi-coding-agent/0.81.1/8c1adef989f2d9abbd49ba1abe62d1ade279fa2c19c1265a0ffed8b50758c8aa/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
+	process.env.PI_CLI ??
+	join(dirname(createRequire(import.meta.url).resolve("@earendil-works/pi-coding-agent")), "cli.js");
 
 const { registerTaskTool } = await import("./tool.ts");
 
 const CWD = mkdtempSync(join(tmpdir(), "subagents-live-"));
 
 const runtime = await ModelRuntime.create({
-	authPath: "/Users/oysterlee/.pi/agent/auth.json",
-	modelsStorePath: "/Users/oysterlee/.pi/agent/models-store.json",
+	authPath: join(getAgentDir(), "auth.json"),
+	modelsStorePath: join(getAgentDir(), "models-store.json"),
 });
 const models = runtime.getModels("openai-codex");
 const small = models.find((m) => m.id === "gpt-5.4-mini") ?? models[0];
