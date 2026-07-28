@@ -123,8 +123,11 @@ console.log("\n--- normalizeQuestions ---");
 check("empty -> none", normalizeQuestions({}), []);
 check("blank question dropped", normalizeQuestions({ questions: [{ question: "  " }] }), []);
 check("count", normalizeQuestions({ questions: [Q(), Q({ question: "Second?" })] }).length, 2);
-check("capped at maxQuestions", normalizeQuestions({ questions: Array.from({ length: 9 }, (_, n) => Q({ question: `q${n}?` })) }).length, CONFIG.maxQuestions);
-check("tolerates a single top-level question", normalizeQuestions({ question: "Alone?" })[0]!.question, "Alone?");
+// The schema rejects both of these before execute() runs, so neither is a path
+// production can take; the cap stays as a backstop against schema/CONFIG drift,
+// and the old bare-`question` shim is gone rather than left looking load-bearing.
+check("capped at maxQuestions as a backstop", normalizeQuestions({ questions: Array.from({ length: 9 }, (_, n) => Q({ question: `q${n}?` })) }).length, CONFIG.maxQuestions);
+check("a bare top-level question is not a call shape", normalizeQuestions({ question: "Alone?" }), []);
 
 // -------------------------------------------------------------- state machine
 
@@ -536,6 +539,15 @@ const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => unde
 	const tool = h.tools.get("ask_user");
 	check("tool runs sequentially", tool.executionMode, "sequential");
 	checkTrue("ships guideline bullets", Array.isArray(tool.promptGuidelines) && tool.promptGuidelines.length > 0);
+
+	// The batch is the whole shape of this tool, and prose alone did not carry
+	// it: the bound is structural so pi's own validator enforces it, and the
+	// one-line snippet says so because it is the only part of the guidance the
+	// model reads before it has framed a question.
+	const questions = tool.parameters.properties.questions;
+	check("the question array is bounded, not just described", [questions.minItems, questions.maxItems], [1, CONFIG.maxQuestions]);
+	checkTrue("the always-on snippet advertises the batch", /\b(4|four)\b/.test(tool.promptSnippet));
+	checkTrue("so do the guidelines", tool.promptGuidelines.some((line: string) => /one ask_user call/.test(line)));
 
 	h.handlers.get("session_start")!({}, { hasUI: true, ui: uiStub });
 	checkTrue("active when enabled and interactive", h.active().includes("ask_user"));

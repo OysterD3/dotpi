@@ -123,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 		// Announced only once a human is certain to be blocked — after the grant
 		// and no-UI paths have had their say. Anything wanting to surface the
 		// wait (the cmux bridge, a desktop notifier) subscribes to this rather
-		// than reimplementing the decision.
+		// than reimplementing the decision. `permissions:answered` closes it.
 		pi.events.emit("permissions:ask", {
 			tool: event.toolName,
 			target,
@@ -134,7 +134,16 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		const options = buildOptions(event.toolName, target, decision);
-		const choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label));
+		let choice: string | undefined;
+		try {
+			choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label));
+		} finally {
+			// The closing edge of the same wait. Without it a subscriber can only
+			// learn that the agent stopped, never that it started again — which is
+			// why the turn clock could exclude a question but not an approval. In a
+			// finally so a thrown or aborted prompt still releases it.
+			pi.events.emit("permissions:answered", { tool: event.toolName });
+		}
 		const picked = options.find((option) => option.label === choice);
 
 		// Escape and an explicit Block both mean no. Failing closed is the only

@@ -75,7 +75,9 @@ export default function (pi: ExtensionAPI) {
 	pi.events.on(QUESTION_CHANNEL, (data) => {
 		if (!shouldSend(process.env)) return;
 		const event = asQuestionEvent(data);
-		if (!event?.active) return;
+		// Not the `/ask-user test` demo: that prompt is on screen because the user
+		// just asked for it, so there is nobody to fetch back to the pane.
+		if (!event?.active || !event.blocking) return;
 
 		const id = event.sessionId ?? sessionId;
 		if (!id) return;

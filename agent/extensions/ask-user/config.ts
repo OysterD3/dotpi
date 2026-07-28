@@ -21,18 +21,25 @@ export const SETTINGS_KEY = "askUser";
 
 /**
  * pi.events channel announcing that a question owns the prompt. Payload:
- * `{ active, question, header?, count, sessionId?, cwd? }` when it opens, and
- * `{ active: false }` when it is answered or dismissed.
+ * `{ active, blocking, question, header?, count, sessionId?, cwd? }` when it
+ * opens, and `{ active: false, blocking }` when it is answered or dismissed.
  *
- * Two subscribers today, for two different reasons:
+ * Three subscribers today, for three different reasons:
  *   - the statusline blanks itself while a question is up, so the question owns
  *     the bottom of the screen. This extension cannot do that itself —
  *     `ui.setFooter(undefined)` restores pi's *built-in* footer, so swapping and
  *     restoring here would retire another extension's footer for good.
  *   - cmux-notify raises the pane, because a question stops pi on a human just
  *     as a permission prompt does.
+ *   - elapsed stops the turn clock, so a turn's duration keeps meaning how long
+ *     the agent worked rather than how long someone took to decide.
  *
- * Hence the payload carries the question and not merely the flag: a subscriber
+ * `blocking` is false for the `/ask-user test` demo: the prompt is on screen but
+ * the agent is not stuck behind it. The two subscribers that act on "the agent
+ * has stopped" honour it; the statusline does not, because the demo does own the
+ * bottom of the screen either way.
+ *
+ * The payload carries the question and not merely the flag because a subscriber
  * that has to interrupt someone needs to say what for. Same decoupling ultracode
  * uses for its workflow lines — announce, and let the listener decide.
  */

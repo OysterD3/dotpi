@@ -36,6 +36,13 @@ export const CONFIG = {
 	maxToolResultChars: 4_000,
 	/** Wall-clock ceiling for one reviewer call, so a hung spawn cannot wedge the turn. */
 	reviewerTimeoutMs: 5 * 60_000,
+	/**
+	 * How often the "what is the advisor doing" line is repainted. The elapsed
+	 * time is shown in whole seconds, so a faster tick would redraw without
+	 * saying anything new — and the point of the tick is that the number moves
+	 * during the long silence before the reviewer's first token.
+	 */
+	statusTickMs: 1000,
 } as const;
 
 export interface AdvisorSettings {

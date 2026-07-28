@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { CONFIG } from "./config.ts";
+import { emptyProgress, phaseFor, type ReviewerProgress, scanBlocks } from "./progress.ts";
 
 export interface ReviewerRequest {
 	prompt: string;
@@ -29,6 +30,12 @@ export interface ReviewerRequest {
 	model: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
+	/**
+	 * Called as the child streams. The same JSON events that carry the result
+	 * also say whether the reviewer is reasoning or writing, which is the only
+	 * thing standing between a long consult and a wedged-looking one.
+	 */
+	onProgress?: (progress: ReviewerProgress) => void;
 }
 
 export interface SpawnUsage {
@@ -118,6 +125,27 @@ export async function runReviewer(request: ReviewerRequest): Promise<ReviewerRes
 		// two pipe reads does not become replacement characters.
 		const decoder = new StringDecoder("utf8");
 		let buffer = "";
+
+		// Volume of the attempt on screen, not of every attempt summed. The
+		// reviewer is one-shot and tool-less, so a second assistant message means
+		// the first was retried and its characters were discarded — banking them
+		// would double the count and pin the phase on whatever the dead attempt
+		// reached. The attempt number carries what the reset would otherwise hide.
+		const progress = emptyProgress();
+		// Counted separately from usage.turns, which has already been incremented
+		// by the time the final report of an attempt goes out — deriving from it
+		// would label a successful single attempt "attempt 2" on its last paint.
+		let attempt = 1;
+		const report = (live: { thinkingChars: number; adviceChars: number }) => {
+			const previous = { thinkingChars: progress.thinkingChars, adviceChars: progress.adviceChars, phase: progress.phase };
+			progress.thinkingChars = live.thinkingChars;
+			progress.adviceChars = live.adviceChars;
+			progress.phase = phaseFor(live.thinkingChars, live.adviceChars, previous);
+			progress.turns = usage.turns;
+			progress.attempt = attempt;
+			request.onProgress?.({ ...progress });
+		};
+
 		const handleLine = (line: string) => {
 			if (!line.trim()) return;
 			let event: { type?: string; message?: Record<string, unknown> };
@@ -126,7 +154,19 @@ export async function runReviewer(request: ReviewerRequest): Promise<ReviewerRes
 			} catch {
 				return;
 			}
-			if (event.type !== "message_end" || !event.message) return;
+			if (!event.message || (event.message as { role?: string }).role !== "assistant") return;
+
+			// message_update fires token by token; it is the only event that arrives
+			// during the long silence, so it is what proves the child is alive.
+			// message_start is deliberately not reported: it arrives with empty
+			// content, and on a retry that would blank a line that is about to be
+			// filled again — the reader would see the consult apparently restart.
+			if (event.type === "message_update") {
+				report(scanBlocks((event.message as { content?: unknown }).content));
+				return;
+			}
+			if (event.type === "message_start") return;
+			if (event.type !== "message_end") return;
 			const message = event.message as {
 				role?: string;
 				content?: Array<{ type?: string; text?: string }>;
@@ -134,7 +174,6 @@ export async function runReviewer(request: ReviewerRequest): Promise<ReviewerRes
 				stopReason?: string;
 				errorMessage?: string;
 			};
-			if (message.role !== "assistant") return;
 			usage.turns++;
 			if (message.usage) {
 				usage.input += message.usage.input ?? 0;
@@ -152,6 +191,11 @@ export async function runReviewer(request: ReviewerRequest): Promise<ReviewerRes
 			if (text) finalText = text;
 			if (message.stopReason) stopReason = message.stopReason;
 			if (message.errorMessage) errorMessage = message.errorMessage;
+
+			// Report this attempt's final volume, then move the counter on: anything
+			// that streams after a completed message is a retry of it.
+			report(scanBlocks(message.content));
+			attempt += 1;
 		};
 
 		child.stdout.on("data", (data: Buffer) => {

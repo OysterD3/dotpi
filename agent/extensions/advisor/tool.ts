@@ -7,13 +7,20 @@
  * Claude Code does the forwarding server-side (the `advisor_20260301` beta tool);
  * pi does it here in the client. The behavior the agent sees is the same: call
  * advisor(), wait, get advice.
+ *
+ * The wait is the part the *human* sees, and it can run for minutes. The tool
+ * streams a live status line — elapsed time, whether the reviewer is reasoning
+ * or writing, and how much it has produced — because a single static
+ * "Consulting…" for five minutes is indistinguishable from a hung subprocess.
+ * See progress.ts.
  */
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
-import { TOOL_NAME } from "./config.ts";
+import { CONFIG, TOOL_NAME } from "./config.ts";
 import { ADVISOR_PROMPT_SNIPPET, ADVISOR_TOOL_GUIDANCE, buildReviewerPrompt } from "./guidance.ts";
 import { modelRef, resolveModelReference } from "./models.ts";
+import { advisorStatus, emptyProgress, type ReviewerProgress } from "./progress.ts";
 import { runReviewer, type SpawnUsage, SubagentError } from "./spawn.ts";
 import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
 
@@ -65,10 +72,38 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 			// the session model. pi allows it on purpose — the reviewer still reads
 			// the transcript with a clean context, which is the point. See models.ts.
 			const reviewerModel = modelRef(resolved.model);
-			onUpdate?.({
-				content: [{ type: "text", text: `Consulting ${reviewerModel}…` }],
-				details: { advisorModel: reviewerModel, phase: "consulting" as const },
-			});
+
+			// A consult runs for minutes with nothing to show for it until the very
+			// end. The status line is repainted on a timer rather than on each
+			// streamed event: the clock has to keep moving through the long silence
+			// before the first token (otherwise it reads as hung), and once tokens
+			// do arrive, once a second is as fast as anyone can read.
+			const startedAt = Date.now();
+			let progress: ReviewerProgress = emptyProgress();
+			const paint = () =>
+				onUpdate?.({
+					content: [
+						{
+							type: "text",
+							text: advisorStatus({
+								model: reviewerModel,
+								progress,
+								elapsedMs: Date.now() - startedAt,
+								timeoutMs: CONFIG.reviewerTimeoutMs,
+							}),
+						},
+					],
+					details: {
+						advisorModel: reviewerModel,
+						phase: progress.phase,
+						thinkingChars: progress.thinkingChars,
+						adviceChars: progress.adviceChars,
+					},
+				});
+
+			paint();
+			const ticker = setInterval(paint, CONFIG.statusTickMs);
+			(ticker as { unref?: () => void }).unref?.();
 
 			const branch = ctx.sessionManager.getBranch() as TranscriptEntry[];
 			const transcript = buildTranscript(branch, resolved.model.contextWindow);
@@ -80,6 +115,9 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 					cwd: ctx.cwd,
 					model: reviewerModel,
 					signal,
+					onProgress: (next) => {
+						progress = next;
+					},
 				});
 				const advice = result.text.trim() || "(The advisor returned no advice.)";
 				return {
@@ -108,6 +146,10 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 					};
 				}
 				throw error;
+			} finally {
+				// Every exit passes through here, abort included: a ticker left
+				// running would keep repainting a call that has already finished.
+				clearInterval(ticker);
 			}
 		},
 	});

@@ -554,6 +554,21 @@ model's context: how long a turn took is information for you, not for it. Timing
 first `agent_start` to `agent_settled`, which is the true end of a run — after retries, compaction,
 and queued continuations — so a turn interrupted by a compaction is reported as one turn, not two.
 
+**The clock stops while the agent is waiting on you.** A turn's duration is meant to say how long
+the *agent* worked; the moment it stops and asks you something, the seconds are yours, and counting
+them turns "Cooked for 4m 20s" into a measure of how long you took to decide. The live row holds at
+the value it had when the prompt appeared and resumes from there — no jump to catch up when you
+answer — and the end-of-turn line reports work only.
+
+Both kinds of block are excluded, on the same terms, or the one line would mean two different things
+depending on which prompt fired: `ask_user` questions via `ask-user:asking` (the same announcement
+the statusline and `cmux-notify` use), and permission prompts via `permissions:ask` plus the
+`permissions:answered` edge added for this — an opening announcement alone would stop the clock and
+never restart it. The `/ask-user test` demo is deliberately *not* excluded: its `blocking: false`
+says the prompt is on screen but the agent never stopped, so pausing would subtract time the agent
+really did spend. The arithmetic lives in `waiting.ts` as a pure clock-injected accumulator, tested
+without sleeping.
+
 ```jsonc
 {
   "elapsed": {
@@ -568,6 +583,7 @@ and queued continuations — so a turn interrupted by a compaction is reported a
 | --- | --- |
 | `index.ts` | Turn timing, the tick, and the settings block |
 | `duration.ts` | **Claude Code's `formatDuration`, transcribed** (pure) |
+| `waiting.ts` | Time spent stopped on a question, excluded from the turn (pure) |
 | `render.ts` | The end-of-turn line and its verb pool (pure) |
 | `config.ts` | Tick period and Claude Code's constants |
 | `elapsed.test.ts` | Unit and wiring coverage |
@@ -587,7 +603,9 @@ next upgrade. This one is yours and survives.
 The coupling goes through pi's inter-extension event bus, not through cmux: `permissions` announces
 `permissions:ask` at the moment a human is certain to be blocked (after grants and the headless
 fallback have had their say), knowing nothing about cmux, and this extension translates that into a
-`cmux hooks pi notification`. Anything else wanting the same signal — a desktop notifier, a webhook —
+`cmux hooks pi notification`. It also announces `permissions:answered` when the prompt closes — in a
+`finally`, so an aborted prompt still releases it — which is what lets the turn clock exclude an
+approval rather than only learning that the agent stopped. Anything else wanting the same signal — a desktop notifier, a webhook —
 subscribes to the same channel. It sends asynchronously, unlike cmux's own `spawnSync` bridge, since
 this is the one place in pi where a subprocess would sit in front of a waiting human. Gating matches
 cmux's file exactly: nothing happens outside a cmux surface (`CMUX_SURFACE_ID`), and
@@ -649,6 +667,24 @@ says when the reviewer equals the session model, but it runs. The "advisor must 
 capable" rank check reduces to *allow*, because pi's registry carries no `advisor_rank` for arbitrary
 providers and Claude Code itself allows when a rank is unknown.
 
+**A consult says what it is doing while it does it.** It can run for minutes — the transcript is
+large, reviewer models are slow, and a reasoning model spends most of that time thinking before it
+writes a word — and a single static line for five minutes is indistinguishable from a wedged
+subprocess. The headless child streams pi's own session events, so the wait is not actually opaque:
+
+```
+Consulting anthropic/claude-opus-5… 8s
+anthropic/claude-opus-5 is thinking… 1m 12s · 3.1k chars of reasoning
+anthropic/claude-opus-5 is writing advice… 1m 40s · 840 chars
+anthropic/claude-opus-5 is writing advice… 4m 2s · 2.4k chars · gives up at 5m 0s
+```
+
+The line repaints on a one-second timer rather than per event, because the clock has to keep moving
+through the long silence *before* the first token — that silence is when it looks hung, and a moving
+number is the only thing that answers it. The deadline is named only in the back half of the budget,
+where the question stops being curiosity and starts being "should I kill this?". `progress.ts` is
+pure, and the stream parsing is tested against a fake `pi` child, so both are covered without a model.
+
 The main-agent guidance (when and how to call it) is Claude Code's text **verbatim**, placed in the
 tool description so it rides in the system prompt. The reviewer-side prompt is **authored, not
 transcribed** — Claude Code runs the reviewer server-side, so its instructions never ship in the
@@ -670,6 +706,7 @@ client; this reconstructs them from the documented behavior.
 | `transcript.ts` | Session branch → budgeted transcript, with tool results, oldest dropped first (pure) |
 | `guidance.ts` | **Claude Code's tool guidance, verbatim** + the authored reviewer prompt |
 | `models.ts` | Model reference resolution; `sameModel` labels a self-advising setup (pure) |
+| `progress.ts` | Reading thinking/writing out of the child's stream, and the status line (pure) |
 | `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
 | `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
 
@@ -846,7 +883,12 @@ over the same format and location.
 an `ask_user` tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
 only you can make, rather than guessing.
 
-The model calls `ask_user` with **1-4 questions at once**; you answer them in a single pass:
+The model calls `ask_user` with **1-4 questions at once** — the bound is `askUser`'s `maxQuestions`,
+interpolated into the guidance and into the schema's `maxItems` from the same constant so the prompt
+and the validator cannot drift apart. The guidance asks for the decisions it is *already* blocked on
+and explicitly excludes any question another answer could invalidate: everything is shown at once
+with no branching, so "which Postgres migration tool?" alongside "Postgres or SQLite?" would force an
+answer to a question the first answer erases. You answer them in a single pass:
 
 - **pick** one option (or several, when the model sets `multiSelect`). On a single-select question
   **Enter is a commit**: it picks the focused answer and moves straight to the next question, or to
@@ -877,8 +919,12 @@ the same slot; the transcript above stays put and readable, and the editor comes
 with whatever you had typed in it still there.
 
 Both of those follow from one announcement: `ask-user:asking` carries the question, and subscribers
-decide what to do with it. The statusline stands down; `cmux-notify` raises the pane, so a question
-waiting in a tab you are not watching rings the same bell a permission prompt does.
+decide what to do with it. Three listen today — the statusline stands down, `cmux-notify` raises the
+pane so a question waiting in a tab you are not watching rings the same bell a permission prompt
+does, and `elapsed` stops the turn clock. The payload's `blocking` flag separates a question the
+agent is stuck behind from the `/ask-user test` demo, which puts the same prompt on screen while the
+agent carries on working: the two subscribers that act on "the agent has stopped" honour it, and the
+statusline does not, because the demo owns the bottom of the screen either way.
 
 Nothing is truncated: long options and descriptions wrap, because the description is often what the
 choice turns on. What the screen cannot fit **scrolls** instead — the option list windows around the

@@ -5,6 +5,27 @@ export const ENTRY_TYPE = "turn-duration";
 
 export const SETTINGS_KEY = "elapsed";
 
+/**
+ * pi.events channels announcing that the agent has stopped and is waiting on a
+ * human. The clock stops for the duration: a turn's duration is meant to say how
+ * long the *agent* worked, and the seconds someone spends deciding are not that.
+ *
+ * ask-user announces `{ active, blocking, … }` on both edges. `blocking` is what
+ * separates a question the agent is stuck behind from the `/ask-user test` demo,
+ * which puts the same prompt on screen while the agent carries on working —
+ * pausing for that would subtract time the agent really did spend.
+ *
+ * permissions announces only the opening edge on `permissions:ask` (it predates
+ * this) and the close on `permissions:answered`. Both are needed: with only the
+ * open, the clock would stop and never restart.
+ *
+ * Declared here rather than imported from those extensions — each one stays
+ * self-contained, as with the statusline's channels.
+ */
+export const ASK_CHANNEL = "ask-user:asking";
+export const PERMISSION_CHANNEL = "permissions:ask";
+export const PERMISSION_ANSWERED_CHANNEL = "permissions:answered";
+
 export const CONFIG = {
 	/**
 	 * How often the working message is rewritten. The text only changes once a

@@ -128,7 +128,9 @@ export default function (pi: ExtensionAPI) {
 					},
 				];
 				const session = new AskSession(questions, settings.allowNotes);
-				ctx.ui.notify(renderOutcomeText(await showAsk(pi, ctx, session)), "info");
+				// Not blocking: the user opened this themselves and the agent is not
+				// waiting on it, so the turn clock and the cmux bell stay out of it.
+				ctx.ui.notify(renderOutcomeText(await showAsk(pi, ctx, session, false)), "info");
 				return;
 			}
 

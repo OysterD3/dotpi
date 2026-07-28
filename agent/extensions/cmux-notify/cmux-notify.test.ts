@@ -38,6 +38,7 @@ const ASK: AskEvent = {
 
 const QUESTION: QuestionEvent = {
 	active: true,
+	blocking: true,
 	question: "Which library should we use for date formatting?",
 	header: "Library",
 	count: 1,
@@ -116,12 +117,17 @@ console.log("\n--- narrowing a question payload ---");
 check("well-formed question", asQuestionEvent(QUESTION)?.question, "Which library should we use for date formatting?");
 check("the closing announcement parses", asQuestionEvent({ active: false }), {
 	active: false,
+	blocking: true,
 	question: "",
 	header: undefined,
 	count: 1,
 	sessionId: undefined,
 	cwd: undefined,
 });
+// blocking is absent on an older announcement; a question that did not say
+// otherwise is one the agent is waiting on.
+check("an unmarked question counts as blocking", asQuestionEvent({ active: true })?.blocking, true);
+check("and the demo says so explicitly", asQuestionEvent({ active: true, blocking: false })?.blocking, false);
 check("no active flag -> undefined", asQuestionEvent({ question: "x" }), undefined);
 check("not an object -> undefined", asQuestionEvent("nope"), undefined);
 check("a blank header is dropped", asQuestionEvent({ active: true, header: "  " })?.header, undefined);
@@ -190,6 +196,7 @@ console.log("\n--- wiring against a fake pi ---");
 		handlers.get(ASK_CHANNEL)!(undefined);
 		handlers.get(QUESTION_CHANNEL)!(QUESTION);
 		handlers.get(QUESTION_CHANNEL)!({ active: false });
+		handlers.get(QUESTION_CHANNEL)!({ ...QUESTION, blocking: false });
 		handlers.get(QUESTION_CHANNEL)!("garbage");
 	} catch {
 		threw = true;

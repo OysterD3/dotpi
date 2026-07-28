@@ -76,6 +76,12 @@ export function buildPayload(event: AskEvent, sessionId: string, cwd: string): R
 export interface QuestionEvent {
 	/** True when the question opens, false once it is answered or dismissed. */
 	active: boolean;
+	/**
+	 * False when the prompt is on screen but the agent is not stuck behind it —
+	 * the `/ask-user test` demo. Nothing to interrupt anyone about: the user
+	 * opened it themselves and is already looking at the pane.
+	 */
+	blocking: boolean;
 	/** The first question's text — what the banner says. */
 	question: string;
 	/** The model's short label for it, e.g. "Auth method". */
@@ -98,6 +104,9 @@ export function asQuestionEvent(data: unknown): QuestionEvent | undefined {
 	const count = typeof record.count === "number" && record.count > 0 ? Math.floor(record.count) : 1;
 	return {
 		active: record.active,
+		// Absent on an older announcement; a question that did not say otherwise
+		// is one the agent is waiting on.
+		blocking: record.blocking !== false,
 		question: typeof record.question === "string" ? record.question.trim() : "",
 		header: typeof record.header === "string" && record.header.trim() ? record.header.trim() : undefined,
 		count,

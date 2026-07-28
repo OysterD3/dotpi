@@ -393,10 +393,22 @@ export class AskPrompt {
  * announcement is what lets the footer stand down for the duration — see the
  * note on that constant for why this extension must not swap the footer itself.
  */
-export async function showAsk(pi: ExtensionAPI, ctx: ExtensionContext, session: AskSession): Promise<AskOutcome> {
+export async function showAsk(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	session: AskSession,
+	/**
+	 * False for the `/ask-user test` demo: the prompt is on screen, but the agent
+	 * is not stuck behind it. Subscribers that act on "the agent has stopped and
+	 * is waiting on a human" — the turn clock, the cmux bell — must not fire for
+	 * a prompt the user opened themselves while the agent carries on working.
+	 */
+	blocking = true,
+): Promise<AskOutcome> {
 	const first = session.questions[0];
 	pi.events.emit(ASK_CHANNEL, {
 		active: true,
+		blocking,
 		// Enough for a subscriber to say what is being waited on, not just that
 		// something is: cmux-notify puts the question itself in its banner.
 		question: first?.question ?? "",
@@ -421,6 +433,6 @@ export async function showAsk(pi: ExtensionAPI, ctx: ExtensionContext, session: 
 		// down some other way would leave this undefined.
 		return outcome ?? { kind: "dismissed" };
 	} finally {
-		pi.events.emit(ASK_CHANNEL, { active: false });
+		pi.events.emit(ASK_CHANNEL, { active: false, blocking });
 	}
 }

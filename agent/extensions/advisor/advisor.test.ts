@@ -29,6 +29,7 @@ const { buildSections, buildTranscript } = await import("./transcript.ts");
 const { buildReviewerPrompt, REVIEWER_PROMPT, ADVISOR_TOOL_GUIDANCE } = await import("./guidance.ts");
 const { resolveModelReference, modelRef, sameModel } = await import("./models.ts");
 const { CONFIG } = await import("./config.ts");
+const { advisorStatus, compactCount, emptyProgress, formatElapsed, phaseFor, scanBlocks } = await import("./progress.ts");
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -156,6 +157,193 @@ writeSettings({ enabled: "yes" });
 check("wrong-typed enabled falls back to true", loadSettings(AGENT).enabled, true);
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
 check("unreadable settings fall back", loadSettings(AGENT), { model: undefined, enabled: true });
+
+// ------------------------------------------------------------------- progress
+
+console.log("\n--- reading the child's stream ---");
+check("no content, nothing counted", scanBlocks(undefined), { thinkingChars: 0, adviceChars: 0 });
+check("not an array, nothing counted", scanBlocks("nope"), { thinkingChars: 0, adviceChars: 0 });
+check(
+	"reasoning and advice are counted apart",
+	scanBlocks([
+		{ type: "thinking", thinking: "hmm" },
+		{ type: "text", text: "do the thing" },
+		{ type: "thinking", thinking: "!" },
+	]),
+	{ thinkingChars: 4, adviceChars: 12 },
+);
+check("blocks of other kinds are ignored", scanBlocks([{ type: "toolCall", id: "x" }]), { thinkingChars: 0, adviceChars: 0 });
+// A partial message arrives with the field missing before the first token.
+check("a half-built block does not throw", scanBlocks([{ type: "text" }, { type: "thinking" }]), { thinkingChars: 0, adviceChars: 0 });
+
+console.log("\n--- which phase the counts describe ---");
+check("nothing yet", phaseFor(0, 0), "starting");
+check("reasoning only", phaseFor(500, 0), "thinking");
+check("advice outranks reasoning", phaseFor(5000, 10), "writing");
+
+console.log("\n--- the status line ---");
+{
+	const model = "anthropic/claude-opus-5";
+	const timeoutMs = CONFIG.reviewerTimeoutMs;
+	const at = (progress: any, elapsedMs: number) => advisorStatus({ model, progress, elapsedMs, timeoutMs });
+
+	check("before the first token, the clock is the news", at(emptyProgress(), 8000), `Consulting ${model}… 8s`);
+	check(
+		"reasoning says so, with its volume",
+		at({ phase: "thinking", thinkingChars: 3120, adviceChars: 0, turns: 0 }, 72_000),
+		`${model} is thinking… 1m 12s · 3.1k chars of reasoning`,
+	);
+	check(
+		"writing says so too",
+		at({ phase: "writing", thinkingChars: 3120, adviceChars: 840, turns: 0 }, 100_000),
+		`${model} is writing advice… 1m 40s · 840 chars`,
+	);
+	// The deadline is named only once the wait is long enough to worry about.
+	checkTrue("no deadline early on", !at(emptyProgress(), 60_000).includes("gives up"));
+	checkTrue("the deadline appears late on", at(emptyProgress(), 4 * 60_000).includes("gives up at 5m 0s"));
+
+	check("elapsed under a minute", formatElapsed(45_900), "45s");
+	check("elapsed over a minute", formatElapsed(72_000), "1m 12s");
+	check("no zero padding, whatever the README once said", formatElapsed(242_000), "4m 2s");
+	check("a negative clock cannot go backwards", formatElapsed(-5), "0s");
+	check("counts under a thousand are exact", compactCount(999), "999");
+	check("and compact above it", compactCount(3120), "3.1k");
+
+	// A retry restarts the volume, so the line says why rather than looking like
+	// it lost the work it had already shown.
+	checkTrue(
+		"a retry is named",
+		at({ phase: "thinking", thinkingChars: 200, adviceChars: 0, turns: 1, attempt: 2 }, 30_000).includes("attempt 2"),
+	);
+	checkTrue("a first attempt is not", !at(emptyProgress(), 30_000).includes("attempt"));
+}
+
+console.log("\n--- the phase follows whichever count is moving ---");
+{
+	// A model that opens with a one-line preamble and then reasons for minutes
+	// must not latch on "writing advice" beside a frozen character count.
+	const afterPreamble = phaseFor(0, 24, { thinkingChars: 0, adviceChars: 0, phase: "starting" });
+	check("the preamble reads as writing", afterPreamble, "writing");
+	check(
+		"then reasoning takes the label back",
+		phaseFor(900, 24, { thinkingChars: 0, adviceChars: 24, phase: afterPreamble }),
+		"thinking",
+	);
+	check(
+		"and advice takes it again when it resumes",
+		phaseFor(900, 400, { thinkingChars: 900, adviceChars: 24, phase: "thinking" }),
+		"writing",
+	);
+	// A tick with nothing new must not flap the label back to "starting".
+	check(
+		"a quiet moment holds the label",
+		phaseFor(900, 24, { thinkingChars: 900, adviceChars: 24, phase: "thinking" }),
+		"thinking",
+	);
+}
+
+// ------------------------------------------- progress against a fake pi child
+
+console.log("\n--- the child's stream drives the status (fake child, no model) ---");
+{
+	// piInvocation() spawns `node <process.argv[1]> <pi args>`, so pointing that
+	// at a script of our own exercises the real parser against a real subprocess
+	// and a real stream — everything but the model.
+	const fake = join(ROOT, "fake-pi.js");
+	writeFileSync(
+		fake,
+		`const say = (e) => process.stdout.write(JSON.stringify(e) + "\\n");
+const msg = (content) => ({ role: "assistant", content });
+say({ type: "message_start", message: msg([]) });
+say({ type: "message_update", message: msg([{ type: "thinking", thinking: "weighing it up" }]) });
+say({ type: "message_update", message: msg([{ type: "thinking", thinking: "weighing it up" }, { type: "text", text: "Two things" }]) });
+say({ type: "message_end", message: { ...msg([{ type: "thinking", thinking: "weighing it up" }, { type: "text", text: "Two things stand out." }]),
+  usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, cost: { total: 0.01 } }, stopReason: "stop" } });
+// A non-assistant message must not be mistaken for reviewer output.
+say({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "ignored" }] } });
+`,
+	);
+
+	// A retried attempt: the first ends in an error after producing a lot, then a
+	// fresh attempt streams. The volume must describe the attempt on screen, not
+	// the sum of a discarded one and its replacement.
+	const retrying = join(ROOT, "fake-pi-retry.js");
+	writeFileSync(
+		retrying,
+		`const say = (e) => process.stdout.write(JSON.stringify(e) + "\\n");
+const msg = (content) => ({ role: "assistant", content });
+const long = "x".repeat(3000);
+say({ type: "message_update", message: msg([{ type: "thinking", thinking: long }]) });
+say({ type: "message_end", message: { ...msg([{ type: "thinking", thinking: long }]), stopReason: "error", errorMessage: "overloaded" } });
+say({ type: "message_start", message: msg([]) });
+say({ type: "message_update", message: msg([{ type: "thinking", thinking: "second go" }]) });
+say({ type: "message_end", message: { ...msg([{ type: "thinking", thinking: "second go" }, { type: "text", text: "Advice." }]),
+  usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.002 } }, stopReason: "stop" } });
+`,
+	);
+
+	const { runReviewer } = await import("./spawn.ts");
+	const originalArgv1 = process.argv[1];
+	process.argv[1] = fake;
+	const phases: string[] = [];
+	const volumes: number[] = [];
+	try {
+		const result = await runReviewer({
+			prompt: "review this",
+			cwd: ROOT,
+			model: "anthropic/claude-opus-5",
+			onProgress: (progress) => {
+				phases.push(progress.phase);
+				volumes.push(progress.thinkingChars + progress.adviceChars);
+			},
+		});
+		check("the advice still comes back", result.text, "Two things stand out.");
+		check("and its usage", [result.usage.turns, result.usage.cost], [1, 0.01]);
+	} catch (error) {
+		check("fake child ran", String(error), "no error");
+	}
+	process.argv[1] = originalArgv1;
+
+	checkTrue("progress was reported at all", phases.length > 0);
+	// message_start carries empty content and is deliberately not reported: on a
+	// retry it would blank a line that is about to fill again, so the first word
+	// comes from the first real token.
+	check("the first report is real content", phases[0], "thinking");
+	check("and it ends on writing", phases.at(-1), "writing");
+	// Within one attempt the count must never fall back, or the row would appear
+	// to lose work it had already shown.
+	checkTrue(
+		"the volume only grows within an attempt",
+		volumes.every((value, index) => index === 0 || value >= volumes[index - 1]!),
+	);
+
+	// The retry: a discarded attempt's characters must not be added to its
+	// replacement's, and the reader must be told why the number restarted.
+	process.argv[1] = retrying;
+	const retryVolumes: number[] = [];
+	const attempts: number[] = [];
+	try {
+		const result = await runReviewer({
+			prompt: "review this",
+			cwd: ROOT,
+			model: "anthropic/claude-opus-5",
+			onProgress: (progress) => {
+				retryVolumes.push(progress.thinkingChars + progress.adviceChars);
+				attempts.push(progress.attempt);
+			},
+		});
+		check("the retry's advice comes back", result.text, "Advice.");
+	} catch (error) {
+		check("retrying fake child ran", String(error), "no error");
+	}
+	process.argv[1] = originalArgv1;
+
+	checkTrue("the first attempt's volume was large", Math.max(...retryVolumes) >= 3000);
+	// 3000 discarded + ~9 regenerated: summing would leave the final report above
+	// 3000, which is the double-count this guards.
+	checkTrue("the retry's volume describes only the retry", retryVolumes.at(-1)! < 100);
+	check("and the attempt number moves on", attempts.at(-1), 2);
+}
 
 // -------------------------------------------------- registerAdvisorTool branches
 

@@ -64,15 +64,18 @@ export function normalizeOptions(raw: unknown): AskOption[] {
 }
 
 /**
- * Accepts the `questions` array, and tolerates a single top-level question so a
- * model that reaches for the older shape still gets through.
+ * Clean the `questions` array: trimmed, blank entries dropped, capped.
+ *
+ * pi validates the call against the schema before `execute` runs, so the bounds
+ * declared there — `questions` required, 1 to CONFIG.maxQuestions items — are
+ * already guaranteed by the time this is reached. The cap below is kept as a
+ * backstop against the schema and the constant drifting apart, not as a path
+ * production takes; an earlier version of this function also accepted a bare
+ * top-level `question`, which the schema now rejects outright, so that shim was
+ * removed rather than left to look load-bearing.
  */
 export function normalizeQuestions(params: Record<string, unknown>): AskQuestion[] {
-	const raw = Array.isArray(params.questions)
-		? params.questions
-		: typeof params.question === "string"
-			? [params]
-			: [];
+	const raw = Array.isArray(params.questions) ? params.questions : [];
 
 	const questions: AskQuestion[] = [];
 	for (const item of raw as Record<string, unknown>[]) {
@@ -127,7 +130,15 @@ export function registerAskUserTool(pi: ExtensionAPI, options: AskUserToolOption
 				}),
 				{
 					description:
-						"1-4 questions asked together. The user answers them in one pass, moving between them with the arrow keys, and reviews everything before it is sent.",
+						"Every decision you are blocked on right now, asked together — not one call per question. The user answers them in a single pass, moving between them with the arrow keys, and reviews everything before it is sent.",
+					// Structural, not just prose: pi compiles this schema and validates
+					// against it, so the bound is enforced and a model that reads schemas
+					// more carefully than descriptions still sees that several fit. An
+					// over-long call is now rejected and retried rather than silently
+					// truncated to the first four — losing questions the model believes
+					// it asked is worse than an error it can correct.
+					minItems: 1,
+					maxItems: CONFIG.maxQuestions,
 				},
 			),
 		}),
