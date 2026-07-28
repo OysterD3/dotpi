@@ -2,9 +2,10 @@
  * The `ask_user` tool: the main agent puts one or more decisions back to the
  * human and waits.
  *
- * The interaction is a focused component (overlay.ts) over a pure state machine
+ * The interaction is a focused component (prompt.ts) over a pure state machine
  * (interaction.ts), not a stack of pi dialogs — Tab-to-annotate and ← / →
- * navigation only exist inside a component that owns its own key handling.
+ * navigation only exist inside a component that owns its own key handling. It
+ * takes the editor's place while it is up rather than floating over the chat.
  *
  * `executionMode` is "sequential" so it never runs alongside other tool calls —
  * it blocks on a human. In a headless session it degrades gracefully: it tells
@@ -14,27 +15,49 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AskUserSettings, CONFIG, TOOL_NAME } from "./config.ts";
 import { ASK_USER_DESCRIPTION, ASK_USER_GUIDELINES, ASK_USER_SNIPPET } from "./guidance.ts";
-import { type AskOption, type AskOutcome, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
-import { AskOverlay } from "./overlay.ts";
+import { type AskOption, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
+import { showAsk } from "./prompt.ts";
 
 export interface AskUserToolOptions {
 	/** Current settings, read fresh on every call. */
 	settings: () => AskUserSettings;
 }
 
+/**
+ * A trailing "(Recommended)" written into the label itself.
+ *
+ * Claude Code's tool has no recommendation field and tells the model to append
+ * exactly this to the label instead, so a model carrying that habit over would
+ * put the marker in as literal text — beside our own badge, or instead of it.
+ * Lifting it out means either shape produces the same rendered row.
+ *
+ * Deliberately only the bracketed form: a bare trailing word would also eat the
+ * "recommended" out of a label like "Not recommended" and badge its opposite.
+ */
+const RECOMMENDED_IN_LABEL = /\s*[([]\s*recommended\s*[)\]]\s*$/i;
+
 /** Coerce raw option params into clean options: labelled, trimmed, capped, deduped. */
 export function normalizeOptions(raw: unknown): AskOption[] {
 	if (!Array.isArray(raw)) return [];
 	const seen = new Set<string>();
 	const options: AskOption[] = [];
+	let advised = false;
 	for (const item of raw) {
-		const label = typeof item?.label === "string" ? item.label.trim() : "";
+		const given = typeof item?.label === "string" ? item.label.trim() : "";
+		const stripped = given.replace(RECOMMENDED_IN_LABEL, "").trim();
+		// Only treat the suffix as a marker when something is left to label.
+		const marked = item?.recommended === true || (stripped.length > 0 && stripped !== given);
+		const label = stripped || given;
 		if (!label || seen.has(label)) continue;
 		seen.add(label);
-		// Descriptions are kept whole — the overlay wraps rather than truncates.
+		// Descriptions are kept whole — the prompt wraps rather than truncates.
 		const description =
 			typeof item?.description === "string" && item.description.trim() ? item.description.trim() : undefined;
-		options.push({ label, description });
+		// One recommendation per question: advice that names two answers is not
+		// advice, so a second mark is dropped rather than shown alongside.
+		const recommended = marked && !advised;
+		if (recommended) advised = true;
+		options.push({ label, description, recommended: recommended || undefined });
 		if (options.length >= CONFIG.maxOptions) break;
 	}
 	return options;
@@ -87,6 +110,12 @@ export function registerAskUserTool(pi: ExtensionAPI, options: AskUserToolOption
 							Type.Object({
 								label: Type.String({ description: "Concise choice text (1-5 words)." }),
 								description: Type.Optional(Type.String({ description: "What this option means or implies." })),
+								recommended: Type.Optional(
+									Type.Boolean({
+										description:
+											"Set on the single option you would pick, when you do lean one way. It is badged \"Recommended\" and starts focused, so the user can accept it with one key — say why in its description. Leave it off every option when you have no real preference, and never write \"(Recommended)\" into the label yourself.",
+									}),
+								),
 							}),
 							{
 								description:
@@ -121,18 +150,7 @@ export function registerAskUserTool(pi: ExtensionAPI, options: AskUserToolOption
 			}
 
 			const session = new AskSession(questions, options.settings().allowNotes);
-			const outcome = await ctx.ui.custom<AskOutcome>(
-				(tui, theme, _keybindings, done) =>
-					new AskOverlay(session, theme, done, () => tui.requestRender()),
-				{
-					overlay: true,
-					overlayOptions: { anchor: "center", width: "70%", minWidth: 52, maxHeight: "80%" },
-				},
-			);
-
-			// The overlay always resolves through done(), but a host that tears the
-			// overlay down some other way would leave this undefined.
-			const settled: AskOutcome = outcome ?? { kind: "dismissed" };
+			const settled = await showAsk(pi, ctx, session);
 
 			return {
 				content: [{ type: "text" as const, text: renderOutcomeText(settled) }],

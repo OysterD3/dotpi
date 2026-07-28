@@ -19,6 +19,18 @@ export type ColorSpec = ThemeColor | `#${string}`;
  */
 export const WORKFLOW_CHANNEL = "ultracode:panel";
 
+/**
+ * pi.events channel the ask-user extension announces an in-flight question on.
+ * Payload: `{ active: boolean }`.
+ *
+ * A question replaces the editor, and this footer blanks itself while one is up
+ * so the question owns the whole bottom of the screen. ask-user cannot do that
+ * from its side: `ui.setFooter(undefined)` restores pi's *built-in* footer, so
+ * a swap-and-restore there would silently retire this statusline for the rest
+ * of the session. Declared here rather than imported, as above.
+ */
+export const ASK_CHANNEL = "ask-user:asking";
+
 /** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
 export const BAR_FILL = "█";
 export const BAR_TRACK = "·";

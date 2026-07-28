@@ -8,9 +8,11 @@
  *
  * Claude Code renders a bespoke component with in-component key bindings. pi's
  * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
- * `ctx.ui.custom()`: a focused component (overlay.ts) over a pure state machine
+ * `ctx.ui.custom()`: a focused component (prompt.ts) over a pure state machine
  * (interaction.ts). That is what makes Tab-to-annotate and ← / → possible at
- * all — as dialogs, each would have to become another modal prompt.
+ * all — as dialogs, each would have to become another modal prompt. The
+ * component stands in for the editor while it is up, so the question arrives
+ * where the answer would have been typed.
  *
  * The tool is offered only in an interactive session (it needs a real user) and
  * only while enabled — active-tool sync, like the advisor/subagents extensions —
@@ -26,8 +28,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AskUserSettings, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
-import { type AskOutcome, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
-import { AskOverlay } from "./overlay.ts";
+import { type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
+import { showAsk } from "./prompt.ts";
 import { registerAskUserTool } from "./tool.ts";
 
 export function loadSettings(agentDir: string): AskUserSettings {
@@ -98,13 +100,18 @@ export default function (pi: ExtensionAPI) {
 			if (arg === "test") {
 				if (!ctx.hasUI) return void ctx.ui.notify("The test needs the interactive TUI.", "error");
 				// Two questions on purpose: the test should exercise ← / → and the
-				// review step, not just a single selector.
+				// review step, not just a single selector. The first carries a
+				// recommendation, so the badge and the pre-focused row are visible too.
 				const questions: AskQuestion[] = [
 					{
 						question: "This is a test of ask_user. How does it look?",
 						header: "Test",
 						options: [
-							{ label: "Looks good", description: "Selection, the free-text row, and notes all behave" },
+							{
+								label: "Looks good",
+								description: "Selection, the free-text row, and notes all behave",
+								recommended: true,
+							},
 							{ label: "Needs tweaks", description: "Something feels off — press Tab here and say what" },
 						],
 						multiSelect: false,
@@ -121,11 +128,7 @@ export default function (pi: ExtensionAPI) {
 					},
 				];
 				const session = new AskSession(questions, settings.allowNotes);
-				const outcome = await ctx.ui.custom<AskOutcome>(
-					(tui, theme, _keybindings, done) => new AskOverlay(session, theme, done, () => tui.requestRender()),
-					{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 52, maxHeight: "80%" } },
-				);
-				ctx.ui.notify(renderOutcomeText(outcome ?? { kind: "dismissed" }), "info");
+				ctx.ui.notify(renderOutcomeText(await showAsk(pi, ctx, session)), "info");
 				return;
 			}
 

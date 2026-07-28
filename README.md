@@ -25,6 +25,11 @@ provider reports any. Below those, one line per active workflow run, while any i
 ultracode announces them on a `pi.events` channel and the footer appends them, so background
 fleets stay visible without opening `/workflows`. Nothing renders when nothing is running.
 
+The footer draws nothing at all while `ask_user` has a question up (announced the same way, on
+`ask-user:asking`): the question takes the editor's place, and the statusline stands down so it
+has the bottom of the screen to itself. ask-user cannot do that from its side — restoring a footer
+means restoring pi's *built-in* one, which would retire this statusline for the rest of the session.
+
 | File | Role |
 | --- | --- |
 | `index.ts` | Footer wiring and layout |
@@ -835,29 +840,52 @@ only you can make, rather than guessing.
 
 The model calls `ask_user` with **1-4 questions at once**; you answer them in a single pass:
 
-- **pick** one option (or several, when the model sets `multiSelect`),
+- **pick** one option (or several, when the model sets `multiSelect`). On a single-select question
+  **Enter is a commit**: it picks the focused answer and moves straight to the next question, or to
+  the review step from the last one. There is nothing left to decide once one answer is chosen, so
+  making you then press → would be a keystroke carrying no information. Multi-select keeps Enter as
+  a toggle and names its own "done" key (→), because there the question is not over until you say so,
+- **take the model's advice, or don't.** When it leans one way it sets `recommended: true` on that
+  one option: the row is badged **★ Recommended** and starts focused, so accepting costs a single
+  Enter and disagreeing costs an arrow key. Nothing is pre-selected on your behalf — the badge is
+  advice, not a default. At most one option per question can carry it (advice naming two answers
+  isn't advice), and the reason belongs in that option's description. A model reaching for Claude
+  Code's convention of writing "(Recommended)" into the label gets the same rendered row: the
+  marker is lifted out of the label into the badge, so it never shows up as literal text,
 - **type your own answer** into the free-text row at the bottom — it shows *Type my own answer* until
-  you start typing, so there is no "Other" to select first and no follow-up prompt,
+  you start typing, so there is no "Other" to select first and no follow-up prompt. Enter finishes it,
+  and on a single-select question that moves on too: finishing the text *is* answering,
 - press **Tab** on any answer to annotate it: the cursor lands at the end of that answer and you keep
   typing. The note reaches the model *labelled as a note*, so it reads as you qualifying the choice
-  rather than as part of it,
+  rather than as part of it. Committing a note only closes the note — an annotation is not an answer,
 - move between questions with **← / →**, and
 - **review every answer** before anything is sent.
 
+**It arrives where the answer goes.** The question takes the editor's place at the bottom of the
+screen — framed by a rule above and below, key hints under the lower one — rather than floating over
+the middle of the chat, and the statusline blanks itself for the duration (see it above), so the
+question owns the prompt and the footer between them. pi's own `select` and `input` sit in exactly
+the same slot; the transcript above stays put and readable, and the editor comes back afterwards
+with whatever you had typed in it still there.
+
 Nothing is truncated: long options and descriptions wrap, because the description is often what the
-choice turns on.
+choice turns on. What the screen cannot fit **scrolls** instead — the option list windows around the
+focused row, keeping each option and its description together, and says how many rows are out of
+view, so a tall question never pushes the conversation off the screen and no answer is ever silently
+unreachable.
 
 This is a real focused component (`ctx.ui.custom()`), not a stack of dialogs. That is forced by the
 feature set rather than chosen for looks — pi cannot bind keys inside a `select`/`input`/`confirm`
 dialog, so Tab-to-annotate, arrow-key navigation and typing straight into a row are simply not
-expressible that way. The component (`overlay.ts`) is a thin renderer over a pure state machine
+expressible that way. The component (`prompt.ts`) is a thin renderer over a pure state machine
 (`interaction.ts`), so the whole interaction is testable without a TUI.
 
 The tool is offered only in an interactive session (it needs a real user) and only while enabled —
 active-tool sync, like the advisor — so a headless run (`-p`) or a disabled setting adds nothing to
 the prompt; if the model somehow calls it headless it gets a graceful "no user available, proceed"
 result instead of hanging. `/ask-user` shows status; `/ask-user off` / `on` toggles it for the
-session; `/ask-user test` runs two sample questions so you can try the arrows, Tab notes and review live.
+session; `/ask-user test` runs two sample questions — one of them recommended — so you can try the
+arrows, the badge, Tab notes and review live.
 
 ```jsonc
 {
@@ -871,9 +899,9 @@ session; `/ask-user test` runs two sample questions so you can try the arrows, T
 | File | Role |
 | --- | --- |
 | `index.ts` | Settings, tool registration, active-tool sync, `/ask-user [status\|on\|off\|test]` |
-| `tool.ts` | The `ask_user` tool: normalize questions/options, run the overlay, graceful headless path |
+| `tool.ts` | The `ask_user` tool: normalize questions/options, run the prompt, graceful headless path |
 | `interaction.ts` | The interaction as a pure state machine — selection, free text, notes, review |
-| `overlay.ts` | The focused TUI component: rendering (wraps, never truncates) and key handling |
+| `prompt.ts` | The focused TUI component that stands in for the editor: layout, scrolling, key handling |
 | `guidance.ts` | Tool description, prompt snippet, and the guideline bullets appended when active |
 | `config.ts` | Settings and tunables |
 | `ask-user.test.ts` | Normalization, the full flow, rendering, settings, and wiring coverage |

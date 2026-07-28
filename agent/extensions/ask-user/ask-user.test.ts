@@ -1,10 +1,10 @@
 /**
  * Tests for the ask-user extension: param normalization, the interaction state
  * machine (selection, the free-text row, Tab notes, ← / → navigation, review),
- * the overlay's key handling, outcome rendering, settings, and the wiring
- * against a fake pi.
+ * the prompt component's key handling and layout, outcome rendering, settings,
+ * and the wiring against a fake pi.
  *
- * The overlay is driven with real terminal byte sequences ("\x1b[C" and so on)
+ * The component is driven with real terminal byte sequences ("\x1b[C" and so on)
  * rather than synthetic key names, so pi-tui's own key parsing is under test too
  * — a binding that decodes differently in a real terminal would pass a fake.
  *
@@ -27,9 +27,9 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { AskSession, CUSTOM_KEY, renderOutcomeText } = await import("./interaction.ts");
-const { AskOverlay, isPrintable, wrap } = await import("./overlay.ts");
+const { AskPrompt, isPrintable, showAsk, windowBlocks, wrap } = await import("./prompt.ts");
 const { normalizeOptions, normalizeQuestions, registerAskUserTool } = await import("./tool.ts");
-const { CONFIG } = await import("./config.ts");
+const { ASK_CHANNEL, CONFIG } = await import("./config.ts");
 const { loadSettings } = await import("./index.ts");
 const extension = (await import("./index.ts")).default;
 
@@ -58,18 +58,18 @@ const KEY = {
 
 const theme = { fg: (_key: string, text: string) => text, bold: (text: string) => text } as never;
 
-/** Build an overlay over a session and return both plus the captured outcome. */
-function drive(questions: any[], allowNotes = true) {
+/** Build the prompt over a session and return both plus the captured outcome. */
+function drive(questions: any[], allowNotes = true, rows = 40) {
 	const session = new AskSession(questions, allowNotes);
 	let outcome: any;
-	const overlay = new AskOverlay(session, theme, (value) => (outcome = value), () => {});
+	const prompt = new AskPrompt(session, theme, (value) => (outcome = value), () => {}, () => rows);
 	const send = (...keys: string[]) => {
-		for (const key of keys) overlay.handleInput(key);
+		for (const key of keys) prompt.handleInput(key);
 	};
 	const type = (text: string) => {
-		for (const char of text) overlay.handleInput(char);
+		for (const char of text) prompt.handleInput(char);
 	};
-	return { session, overlay, send, type, result: () => outcome };
+	return { session, prompt, send, type, result: () => outcome };
 }
 
 const OPTS = [
@@ -94,8 +94,29 @@ check(
 	[{ label: "A", description: undefined }, { label: "B", description: undefined }, { label: "C", description: "see" }],
 );
 check("capped at maxOptions", normalizeOptions(Array.from({ length: 12 }, (_, n) => ({ label: `opt${n}` }))).length, CONFIG.maxOptions);
+check(
+	"the model's recommendation is carried through",
+	normalizeOptions([{ label: "A" }, { label: "B", recommended: true }]).map((option) => option.recommended === true),
+	[false, true],
+);
+check(
+	"a \"(Recommended)\" label is lifted into the flag",
+	normalizeOptions([{ label: "date-fns (Recommended)" }]),
+	[{ label: "date-fns", description: undefined, recommended: true }],
+);
+check(
+	"only the first recommendation stands",
+	normalizeOptions([{ label: "A", recommended: true }, { label: "B", recommended: true }]).map((option) => option.recommended === true),
+	[true, false],
+);
+// Stripping a bare trailing word would badge the opposite of what it says.
+check("a label that merely ends in the word is left alone", normalizeOptions([{ label: "Not recommended" }])[0], {
+	label: "Not recommended",
+	description: undefined,
+	recommended: undefined,
+});
 // The old flow truncated descriptions to 72 chars for the selector row. The
-// overlay wraps instead, so the full text must survive normalization.
+// prompt wraps instead, so the full text must survive normalization.
 check("long descriptions are NOT truncated", normalizeOptions([{ label: "L", description: "x".repeat(200) }])[0]!.description!.length, 200);
 
 console.log("\n--- normalizeQuestions ---");
@@ -129,6 +150,109 @@ console.log("\n--- rows and selection ---");
 	check("multi-select accumulates", session.state.selected, ["Looks good", "Needs tweaks"]);
 	send(KEY.space);
 	check("and toggles off", session.state.selected, ["Looks good"]);
+}
+
+console.log("\n--- Enter commits a single-select answer ---");
+{
+	// One answer settles the question, so Enter picks it and moves straight on.
+	const { session, send } = drive([Q(), Q({ question: "Second?" })]);
+	send(KEY.enter);
+	check("enter selects the focused option", session.states[0]!.selected, ["Looks good"]);
+	check("and advances to the next question", session.index, 1);
+	send(KEY.down, KEY.enter);
+	check("the next question is answered the same way", session.states[1]!.selected, ["Needs tweaks"]);
+	check("and the last question hands over to review", session.phase, "review");
+}
+{
+	// Enter is a commit, not a toggle: pressing it on the current pick keeps it.
+	const { session, send } = drive([Q(), Q({ question: "Second?" })]);
+	send(KEY.space, KEY.enter);
+	check("enter re-affirms rather than clearing", session.states[0]!.selected, ["Looks good"]);
+	check("and still advances", session.index, 1);
+}
+{
+	// Multi-select is not over until the user says so, so Enter keeps toggling.
+	const { session, send } = drive([Q({ multiSelect: true }), Q({ question: "Second?" })]);
+	send(KEY.enter);
+	check("enter toggles on a multi-select question", session.state.selected, ["Looks good"]);
+	check("and stays put", session.index, 0);
+	send(KEY.enter);
+	check("so a second enter clears it", session.state.selected, []);
+}
+{
+	// Finishing free text answers a single-select question, so it moves on too.
+	const { session, send, type } = drive([Q(), Q({ question: "Second?" })]);
+	send(KEY.down, KEY.down);
+	type("my own thing");
+	send(KEY.enter);
+	check("committing free text advances", session.index, 1);
+	check("with the text kept", session.states[0]!.custom, "my own thing");
+}
+{
+	const { session, send } = drive([Q(), Q({ question: "Second?" })]);
+	send(KEY.down, KEY.down, KEY.enter, KEY.enter);
+	check("an empty free-text row does not advance", session.index, 0);
+}
+{
+	// A note annotates an answer rather than being one, so committing it only
+	// closes the note — the user still decides when the question is done.
+	const { session, send, type } = drive([Q(), Q({ question: "Second?" })]);
+	send(KEY.tab);
+	type("but only on macOS");
+	send(KEY.enter);
+	check("committing a note stays on the question", session.index, 0);
+	check("and leaves edit mode", session.editing, null);
+}
+
+console.log("\n--- the model's recommendation ---");
+const R = (over: Record<string, unknown> = {}) =>
+	Q({
+		options: [
+			{ label: "Looks good", description: "The selector, notes, and free text all work" },
+			{ label: "Needs tweaks", description: "Something feels off", recommended: true },
+		],
+		...over,
+	});
+{
+	// Enter commits what is focused, so starting on the advice makes taking it
+	// a single keystroke — without selecting anything on the user's behalf.
+	const { session, send } = drive([R(), R({ question: "Second?" })]);
+	check("the cursor starts on the recommended answer", session.cursor, 1);
+	check("but nothing is chosen for the user", session.state.selected, []);
+	send(KEY.enter);
+	check("so one key accepts the recommendation", session.states[0]!.selected, ["Needs tweaks"]);
+	check("the next question starts on its own recommendation", session.cursor, 1);
+}
+{
+	const { session } = drive([Q()]);
+	check("no recommendation means the first row, as before", session.cursor, 0);
+}
+{
+	// Walking back must land on what the user chose, not on advice they passed on.
+	const { session, send } = drive([R(), R({ question: "Second?" })]);
+	send(KEY.up, KEY.space, KEY.right, KEY.left);
+	check("returning lands on the user's own answer", session.cursor, 0);
+	check("which is still theirs", session.state.selected, ["Looks good"]);
+}
+{
+	const { session, send, type } = drive([R(), R({ question: "Second?" })]);
+	send(KEY.down, KEY.down);
+	type("mine");
+	send(KEY.enter, KEY.left);
+	check("returning to free text lands on the free-text row", session.cursor, session.question.options.length);
+}
+{
+	const { prompt } = drive([R()]);
+	const rendered = prompt.render(60).join("\n");
+	checkTrue("the recommendation is badged", rendered.includes(CONFIG.recommendedBadge));
+	check("and only once", rendered.split(CONFIG.recommendedBadge).length - 1, 1);
+	checkTrue("the badge rides on its answer's line", rendered.split("\n").some((line) => line.includes("Needs tweaks") && line.includes(CONFIG.recommendedBadge)));
+}
+{
+	// Too narrow to share a line: the badge drops below rather than being cut.
+	const { prompt } = drive([Q({ options: [{ label: "A rather wordy answer indeed", recommended: true }] })]);
+	const lines = prompt.render(30).join("\n");
+	checkTrue("a narrow row still shows the badge", lines.includes(CONFIG.recommendedBadge));
 }
 
 console.log("\n--- the free-text row ---");
@@ -246,9 +370,9 @@ console.log("\n--- renderOutcomeText ---");
 	checkTrue("free text marked as typed by the user", text.includes("typed by the user"));
 }
 
-// ------------------------------------------------------------------- overlay
+// -------------------------------------------------------------------- prompt
 
-console.log("\n--- overlay helpers ---");
+console.log("\n--- prompt helpers ---");
 check("wrap splits on width", wrap("aaa bbb ccc", 7), ["aaa bbb", "ccc"]);
 check("wrap hard-splits an overlong word", wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
 check("wrap of empty text", wrap("", 10), [""]);
@@ -257,10 +381,37 @@ checkTrue("escape sequences are not", !isPrintable("\x1b[A"));
 checkTrue("control bytes are not", !isPrintable("\r"));
 checkTrue("tab is not printable", !isPrintable("\t"));
 
-console.log("\n--- overlay render ---");
+console.log("\n--- windowBlocks ---");
 {
-	const { overlay, session, send, type } = drive([Q(), Q({ question: "Second?" })]);
-	const first = overlay.render(60).join("\n");
+	const blocks = [["a"], ["b1", "b2"], ["c"], ["d"], ["e"]];
+	check("everything fits", windowBlocks(blocks, 0, 20).lines, ["a", "b1", "b2", "c", "d", "e"]);
+
+	const tail = windowBlocks(blocks, 4, 4);
+	checkTrue("the focused block is visible", tail.lines.includes("e"));
+	checkTrue("and what scrolled off is counted", tail.hiddenBefore > 0);
+	check("nothing is hidden past the focus", tail.hiddenAfter, 0);
+
+	const head = windowBlocks(blocks, 0, 4);
+	check("windowing from the top hides nothing before", head.hiddenBefore, 0);
+	checkTrue("and reports the rest below", head.hiddenAfter > 0);
+
+	// An option and its description are one block: a window must never split them.
+	const grouped = windowBlocks([["a"], ["b1", "b2", "b3"], ["c"], ["d"]], 1, 5);
+	check("a focused block is kept whole", grouped.lines, ["b1", "b2", "b3"]);
+	check("with both sides counted", [grouped.hiddenBefore, grouped.hiddenAfter], [1, 2]);
+
+	// The focused block still wins when it alone is taller than the screen.
+	const huge = windowBlocks([["a"], ["x1", "x2", "x3", "x4", "x5"]], 1, 3);
+	checkTrue("an oversized focused block is clipped, not dropped", huge.lines.length > 0 && huge.lines.length <= 3);
+	check("showing its start", huge.lines[0], "x1");
+
+	check("no blocks, no lines", windowBlocks([], 0, 5).lines, []);
+}
+
+console.log("\n--- prompt render ---");
+{
+	const { prompt, session, send, type } = drive([Q(), Q({ question: "Second?" })]);
+	const first = prompt.render(60).join("\n");
 	checkTrue("renders the question", first.includes("How does it look?"));
 	checkTrue("shows the placeholder on the empty free-text row", first.includes(CONFIG.customPlaceholder));
 	checkTrue("shows progress across questions", first.includes("Question 1 of 2"));
@@ -268,7 +419,7 @@ console.log("\n--- overlay render ---");
 
 	send(KEY.tab);
 	type("note text");
-	const editing = overlay.render(60).join("\n");
+	const editing = prompt.render(60).join("\n");
 	checkTrue("note is shown while editing", editing.includes("note text"));
 	// The cursor marker is what puts the real terminal caret at the end of the
 	// answer being annotated.
@@ -276,7 +427,7 @@ console.log("\n--- overlay render ---");
 
 	send(KEY.enter, KEY.right, KEY.right);
 	check("reached review", session.phase, "review");
-	const review = overlay.render(60).join("\n");
+	const review = prompt.render(60).join("\n");
 	checkTrue("review lists the answers", review.includes("Review your answers"));
 	checkTrue("review shows the note", review.includes("note text"));
 	checkTrue("review flags an unanswered question", review.includes("(not answered)"));
@@ -284,10 +435,52 @@ console.log("\n--- overlay render ---");
 {
 	// A long option must wrap rather than vanish.
 	const long = "y".repeat(150);
-	const { overlay } = drive([Q({ options: [{ label: "L", description: long }] })]);
-	const rendered = overlay.render(40).join("\n");
+	const { prompt } = drive([Q({ options: [{ label: "L", description: long }] })]);
+	const rendered = prompt.render(40).join("\n");
 	checkTrue("long description is not truncated", !rendered.includes("…"));
 	checkTrue("and all of it is present", rendered.replace(/\s+/g, "").includes(long));
+}
+{
+	// It sits where the editor was, so it is framed the way pi frames its own
+	// in-editor selector, and the key hints land under the lower rule — the row
+	// the footer has vacated.
+	const { prompt } = drive([Q()]);
+	const lines = prompt.render(60);
+	const rule = "─".repeat(60);
+	check("opens with a rule", lines[0], rule);
+	const lower = lines.lastIndexOf(rule);
+	checkTrue("and closes with one", lower > 0 && lower < lines.length - 1);
+	checkTrue("hints sit below the closing rule", lines.slice(lower + 1).join(" ").includes("Esc cancel"));
+	checkTrue("Enter is advertised as a commit", lines.join("\n").includes("Enter pick"));
+}
+{
+	const { prompt } = drive([Q({ multiSelect: true })]);
+	checkTrue("multi-select advertises Enter as a toggle", prompt.render(60).join("\n").includes("Space/Enter toggle"));
+}
+{
+	// A tall question on a short terminal scrolls its options instead of pushing
+	// the whole conversation off the screen.
+	const many = Array.from({ length: 8 }, (_, n) => ({ label: `Option ${n}`, description: "why you might pick it" }));
+	const { prompt, send } = drive([Q({ options: many })], true, 20);
+	const top = prompt.render(60);
+	checkTrue("the prompt stays within the terminal", top.length <= 20);
+	checkTrue("and says what is out of view", top.join("\n").includes("more"));
+	checkTrue("the focused row is on screen", top.join("\n").includes("Option 0"));
+
+	send(...Array(8).fill(KEY.down));
+	const bottom = prompt.render(60).join("\n");
+	checkTrue("scrolling follows the cursor down", bottom.includes(CONFIG.customPlaceholder));
+	checkTrue("and reports what is now above", bottom.includes("↑"));
+}
+{
+	// A wordy question on a tiny terminal still leaves room to answer it, and
+	// says how much of itself it had to cut.
+	const wordy = Q({ question: `${"how does this look ".repeat(20)}?` });
+	const { prompt } = drive([wordy], true, 12);
+	const lines = prompt.render(40);
+	checkTrue("the prompt still fits the terminal", lines.length <= 12);
+	checkTrue("the options survive the squeeze", lines.join("\n").includes("Looks good"));
+	checkTrue("and the cut is announced", lines.join("\n").includes("more lines"));
 }
 
 // -------------------------------------------------------------------- settings
@@ -308,6 +501,7 @@ function makePi(active: string[] = []) {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
 	const commands = new Map<string, any>();
+	const emitted: { channel: string; data: any }[] = [];
 	let activeTools = [...active];
 	return {
 		pi: {
@@ -318,10 +512,15 @@ function makePi(active: string[] = []) {
 			setActiveTools: (list: string[]) => {
 				activeTools = list;
 			},
+			events: {
+				emit: (channel: string, data: unknown) => emitted.push({ channel, data }),
+				on: () => () => {},
+			},
 		},
 		tools,
 		handlers,
 		commands,
+		emitted,
 		active: () => activeTools,
 	};
 }
@@ -380,13 +579,16 @@ console.log("\n--- tool.execute ---");
 	checkTrue("headless returns a graceful message", headless.content[0].text.includes("headless"));
 	check("headless details record the mode", headless.details.mode, "headless");
 
-	// Interactive: build the real overlay through a fake ui.custom and drive it.
+	// Interactive: build the real component through a fake ui.custom and drive it.
+	let customOptions: any;
 	const scriptedUI = {
 		...uiStub,
-		async custom(factory: any) {
+		async custom(factory: any, options: any) {
+			customOptions = options;
 			let done: any;
 			const component = factory({ requestRender: () => {} }, theme, undefined, (value: unknown) => (done = value));
-			for (const key of [KEY.space, KEY.right, KEY.enter]) component.handleInput(key);
+			// Enter picks and hands over to review, then Enter sends.
+			for (const key of [KEY.enter, KEY.enter]) component.handleInput(key);
 			return done;
 		},
 	};
@@ -395,9 +597,33 @@ console.log("\n--- tool.execute ---");
 	check("interactive answer", answered.details.answers[0].labels, ["Looks good"]);
 	checkTrue("answer text reaches the model", answered.content[0].text.includes('"Looks good"'));
 
-	// An overlay torn down without calling done must not crash the tool.
+	// The placement: it replaces the editor rather than floating over the chat,
+	// and the footer is told to stand down for exactly as long as it is up.
+	check("shown in the prompt's place, not as an overlay", customOptions?.overlay, false);
+	check(
+		"the footer is told when the question opens and closes",
+		h.emitted.filter((entry) => entry.channel === ASK_CHANNEL).map((entry) => entry.data.active),
+		[true, false],
+	);
+
+	// A component torn down without calling done must not crash the tool.
 	const abandoned = await tool.execute("t3", { questions: [Q()] }, undefined, undefined, { hasUI: true, ui: uiStub });
 	check("undefined outcome degrades to dismissed", abandoned.details.kind, "dismissed");
+
+	// A host that tears the prompt down by throwing must still hand the footer
+	// back, or the statusline would stay blank for the rest of the session.
+	{
+		const failing = makePi();
+		const ui = { ...uiStub, custom: async () => { throw new Error("boom"); } };
+		let broke = false;
+		try {
+			await showAsk(failing.pi as never, { hasUI: true, ui } as never, new AskSession([Q()] as never));
+		} catch {
+			broke = true;
+		}
+		checkTrue("a failed prompt propagates", broke);
+		check("and the footer is handed back anyway", failing.emitted.map((entry) => entry.data.active), [true, false]);
+	}
 
 	let threw = false;
 	try {

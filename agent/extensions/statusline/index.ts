@@ -28,13 +28,17 @@
  * are appended last, so long-running background work is visible without opening
  * /workflows. Nothing is drawn when no run is in flight. This is content, not a
  * presence chip — setStatus() chips stay unrendered (see the note in render).
+ *
+ * The footer draws nothing at all while ask_user has a question up (announced the
+ * same way, on ASK_CHANNEL): that question stands in for the editor, and this
+ * gets out of its way for the duration.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
-import { CONFIG, WORKFLOW_CHANNEL } from "./config.ts";
+import { ASK_CHANNEL, CONFIG, WORKFLOW_CHANNEL } from "./config.ts";
 import { makeGitDiffCounter } from "./git.ts";
 import {
 	formatCwd,
@@ -78,14 +82,26 @@ export default function (pi: ExtensionAPI) {
 				tui.requestRender();
 			});
 
+			// ask_user replaces the editor with its question; this footer steps
+			// aside for as long as that lasts, so the question has the prompt and
+			// the footer to itself.
+			let asking = false;
+			const unsubAsk = pi.events.on(ASK_CHANNEL, (data) => {
+				asking = (data as { active?: boolean } | undefined)?.active === true;
+				tui.requestRender();
+			});
+
 			return {
 				dispose() {
 					unsub();
 					unsubWorkflows();
+					unsubAsk();
 					usage?.dispose();
 				},
 				invalidate() {},
 				render(width: number): string[] {
+					if (asking) return [];
+
 					// --- token totals from all assistant messages ---
 					let input = 0;
 					let output = 0;
