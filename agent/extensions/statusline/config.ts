@@ -11,6 +11,14 @@ import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 
 export type ColorSpec = ThemeColor | `#${string}`;
 
+/**
+ * pi.events channel the ultracode extension announces its active workflow runs
+ * on. Declared here rather than imported from that extension: each extension
+ * stays self-contained, the same way cmux-notify re-declares the env names
+ * cmux's own bridge uses. Payload: `{ lines: string[] | undefined }`.
+ */
+export const WORKFLOW_CHANNEL = "ultracode:panel";
+
 /** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
 export const BAR_FILL = "█";
 export const BAR_TRACK = "·";
@@ -47,5 +55,7 @@ export const CONFIG = {
 		cached: "mdCode",
 		out: "warning",
 		reset: "dim",
+		/** Active workflow runs, appended below everything else. */
+		workflow: "accent",
 	} satisfies Record<string, ColorSpec>,
 };

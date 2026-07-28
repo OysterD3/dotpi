@@ -21,7 +21,9 @@ cmux's own generated bridge rather than one of ours — see `agent/extensions/cm
 
 **`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
-provider reports any.
+provider reports any. Below those, one line per active workflow run, while any is in flight —
+ultracode announces them on a `pi.events` channel and the footer appends them, so background
+fleets stay visible without opening `/workflows`. Nothing renders when nothing is running.
 
 | File | Role |
 | --- | --- |
@@ -424,8 +426,10 @@ once it holds an assistant turn. `agentType` borrows a standing definition from 
 
 **Workflows don't block the session.** The tool validates the script — meta *and* a compile check,
 so a syntax error fails the call rather than arriving minutes later as a failed run — starts the
-fleet, and returns immediately with a run id; the main agent keeps working while a status panel
-above the editor shows each run's phases, agent counts, spend, and elapsed time. When a run settles
+fleet, and returns immediately with a run id; the main agent keeps working while the bottom of the
+footer shows each run's phases, agent counts, spend, and elapsed time. ultracode does not draw that
+itself — it announces the lines on the `ultracode:panel` event channel and the statusline appends
+them, the same decoupling `permissions` → `cmux-notify` uses. When a run settles
 its outcome comes back to the model as a `workflow-result` message: a follow-up if the agent is
 mid-turn, a turn of its own if the session is idle, so results get processed the way a task
 notification would. The model can pass `wait: true` for the rare workflow whose result it needs

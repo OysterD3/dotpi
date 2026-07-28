@@ -4,6 +4,7 @@
  * Line 1:  <model>  │  <cwd>  │  <branch>  │  +added,-removed  │  v<pi-version>
  * Line 2:  Context: [████····] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
  * Line 3:  Weekly: [████····] <pct>% (resets <time>)   [further windows, if any]
+ * Last:    one line per active workflow run, while any is in flight
  *
  *   config.ts  tunables, colors, bar glyphs
  *   git.ts     working-tree diff counts
@@ -21,13 +22,19 @@
  * Line 3 appears only when the provider actually reports limit windows. Each window is
  * labelled by its own reported duration, not by slot order — a Codex account reports
  * only a weekly window, in the slot Claude Code uses for its 5h session meter.
+ *
+ * The workflow lines are the one piece of footer content this extension does not
+ * source itself: ultracode announces its active runs on WORKFLOW_CHANNEL and they
+ * are appended last, so long-running background work is visible without opening
+ * /workflows. Nothing is drawn when no run is in flight. This is content, not a
+ * presence chip — setStatus() chips stay unrendered (see the note in render).
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
-import { CONFIG } from "./config.ts";
+import { CONFIG, WORKFLOW_CHANNEL } from "./config.ts";
 import { makeGitDiffCounter } from "./git.ts";
 import {
 	formatCwd,
@@ -61,9 +68,20 @@ export default function (pi: ExtensionAPI) {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
 			const usage = CONFIG.showLimits ? createUsageReader(ctx, () => tui.requestRender()) : null;
 
+			// ultracode re-announces on every panel tick while runs are live and
+			// once more when the last one settles, so this both fills and clears
+			// itself — there is nothing to poll from this side.
+			let workflowLines: string[] | undefined;
+			const unsubWorkflows = pi.events.on(WORKFLOW_CHANNEL, (data) => {
+				const next = (data as { lines?: string[] } | undefined)?.lines;
+				workflowLines = next?.length ? next : undefined;
+				tui.requestRender();
+			});
+
 			return {
 				dispose() {
 					unsub();
+					unsubWorkflows();
 					usage?.dispose();
 				},
 				invalidate() {},
@@ -149,6 +167,11 @@ export default function (pi: ExtensionAPI) {
 					if (limits && limits.windows.length > 0) {
 						const segments = limits.windows.map((limit) => limitSegment(theme, limit));
 						lines.push(truncateToWidth(segments.join("   "), width));
+					}
+
+					// --- last: active workflow runs, while any is in flight ---
+					for (const line of workflowLines ?? []) {
+						lines.push(truncateToWidth(paint(theme, CONFIG.colors.workflow, line), width));
 					}
 
 					return lines;

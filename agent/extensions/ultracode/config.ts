@@ -20,6 +20,15 @@ export const WORKFLOW_DIR = "workflows";
 /** The on-disk run store: one directory per run. */
 export const RUN_STORE_DIR = "workflow-runs";
 
+/**
+ * pi.events channel carrying the active-run lines for whoever wants to draw
+ * them. ultracode does not know where they end up — the statusline appends them
+ * to the footer; anything else (a notifier, a widget) can subscribe too. The
+ * payload is `{ lines: string[] | undefined }`, undefined meaning "nothing
+ * running, clear it".
+ */
+export const PANEL_CHANNEL = "ultracode:panel";
+
 export const CONFIG = {
 	/** Claude Code K6d.TURNS_BETWEEN_MAINTENANCE: sparse "still on" reminder cadence. */
 	turnsBetweenMaintenance: 10,

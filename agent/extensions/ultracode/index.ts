@@ -46,7 +46,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DEFAULT_SETTINGS, ENTRY_TYPE, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
+import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
@@ -154,7 +154,11 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (!uiCtx?.hasUI) return;
 			const lines = panelLines(registry.active(), Date.now());
-			uiCtx.ui.setWidget("workflows", lines);
+			// Announced, not drawn: the statusline appends these to the bottom of
+			// the footer, so active runs are visible without opening /workflows.
+			// ultracode stays out of the layout decision — anything else wanting
+			// the same signal subscribes to the same channel.
+			pi.events.emit(PANEL_CHANNEL, { lines });
 			// Tick while runs are active so elapsed times move; stop when quiet.
 			if (lines && !panelTimer) {
 				panelTimer = setInterval(drawPanel, 2000);

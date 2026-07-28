@@ -29,6 +29,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
+const { PANEL_CHANNEL } = await import("./config.ts");
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -53,8 +54,24 @@ const thinkingLog: string[] = [];
 // supports. Tests swap this to exercise the clamp paths.
 let clampLevel: (level: string) => string = (level) => level;
 
+// The inter-extension bus. ultracode announces its active-run lines here for the
+// statusline to append to the footer, so the fake has to carry it — without it
+// drawPanel() throws into its own catch and silently stops drawing.
+const busEmitted: Array<{ channel: string; data: unknown }> = [];
+const busHandlers = new Map<string, (data: unknown) => void>();
+
 const pi = {
 	on: (event: string, handler: Function) => events.set(event, handler),
+	events: {
+		emit: (channel: string, data: unknown) => {
+			busEmitted.push({ channel, data });
+			busHandlers.get(channel)?.(data);
+		},
+		on: (channel: string, handler: (data: unknown) => void) => {
+			busHandlers.set(channel, handler);
+			return () => busHandlers.delete(channel);
+		},
+	},
 	registerCommand: (name: string, options: any) => commands.set(name, options),
 	registerTool: (tool: any) => tools.set(tool.name, tool),
 	registerEntryRenderer: (type: string, _renderer: Function) => entryRenderers.push(type),
@@ -487,9 +504,15 @@ console.log("\n--- workflow tool: wait mode ---");
 console.log("\n--- workflow tool: background ---");
 {
 	const tool = tools.get("workflow")!;
-	const { ctx, widgets } = makeCtx({ model: MODEL });
-	events.get("session_start")!({}, ctx); // panel draws through this ctx
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx); // panel announces through this ctx
 	sent.length = 0;
+	busEmitted.length = 0;
+	/** The `lines` payload of every panel announcement so far, in order. */
+	const announced = () =>
+		busEmitted
+			.filter((e) => e.channel === PANEL_CHANNEL)
+			.map((e) => (e.data as { lines?: string[] }).lines);
 	const script = [
 		"export const meta = { name: 'bg', description: 'background demo' }",
 		"log('ticking')",
@@ -501,7 +524,7 @@ console.log("\n--- workflow tool: background ---");
 	check("returns immediately with run id", /started in the background \(id: wf-[a-z0-9]+-\d+\)/.test(startText), true);
 	check("warns against fabricating results", startText.includes("do not fabricate"), true);
 	check("background details flag", immediate.details.background, true);
-	check("panel showed the run", widgets.some((w) => w.key === "workflows" && w.lines?.some((l) => l.includes("bg"))), true);
+	check("panel announced the run", announced().some((lines) => lines?.some((l) => l.includes("bg"))), true);
 
 	// The result message arrives once the run settles.
 	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -509,7 +532,11 @@ console.log("\n--- workflow tool: background ---");
 	check("delivery content carries the result", sent[0]?.message.content.includes('"ok": true'), true);
 	check("delivered message is visible", sent[0]?.message.display, true);
 	check("idle delivery triggers a turn", sent[0]?.options, { triggerTurn: true });
-	check("panel cleared when quiet", widgets.at(-1)?.lines, undefined);
+	// Guard the "cleared" check with a non-empty assertion: against an empty log
+	// `.at(-1)` is undefined too, so the clear would pass without anything having
+	// been announced at all.
+	check("panel announced at least once", announced().length > 0, true);
+	check("panel cleared when quiet", announced().at(-1), undefined);
 }
 
 console.log("\n--- workflow tool: /workflows, pause, cancel ---");
