@@ -1,6 +1,11 @@
 /**
  * Building the cmux notification: deciding whether to send one, and what it
  * says. Pure — index.ts owns the subprocess.
+ *
+ * Two things block on a human: a permission prompt and an ask_user question.
+ * They arrive on different channels with different payloads and read differently
+ * in the banner, but land on the same cmux event — `permission_prompt` is what
+ * flips the session to needsInput, whatever it is actually waiting for.
  */
 import { CONFIG } from "./config.ts";
 
@@ -62,6 +67,70 @@ export function buildPayload(event: AskEvent, sessionId: string, cwd: string): R
 		tool_name: event.tool,
 		reason: event.reason || undefined,
 		findings: event.findings.length > 0 ? event.findings : undefined,
+	};
+}
+
+// ------------------------------------------------------------------ questions
+
+/** What the ask-user extension announces when it puts a question to the user. */
+export interface QuestionEvent {
+	/** True when the question opens, false once it is answered or dismissed. */
+	active: boolean;
+	/** The first question's text — what the banner says. */
+	question: string;
+	/** The model's short label for it, e.g. "Auth method". */
+	header?: string;
+	/** How many questions the one call carried. */
+	count: number;
+	sessionId?: string;
+	cwd?: string;
+}
+
+/**
+ * Narrow a bus payload. The closing announcement carries only `active: false`,
+ * so a missing question is normal rather than malformed — index.ts drops those
+ * by checking `active`, which keeps this function faithful to what was sent.
+ */
+export function asQuestionEvent(data: unknown): QuestionEvent | undefined {
+	if (!data || typeof data !== "object") return undefined;
+	const record = data as Record<string, unknown>;
+	if (typeof record.active !== "boolean") return undefined;
+	const count = typeof record.count === "number" && record.count > 0 ? Math.floor(record.count) : 1;
+	return {
+		active: record.active,
+		question: typeof record.question === "string" ? record.question.trim() : "",
+		header: typeof record.header === "string" && record.header.trim() ? record.header.trim() : undefined,
+		count,
+		sessionId: typeof record.sessionId === "string" ? record.sessionId : undefined,
+		cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+	};
+}
+
+/**
+ * The banner text. The question itself is the whole point of the interruption,
+ * so it is what the line carries; a multi-question call says so, because "answer
+ * one thing" and "answer four things" are different amounts of attention.
+ */
+export function buildQuestionMessage(event: QuestionEvent): string {
+	const question = oneLine(event.question, CONFIG.targetChars);
+	const lead = event.count > 1 ? `Pi is asking ${event.count} questions` : "Pi is asking";
+	return question ? `${lead}: ${question}` : `${lead} for your input`;
+}
+
+/** The JSON cmux reads on stdin for a question. */
+export function buildQuestionPayload(event: QuestionEvent, sessionId: string, cwd: string): Record<string, unknown> {
+	return {
+		session_id: sessionId,
+		cwd,
+		hook_event_name: CONFIG.hookEventName,
+		event: CONFIG.hookEventName,
+		// Load-bearing for needsInput, and just as true of a question as of an
+		// approval: pi is stopped until the human acts.
+		notification_type: CONFIG.notificationType,
+		message: buildQuestionMessage(event),
+		title: "Pi has a question",
+		tool_name: CONFIG.questionTool,
+		reason: event.header,
 	};
 }
 

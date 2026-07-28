@@ -9,6 +9,18 @@
 /** pi.events channel the permissions extension announces prompts on. */
 export const ASK_CHANNEL = "permissions:ask";
 
+/**
+ * pi.events channel the ask-user extension announces questions on. Payload:
+ * `{ active, question, header?, count, sessionId?, cwd? }`, with `active: false`
+ * when the question closes.
+ *
+ * A question blocks on a human exactly as a permission prompt does, so it earns
+ * the same treatment: without this, the one pi state most worth interrupting for
+ * — the agent waiting on an answer in a pane you are not looking at — passed
+ * silently, because the permissions extension is not involved in it at all.
+ */
+export const QUESTION_CHANNEL = "ask-user:asking";
+
 /** Set to "1" to silence the cmux bridges. Same variable cmux's own file uses. */
 export const DISABLE_ENV = "CMUX_PI_HOOKS_DISABLED";
 
@@ -29,6 +41,8 @@ export const CONFIG = {
 	notificationType: "permission_prompt",
 	/** cmux's wire vocabulary for this event. */
 	hookEventName: "Notification",
+	/** What cmux shows as the tool behind a question notification. */
+	questionTool: "ask_user",
 	/** Keep the banner to one readable line. */
 	targetChars: 120,
 	/** A notification must never delay the prompt; this only bounds the child. */

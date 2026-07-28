@@ -605,6 +605,10 @@ console.log("\n--- tool.execute ---");
 		h.emitted.filter((entry) => entry.channel === ASK_CHANNEL).map((entry) => entry.data.active),
 		[true, false],
 	);
+	// A subscriber that has to interrupt someone (cmux-notify) needs to be able
+	// to say what for, so the opening announcement carries the question.
+	check("the announcement says what is being asked", h.emitted[0]!.data.question, Q().question);
+	check("and how many questions came with it", h.emitted[0]!.data.count, 1);
 
 	// A component torn down without calling done must not crash the tool.
 	const abandoned = await tool.execute("t3", { questions: [Q()] }, undefined, undefined, { hasUI: true, ui: uiStub });

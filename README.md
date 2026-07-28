@@ -573,8 +573,9 @@ and queued continuations — so a turn interrupted by a compaction is reported a
 | `elapsed.test.ts` | Unit and wiring coverage |
 
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
-blocked waiting for your approval, so a permission prompt in a pane you are not looking at raises
-the session's "needs input" chip and a banner instead of waiting silently.
+blocked waiting on *you*, so a pane you are not looking at raises the session's "needs input" chip
+and a banner instead of waiting silently. Two things qualify: a permission prompt, and an `ask_user`
+question.
 
 cmux installs its own bridge at `agent/extensions/cmux-session.ts`, which reports session start,
 prompt submit, and stop — but not the one state worth interrupting you for. cmux's own docs list pi
@@ -591,6 +592,13 @@ subscribes to the same channel. It sends asynchronously, unlike cmux's own `spaw
 this is the one place in pi where a subprocess would sit in front of a waiting human. Gating matches
 cmux's file exactly: nothing happens outside a cmux surface (`CMUX_SURFACE_ID`), and
 `CMUX_PI_HOOKS_DISABLED=1` silences both.
+
+`ask_user` questions arrive the same way, on `ask-user:asking`, and the banner carries the question
+itself ("Pi is asking: …", or "Pi is asking 3 questions: …") — being told to come back matters less
+when you cannot see what for. They never touch the permissions extension, which is why they used to
+pass in silence: the one state most worth interrupting for was the one nothing announced. Only the
+opening edge notifies; the closing announcement exists so the statusline can come back, and a second
+send would just re-ring the bell for a question already answered.
 
 Verified against the shipped cmux binary: `notification_type: "permission_prompt"` is load-bearing —
 without it you get an "Attention" banner and the session stays marked *running*. One honest
@@ -867,6 +875,10 @@ the middle of the chat, and the statusline blanks itself for the duration (see i
 question owns the prompt and the footer between them. pi's own `select` and `input` sit in exactly
 the same slot; the transcript above stays put and readable, and the editor comes back afterwards
 with whatever you had typed in it still there.
+
+Both of those follow from one announcement: `ask-user:asking` carries the question, and subscribers
+decide what to do with it. The statusline stands down; `cmux-notify` raises the pane, so a question
+waiting in a tab you are not watching rings the same bell a permission prompt does.
 
 Nothing is truncated: long options and descriptions wrap, because the description is often what the
 choice turns on. What the screen cannot fit **scrolls** instead — the option list windows around the

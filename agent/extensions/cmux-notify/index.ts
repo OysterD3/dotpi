@@ -18,6 +18,11 @@
  * that into a cmux hook. Anything else wanting the same signal (a desktop
  * notifier, a webhook) subscribes to the same channel.
  *
+ * ask_user questions arrive the same way, on `ask-user:asking`. They are the
+ * other state that stops pi dead until a human acts, and they never touch the
+ * permissions extension, so without their own announcement they went unnoticed
+ * — the pane sat on a question in silence.
+ *
  * Protocol notes, all verified against the shipped cmux binary:
  *   - the SUBCOMMAND decides how cmux handles the event, not the payload's
  *     hook_event_name;
@@ -36,8 +41,8 @@
  */
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ASK_CHANNEL, BIN_ENV, CONFIG } from "./config.ts";
-import { asAskEvent, buildPayload, shouldSend } from "./notify.ts";
+import { ASK_CHANNEL, BIN_ENV, CONFIG, QUESTION_CHANNEL } from "./config.ts";
+import { asAskEvent, asQuestionEvent, buildPayload, buildQuestionPayload, shouldSend } from "./notify.ts";
 
 export default function (pi: ExtensionAPI) {
 	let cwd = process.cwd();
@@ -59,6 +64,23 @@ export default function (pi: ExtensionAPI) {
 		if (!id) return;
 
 		send(buildPayload(event, id, event.cwd ?? cwd));
+	});
+
+	// A question stops pi on a human exactly as an approval does, and the
+	// permissions extension is not involved in one, so it announces its own.
+	// Only the opening edge is worth a notification: the closing announcement
+	// exists so the statusline can come back, and nothing cmux offers clears
+	// needsInput anyway (see the limitation above) — a second send would only
+	// re-ring the bell for a question that has just been answered.
+	pi.events.on(QUESTION_CHANNEL, (data) => {
+		if (!shouldSend(process.env)) return;
+		const event = asQuestionEvent(data);
+		if (!event?.active) return;
+
+		const id = event.sessionId ?? sessionId;
+		if (!id) return;
+
+		send(buildQuestionPayload(event, id, event.cwd ?? cwd));
 	});
 }
 

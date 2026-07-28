@@ -394,7 +394,17 @@ export class AskPrompt {
  * note on that constant for why this extension must not swap the footer itself.
  */
 export async function showAsk(pi: ExtensionAPI, ctx: ExtensionContext, session: AskSession): Promise<AskOutcome> {
-	pi.events.emit(ASK_CHANNEL, { active: true });
+	const first = session.questions[0];
+	pi.events.emit(ASK_CHANNEL, {
+		active: true,
+		// Enough for a subscriber to say what is being waited on, not just that
+		// something is: cmux-notify puts the question itself in its banner.
+		question: first?.question ?? "",
+		header: first?.header,
+		count: session.questions.length,
+		sessionId: ctx.sessionManager?.getSessionId() ?? undefined,
+		cwd: ctx.cwd,
+	});
 	try {
 		const outcome = await ctx.ui.custom<AskOutcome>(
 			(tui, theme, _keybindings, done) =>

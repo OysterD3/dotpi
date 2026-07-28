@@ -20,15 +20,21 @@ export const TOOL_NAME = "ask_user";
 export const SETTINGS_KEY = "askUser";
 
 /**
- * pi.events channel announcing whether a question currently owns the prompt.
- * Payload: `{ active: boolean }`.
+ * pi.events channel announcing that a question owns the prompt. Payload:
+ * `{ active, question, header?, count, sessionId?, cwd? }` when it opens, and
+ * `{ active: false }` when it is answered or dismissed.
  *
- * The question replaces the editor, and whoever owns the footer is expected to
- * blank itself while it is up (the statusline extension does). This extension
- * cannot do that itself: `ui.setFooter(undefined)` restores pi's *built-in*
- * footer, so swapping the footer here would tear down another extension's for
- * the rest of the session. Announcing and letting the owner decide is the same
- * decoupling ultracode uses for its workflow lines.
+ * Two subscribers today, for two different reasons:
+ *   - the statusline blanks itself while a question is up, so the question owns
+ *     the bottom of the screen. This extension cannot do that itself —
+ *     `ui.setFooter(undefined)` restores pi's *built-in* footer, so swapping and
+ *     restoring here would retire another extension's footer for good.
+ *   - cmux-notify raises the pane, because a question stops pi on a human just
+ *     as a permission prompt does.
+ *
+ * Hence the payload carries the question and not merely the flag: a subscriber
+ * that has to interrupt someone needs to say what for. Same decoupling ultracode
+ * uses for its workflow lines — announce, and let the listener decide.
  */
 export const ASK_CHANNEL = "ask-user:asking";
 

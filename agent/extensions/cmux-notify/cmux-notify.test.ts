@@ -6,8 +6,19 @@
  * dependencies of this repo):
  *     jiti agent/extensions/cmux-notify/cmux-notify.test.ts
  */
-import { asAskEvent, buildMessage, buildPayload, oneLine, shouldSend, type AskEvent } from "./notify.ts";
-import { ASK_CHANNEL, CONFIG } from "./config.ts";
+import {
+	asAskEvent,
+	asQuestionEvent,
+	buildMessage,
+	buildPayload,
+	buildQuestionMessage,
+	buildQuestionPayload,
+	oneLine,
+	shouldSend,
+	type AskEvent,
+	type QuestionEvent,
+} from "./notify.ts";
+import { ASK_CHANNEL, CONFIG, QUESTION_CHANNEL } from "./config.ts";
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -21,6 +32,15 @@ const ASK: AskEvent = {
 	target: "git push --force origin main",
 	reason: "force-pushes, overwriting published history",
 	findings: ["git-force-push"],
+	sessionId: "sess-1",
+	cwd: "/repo",
+};
+
+const QUESTION: QuestionEvent = {
+	active: true,
+	question: "Which library should we use for date formatting?",
+	header: "Library",
+	count: 1,
 	sessionId: "sess-1",
 	cwd: "/repo",
 };
@@ -90,6 +110,51 @@ console.log("\n--- the cmux payload ---");
 	check("still serialises", typeof JSON.stringify(bare), "string");
 }
 
+// ----------------------------------------------------------------- questions
+
+console.log("\n--- narrowing a question payload ---");
+check("well-formed question", asQuestionEvent(QUESTION)?.question, "Which library should we use for date formatting?");
+check("the closing announcement parses", asQuestionEvent({ active: false }), {
+	active: false,
+	question: "",
+	header: undefined,
+	count: 1,
+	sessionId: undefined,
+	cwd: undefined,
+});
+check("no active flag -> undefined", asQuestionEvent({ question: "x" }), undefined);
+check("not an object -> undefined", asQuestionEvent("nope"), undefined);
+check("a blank header is dropped", asQuestionEvent({ active: true, header: "  " })?.header, undefined);
+check("a nonsense count falls back to one", asQuestionEvent({ active: true, count: 0 })?.count, 1);
+
+console.log("\n--- the question banner ---");
+check("carries the question itself", buildQuestionMessage(QUESTION), "Pi is asking: Which library should we use for date formatting?");
+check(
+	"several questions say how many",
+	buildQuestionMessage({ ...QUESTION, count: 3 }),
+	"Pi is asking 3 questions: Which library should we use for date formatting?",
+);
+check("no text still says something", buildQuestionMessage({ ...QUESTION, question: "" }), "Pi is asking for your input");
+check(
+	"a long question is capped to one line",
+	buildQuestionMessage({ ...QUESTION, question: `${"why ".repeat(80)}?` }).length <= CONFIG.targetChars + 20,
+	true,
+);
+
+console.log("\n--- the question payload ---");
+{
+	const payload = buildQuestionPayload(QUESTION, "sess-1", "/repo");
+	// A question is not an approval, but it stops pi on a human just the same,
+	// and this is the only field that flips cmux to needsInput.
+	check("still the load-bearing field", payload.notification_type, "permission_prompt");
+	check("titled as a question, not an approval", payload.title, "Pi has a question");
+	check("named after the tool", payload.tool_name, CONFIG.questionTool);
+	check("session and cwd", [payload.session_id, payload.cwd], ["sess-1", "/repo"]);
+	check("the header rides along as the reason", payload.reason, "Library");
+	check("message is the banner", payload.message, buildQuestionMessage(QUESTION));
+	check("no header, no key", "reason" in buildQuestionPayload({ ...QUESTION, header: undefined }, "s", "/c") && buildQuestionPayload({ ...QUESTION, header: undefined }, "s", "/c").reason !== undefined, false);
+}
+
 // ------------------------------------------------------------------- wiring
 
 console.log("\n--- wiring against a fake pi ---");
@@ -111,6 +176,7 @@ console.log("\n--- wiring against a fake pi ---");
 	extension(pi as never);
 
 	check("subscribes to the ask channel", handlers.has(ASK_CHANNEL), true);
+	check("subscribes to the question channel", handlers.has(QUESTION_CHANNEL), true);
 	check("hooks session_start", events.has("session_start"), true);
 
 	// With no cmux surface in the environment, firing the channel must not
@@ -122,6 +188,9 @@ console.log("\n--- wiring against a fake pi ---");
 		handlers.get(ASK_CHANNEL)!(ASK);
 		handlers.get(ASK_CHANNEL)!("garbage");
 		handlers.get(ASK_CHANNEL)!(undefined);
+		handlers.get(QUESTION_CHANNEL)!(QUESTION);
+		handlers.get(QUESTION_CHANNEL)!({ active: false });
+		handlers.get(QUESTION_CHANNEL)!("garbage");
 	} catch {
 		threw = true;
 	}
