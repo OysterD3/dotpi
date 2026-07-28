@@ -120,7 +120,7 @@ checkTrue("ambiguous partial is rejected", resolvedId("claude").startsWith("ERR:
 checkTrue("unknown reference is rejected", resolvedId("does-not-exist").startsWith("ERR:"));
 checkTrue("empty reference is rejected", resolvedId("").startsWith("ERR:"));
 
-console.log("\n--- Claude Code's Czg rule: advisor cannot be the model it advises ---");
+console.log("\n--- sameModel: labels a self-advising setup (allowed here, unlike Claude Code's Czg) ---");
 const opus = MODELS[0];
 const sonnet = MODELS[1];
 check("same model detected", sameModel(opus, { ...opus }), true);
@@ -197,11 +197,9 @@ console.log("\n--- the tool's pre-spawn branches (no subprocess) ---");
 	}
 	checkTrue("unresolvable model throws", threw.includes("could not be used"));
 
-	// Same model as the session model -> graceful note, no spawn.
-	reference = "opus"; // resolves to anthropic/claude-opus-4-8, which ctx.model is
-	const result = await toolDef.execute("id", {}, undefined, undefined, ctx);
-	check("same-model is a skip, not an error", result.details?.skipped, "same-model");
-	checkTrue("same-model note explains why", result.content[0].text.includes("cannot advise itself"));
+	// A same-model advisor is allowed here (pi diverges from Claude Code's Czg
+	// rule), so it no longer short-circuits before the spawn — there is no
+	// pre-spawn branch left to assert. advisor.live.ts covers the real call.
 }
 
 // ------------------------------------------------------ wiring against a fake pi
@@ -308,9 +306,10 @@ console.log("\n--- /advisor command ---");
 	await advisor.handler("nonsense-xyz", ctx);
 	checkTrue("unknown model is rejected", h.notices.some(([lvl, m]) => lvl === "error" && m.includes("Cannot use")));
 
-	// Setting the current session model warns (Czg).
+	// Setting the current session model is allowed, and the confirmation says so.
 	await advisor.handler("sonnet", ctx); // ctx.model is claude-sonnet-5
-	checkTrue("setting the current model warns", h.notices.some(([lvl, m]) => lvl === "warn" && m.includes("switch the main model")));
+	checkTrue("setting the current model is accepted", h.notices.some(([lvl, m]) => lvl === "info" && m.includes("reviews its own transcript")));
+	checkTrue("same-model activates the tool", h.getActive().includes("advisor"));
 }
 
 // Kill switch: enabled=false keeps the tool off even with a model set.

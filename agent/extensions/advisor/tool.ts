@@ -13,7 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Usage } from "@earendil-works/pi-ai";
 import { TOOL_NAME } from "./config.ts";
 import { ADVISOR_PROMPT_SNIPPET, ADVISOR_TOOL_GUIDANCE, buildReviewerPrompt } from "./guidance.ts";
-import { modelRef, resolveModelReference, sameModel } from "./models.ts";
+import { modelRef, resolveModelReference } from "./models.ts";
 import { runReviewer, type SpawnUsage, SubagentError } from "./spawn.ts";
 import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
 
@@ -61,21 +61,9 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 				throw new Error(`Advisor model "${reference}" could not be used: ${resolved.error}.`);
 			}
 
-			// Claude Code's Czg rule: an advisor cannot be the very model it advises.
-			// Degrade gracefully rather than erroring the turn — the agent proceeds
-			// without advice instead of entering a retry loop.
-			if (sameModel(resolved.model, ctx.model)) {
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Advisor unavailable: it is set to ${modelRef(resolved.model)}, the same model now driving this session, so it cannot advise itself. Configure a different (stronger) advisor model with \`/advisor <model>\`. Proceeding without advice.`,
-						},
-					],
-					details: { skipped: "same-model" as const, advisorModel: modelRef(resolved.model) },
-				};
-			}
-
+			// Note: Claude Code's Czg rule would refuse here when the advisor equals
+			// the session model. pi allows it on purpose — the reviewer still reads
+			// the transcript with a clean context, which is the point. See models.ts.
 			const reviewerModel = modelRef(resolved.model);
 			onUpdate?.({
 				content: [{ type: "text", text: `Consulting ${reviewerModel}…` }],

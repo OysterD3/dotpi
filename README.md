@@ -623,11 +623,14 @@ and no tool is attached). Set it three ways, in priority order:
 - `advisor.model` — the durable default in `agent/settings.json`
 
 Model names resolve with pi's own `--model` rules (`opus`, `sonnet`, `openai-codex/gpt-5.6-sol`),
-against the live registry. Claude Code's validation is ported as far as it ports: the one
-provider-agnostic hard rule — an advisor **cannot be the very model it advises** (Claude Code's `Czg`)
-— is enforced (the tool degrades to a note rather than self-reviewing); the "advisor must be at least
-as capable" rank check reduces to *allow*, because pi's registry carries no `advisor_rank` for
-arbitrary providers and Claude Code itself allows when a rank is unknown.
+against the live registry. Claude Code's validation is ported as far as it ports, with one deliberate
+divergence: Claude Code's `Czg` rule — an advisor **cannot be the very model it advises** — is **not**
+enforced here. What the advisor actually buys is a clean-context read of the whole session, and that
+holds even when the reviewer is the same model: it sees the transcript without the anchoring of having
+produced it, and refusing would leave a single-model setup with no advisor at all. `/advisor status`
+says when the reviewer equals the session model, but it runs. The "advisor must be at least as
+capable" rank check reduces to *allow*, because pi's registry carries no `advisor_rank` for arbitrary
+providers and Claude Code itself allows when a rank is unknown.
 
 The main-agent guidance (when and how to call it) is Claude Code's text **verbatim**, placed in the
 tool description so it rides in the system prompt. The reviewer-side prompt is **authored, not
@@ -646,10 +649,10 @@ client; this reconstructs them from the documented behavior.
 | File | Role |
 | --- | --- |
 | `index.ts` | Settings, `--advisor` flag, `/advisor` command, active-tool sync, status chip |
-| `tool.ts` | The `advisor` tool: resolve, enforce advisor ≠ current model, forward, return advice + usage |
+| `tool.ts` | The `advisor` tool: resolve the reviewer, forward the session, return advice + usage |
 | `transcript.ts` | Session branch → budgeted transcript, with tool results, oldest dropped first (pure) |
 | `guidance.ts` | **Claude Code's tool guidance, verbatim** + the authored reviewer prompt |
-| `models.ts` | Model reference resolution and the `Czg` same-model rule (pure) |
+| `models.ts` | Model reference resolution; `sameModel` labels a self-advising setup (pure) |
 | `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
 | `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
 

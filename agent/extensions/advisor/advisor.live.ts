@@ -93,7 +93,6 @@ try {
 	console.log(`usage: ${JSON.stringify(result.usage)}`);
 
 	check("advice came back non-empty", advice.trim().length > 0, advice);
-	check("it was not the same-model skip", result.details?.skipped === undefined, result.details);
 	check("usage counted cost", (result.usage?.cost?.total ?? 0) > 0, result.usage);
 	check("reviewer model recorded", result.details?.advisorModel === `${reviewer.provider}/${reviewer.id}`, result.details);
 } catch (error) {

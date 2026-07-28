@@ -19,8 +19,12 @@
  *     pi's registry carries no such rank for arbitrary providers, so every pair
  *     is "unknown" and this reduces to allow — faithfully, not by omission.
  *   - Czg / "cannot be used as an advisor when the request model is <same>":
- *     the advisor cannot BE the model it advises. This one is provider-agnostic
- *     and always enforced (see sameModel).
+ *     Claude Code refuses to let a model advise itself. pi deliberately does NOT
+ *     enforce this. What the advisor actually buys is a clean-context read of the
+ *     whole session, and that is worth having even from the same model: the
+ *     reviewer sees the transcript without the anchoring of having produced it,
+ *     and for a single-model setup it is that or no advisor at all. sameModel()
+ *     survives only to label the case in `/advisor status`.
  */
 
 export type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string; readonly contextWindow?: number };
@@ -97,7 +101,11 @@ export function modelRef(model: ModelLike): string {
 	return `${model.provider}/${model.id}`;
 }
 
-/** Claude Code's Czg rule: an advisor cannot be the very model it is advising. */
+/**
+ * True when both references name the same provider+id. Informational only — pi
+ * allows a model to advise its own session (see the header); this just lets the
+ * UI say so.
+ */
 export function sameModel(a: ModelLike | undefined, b: ModelLike | undefined): boolean {
 	if (!a || !b) return false;
 	return a.provider === b.provider && a.id === b.id;

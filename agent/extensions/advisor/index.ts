@@ -17,10 +17,12 @@
  *   2. `--advisor <model>`     a CLI flag for one run (Claude Code: --advisor)
  *   3. `advisor.model` setting the durable default in agent/settings.json
  *
- * Validation follows Claude Code as far as it ports (see models.ts): the one
- * provider-agnostic hard rule — an advisor cannot be the very model it advises
- * (Claude Code's Czg) — is enforced at call time; the "at least as capable"
- * rank check reduces to allow because pi's registry carries no advisor_rank.
+ * Validation follows Claude Code as far as it ports (see models.ts), with one
+ * deliberate divergence: Claude Code's Czg rule — an advisor cannot be the very
+ * model it advises — is NOT enforced. A same-model advisor still reads the whole
+ * session with a clean context, which is the useful part, and refusing it leaves
+ * a single-model setup with no advisor at all. The "at least as capable" rank
+ * check reduces to allow because pi's registry carries no advisor_rank.
  *
  * Settings (agent settings.json):
  *   advisor.model    string, a pi model reference for the reviewer (required to
@@ -118,7 +120,7 @@ export default function (pi: ExtensionAPI) {
 		if (!resolved.ok) return `Advisor model "${reference}" is not available: ${resolved.error}.`;
 		const source = sessionModel ? "session override" : pi.getFlag("advisor") ? "--advisor flag" : "advisor.model setting";
 		const selfNote = sameModel(resolved.model, ctx.model)
-			? " — but it equals the current session model, so it cannot advise until you switch the main model"
+			? " — the same model driving this session, so it reviews its own transcript with a clean context"
 			: "";
 		return `Advisor is on: ${modelRef(resolved.model)} (${source})${selfNote}. Call it before committing to an approach and before declaring done.`;
 	};
@@ -163,14 +165,12 @@ export default function (pi: ExtensionAPI) {
 			sessionModel = modelRef(resolved.model);
 			sessionOff = false;
 			syncActive(ctx);
-			if (sameModel(resolved.model, ctx.model)) {
-				ctx.ui.notify(
-					`Advisor set to ${resolved.model.id}, but that is the current session model — switch the main model for it to advise.`,
-					"warn",
-				);
-				return;
-			}
-			ctx.ui.notify(`Advisor set to ${resolved.model.id}.`, "info");
+			ctx.ui.notify(
+				sameModel(resolved.model, ctx.model)
+					? `Advisor set to ${resolved.model.id} — the same model driving this session, so it reviews its own transcript with a clean context.`
+					: `Advisor set to ${resolved.model.id}.`,
+				"info",
+			);
 		},
 	});
 }
