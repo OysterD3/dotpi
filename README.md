@@ -833,39 +833,47 @@ over the same format and location.
 an `ask_user` tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
 only you can make, rather than guessing.
 
-The model calls `ask_user` with a question and 2-4 suggested options; you get an interactive selector
-and can:
+The model calls `ask_user` with **1-4 questions at once**; you answer them in a single pass:
 
 - **pick** one option (or several, when the model sets `multiSelect`),
-- choose **Other** and type your own answer,
-- attach an optional **note** to your answer ("yes, with notes"), or
-- **decline** to answer, optionally with a reason ("decline with a note").
+- **type your own answer** into the free-text row at the bottom — it shows *Type my own answer* until
+  you start typing, so there is no "Other" to select first and no follow-up prompt,
+- press **Tab** on any answer to annotate it: the cursor lands at the end of that answer and you keep
+  typing. The note reaches the model *labelled as a note*, so it reads as you qualifying the choice
+  rather than as part of it,
+- move between questions with **← / →**, and
+- **review every answer** before anything is sent.
 
-An "Other" entry and a decline path are always added, so the model never has to. Claude Code renders
-a bespoke component where you press a key ("n") to add a note inline; pi can't bind keys inside a
-dialog, so the note is offered as a quick follow-up prompt after you pick (press Enter to skip). The
-whole flow is composed from pi's own dialogs — select, then confirm + input — so it looks native.
+Nothing is truncated: long options and descriptions wrap, because the description is often what the
+choice turns on.
+
+This is a real focused component (`ctx.ui.custom()`), not a stack of dialogs. That is forced by the
+feature set rather than chosen for looks — pi cannot bind keys inside a `select`/`input`/`confirm`
+dialog, so Tab-to-annotate, arrow-key navigation and typing straight into a row are simply not
+expressible that way. The component (`overlay.ts`) is a thin renderer over a pure state machine
+(`interaction.ts`), so the whole interaction is testable without a TUI.
 
 The tool is offered only in an interactive session (it needs a real user) and only while enabled —
 active-tool sync, like the advisor — so a headless run (`-p`) or a disabled setting adds nothing to
 the prompt; if the model somehow calls it headless it gets a graceful "no user available, proceed"
 result instead of hanging. `/ask-user` shows status; `/ask-user off` / `on` toggles it for the
-session; `/ask-user test` runs a sample question so you can see the selector, notes, and decline live.
+session; `/ask-user test` runs two sample questions so you can try the arrows, Tab notes and review live.
 
 ```jsonc
 {
   "askUser": {
     "enabled": true,     // optional; master switch (also /ask-user off|on per session)
-    "allowNotes": true   // optional; offer the "add a note" follow-up after an answer or decline
+    "allowNotes": true   // optional; whether Tab attaches a note to the focused answer
   }
 }
 ```
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Settings, tool registration, active-tool sync, `/ask-user [status\|on\|off\|test]`, status chip |
-| `tool.ts` | The `ask_user` tool: normalize options, run the flow, graceful headless path |
-| `interaction.ts` | The select → note flow (single/multi, Other, decline) over pi's dialogs (pure) |
+| `index.ts` | Settings, tool registration, active-tool sync, `/ask-user [status\|on\|off\|test]` |
+| `tool.ts` | The `ask_user` tool: normalize questions/options, run the overlay, graceful headless path |
+| `interaction.ts` | The interaction as a pure state machine — selection, free text, notes, review |
+| `overlay.ts` | The focused TUI component: rendering (wraps, never truncates) and key handling |
 | `guidance.ts` | Tool description, prompt snippet, and the guideline bullets appended when active |
 | `config.ts` | Settings and tunables |
 | `ask-user.test.ts` | Normalization, the full flow, rendering, settings, and wiring coverage |

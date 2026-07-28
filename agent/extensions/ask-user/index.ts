@@ -1,12 +1,16 @@
 /**
  * ask-user — Claude Code's AskUserQuestion tool, ported to pi.
  *
- * Gives the main agent an `ask_user` tool to pause and put a decision back to
- * the human: a question with 2-4 suggested options, a free-text "Other" answer,
- * an optional note on any answer ("yes with notes"), and a decline path
- * ("decline with note"). Claude Code renders a bespoke component where you press
- * a key to add a note; pi has no such component, so the flow is composed from
- * pi's own dialogs and the note is a follow-up prompt (see interaction.ts).
+ * Gives the main agent an `ask_user` tool to pause and put decisions back to the
+ * human: up to four questions at once, each with 2-4 suggested options plus a
+ * free-text row, any answer annotatable with a note, and a review step before
+ * anything is sent.
+ *
+ * Claude Code renders a bespoke component with in-component key bindings. pi's
+ * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
+ * `ctx.ui.custom()`: a focused component (overlay.ts) over a pure state machine
+ * (interaction.ts). That is what makes Tab-to-annotate and ← / → possible at
+ * all — as dialogs, each would have to become another modal prompt.
  *
  * The tool is offered only in an interactive session (it needs a real user) and
  * only while enabled — active-tool sync, like the advisor/subagents extensions —
@@ -14,7 +18,7 @@
  *
  * Settings (agent settings.json, key "askUser"):
  *   askUser.enabled     boolean, default true. Kill switch.
- *   askUser.allowNotes  boolean, default true. Offer the optional note step.
+ *   askUser.allowNotes  boolean, default true. Whether Tab attaches a note.
  *
  * Session control: `/ask-user [status | on | off | test]`.
  */
@@ -22,7 +26,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AskUserSettings, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
-import { type AskRequest, renderOutcomeText, runAsk } from "./interaction.ts";
+import { type AskOutcome, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
+import { AskOverlay } from "./overlay.ts";
 import { registerAskUserTool } from "./tool.ts";
 
 export function loadSettings(agentDir: string): AskUserSettings {
@@ -68,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 		if (!settings.enabled) return "ask_user is disabled (askUser.enabled is false in settings).";
 		if (sessionOff) return "ask_user is off for this session (/ask-user on to re-enable).";
 		if (!ctx.hasUI) return "ask_user is unavailable: this session has no interactive user.";
-		return `ask_user is on. Notes are ${settings.allowNotes ? "offered" : "off"}. The agent can ask you a question when it hits a decision only you can make.`;
+		return `ask_user is on. Notes (Tab) are ${settings.allowNotes ? "on" : "off"}. The agent can ask you when it hits a decision only you can make.`;
 	};
 
 	pi.registerCommand("ask-user", {
@@ -92,18 +97,35 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (arg === "test") {
 				if (!ctx.hasUI) return void ctx.ui.notify("The test needs the interactive TUI.", "error");
-				const request: AskRequest = {
-					question: "This is a test of ask_user. How does it look?",
-					header: "Test",
-					options: [
-						{ label: "Looks good", description: "The selector, notes, and decline all work" },
-						{ label: "Needs tweaks", description: "Something feels off" },
-					],
-					multiSelect: false,
-					allowNotes: settings.allowNotes,
-				};
-				const outcome = await runAsk(ctx.ui, request);
-				ctx.ui.notify(renderOutcomeText(outcome), "info");
+				// Two questions on purpose: the test should exercise ← / → and the
+				// review step, not just a single selector.
+				const questions: AskQuestion[] = [
+					{
+						question: "This is a test of ask_user. How does it look?",
+						header: "Test",
+						options: [
+							{ label: "Looks good", description: "Selection, the free-text row, and notes all behave" },
+							{ label: "Needs tweaks", description: "Something feels off — press Tab here and say what" },
+						],
+						multiSelect: false,
+					},
+					{
+						question: "Which parts did you try?",
+						header: "Coverage",
+						options: [
+							{ label: "Arrow navigation", description: "← / → between questions" },
+							{ label: "Tab note", description: "Annotating an answer in place" },
+							{ label: "Free-text row", description: "Typing an answer of your own" },
+						],
+						multiSelect: true,
+					},
+				];
+				const session = new AskSession(questions, settings.allowNotes);
+				const outcome = await ctx.ui.custom<AskOutcome>(
+					(tui, theme, _keybindings, done) => new AskOverlay(session, theme, done, () => tui.requestRender()),
+					{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 52, maxHeight: "80%" } },
+				);
+				ctx.ui.notify(renderOutcomeText(outcome ?? { kind: "dismissed" }), "info");
 				return;
 			}
 

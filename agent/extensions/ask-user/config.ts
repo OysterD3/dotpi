@@ -2,12 +2,15 @@
  * Shared constants and types for the ask-user extension.
  *
  * ask_user is Claude Code's AskUserQuestion tool ported to pi: a tool the main
- * agent can call to pause and put a decision back to the human — with suggested
- * options, a free-form "Other" answer, an optional note on any answer, and a
- * decline path. Claude Code renders a bespoke multi-select component with an
- * in-dialog "press n to add a note" affordance; pi has no such component, so the
- * flow is composed from pi's own dialogs (select / input / confirm) and the note
- * is collected as a follow-up prompt (see interaction.ts).
+ * agent calls to pause and put a decision back to the human. One call may carry
+ * several questions; each offers suggested options plus a free-text row, any
+ * answer can be annotated with a note, and the user reviews everything before it
+ * is sent.
+ *
+ * Claude Code renders a bespoke component with in-dialog key bindings. pi's
+ * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
+ * `ctx.ui.custom()` — a real focused component (overlay.ts) driving a pure state
+ * machine (interaction.ts).
  */
 
 /** The tool name the model calls. Snake_case, as requested. */
@@ -17,19 +20,25 @@ export const TOOL_NAME = "ask_user";
 export const SETTINGS_KEY = "askUser";
 
 export const CONFIG = {
-	/** Option descriptions are trimmed to this in the selector row (the full text still reaches the model via the question context). */
-	maxDescriptionChars: 72,
-	/** Hard cap on how many options a single question may present (Claude Code allows 2-4; extra are dropped with a note). */
+	/**
+	 * Shown in the free-text row while it is empty. This row replaces the old
+	 * "Other" entry: there is nothing to select and then be prompted by — the
+	 * user simply types here.
+	 */
+	customPlaceholder: "Type my own answer",
+	/** Hard cap on options per question (Claude Code allows 2-4; extra are dropped). */
 	maxOptions: 8,
+	/** Hard cap on questions per call (Claude Code allows 1-4). */
+	maxQuestions: 4,
 } as const;
 
 export interface AskUserSettings {
 	/** Kill switch. Default true. When false the tool is not offered at all. */
 	enabled: boolean;
 	/**
-	 * Whether to offer the optional "add a note" follow-up after an answer or a
-	 * decline. Default true — this is the "yes with notes" / "decline with note"
-	 * behavior. Set false to keep the flow to a single pick.
+	 * Whether Tab attaches a note to the focused answer. Default true. A note no
+	 * longer costs an extra prompt — it is typed inline — so turning this off
+	 * only removes the affordance, it does not shorten the flow.
 	 */
 	allowNotes: boolean;
 }
