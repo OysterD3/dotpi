@@ -1,17 +1,14 @@
 /**
  * Validating a directory before it joins the workspace.
  *
- * A direct port of Claude Code's `validateDirectoryForWorkspace` and its message
- * formatter, read out of the shipped binary (2.1.217). The result *types* are the
- * interesting part: the difference between "you named a file" and "that path does
- * not exist" and "that is already covered by a directory you added earlier" is
- * three different pieces of advice, and collapsing them into one "invalid path"
- * makes the command annoying to use.
+ * The result *types* are the interesting part: the difference between "you named
+ * a file" and "that path does not exist" and "that is already covered by a
+ * directory you added earlier" is three different pieces of advice, and
+ * collapsing them into one "invalid path" makes the command annoying to use.
  *
- * One case is added that Claude Code has no need for: `limitReached`. Claude Code
- * uses the workspace as a permission boundary, so a long list costs nothing. Here
- * every directory contributes to the system prompt each turn, so the list is
- * capped.
+ * `limitReached` is here for a pi-specific reason. Where the workspace is only a
+ * permission boundary a long list costs nothing; here every directory contributes
+ * to the system prompt each turn, so the list is capped.
  */
 
 import { stat } from "node:fs/promises";
@@ -89,7 +86,7 @@ export async function validateDirectory(
 	return { resultType: "success", absolutePath };
 }
 
-/** Claude Code's wording, minus its bold markup. */
+/** One message per result type, in plain text. */
 export function describe(result: ValidationResult): string {
 	switch (result.resultType) {
 		case "emptyPath":

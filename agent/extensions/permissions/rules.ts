@@ -1,5 +1,5 @@
 /**
- * Permission rule parsing and matching — Claude Code's `settings.json` syntax.
+ * Permission rule parsing and matching — the conventional `settings.json` syntax.
  *
  *   Bash(git status)      exact command
  *   Bash(git log *)       prefix; the space enforces a word boundary
@@ -8,9 +8,8 @@
  *   Write(**\/*.env)      path glob
  *   Bash                  the whole tool, any input
  *
- * Rules taken verbatim from Claude Code's own validator: tool names start with a
- * capital, `:*` may only appear at the end, `:*` is Bash-only, and the prefix
- * before `:*` may not be empty.
+ * The validation rules: tool names start with a capital, `:*` may only appear at
+ * the end, `:*` is Bash-only, and the prefix before `:*` may not be empty.
  *
  * Pure: no filesystem, no pi APIs.
  */
@@ -40,7 +39,7 @@ export function parseRule(raw: string): ParseResult {
 
 	const [, name, content] = match;
 
-	// Claude Code requires this, and it usefully catches `bash(...)` typos that
+	// Required by the syntax, and it usefully catches `bash(...)` typos that
 	// would otherwise silently never match.
 	if (name[0] !== name[0].toUpperCase()) {
 		return { error: `Tool names must start with uppercase — did you mean "${name[0].toUpperCase()}${name.slice(1)}"?` };

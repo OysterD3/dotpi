@@ -3,8 +3,8 @@
  *
  * A recap is display-only: it is information for the person returning to the
  * session, not context for the model. It is stored as a custom entry (which does
- * not enter LLM context) and rendered with a heading, the way Claude Code shows
- * its recap as a distinct line rather than folding it into the assistant's reply.
+ * not enter LLM context) and rendered with a heading, so it reads as a distinct
+ * line rather than as part of the assistant's reply.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";

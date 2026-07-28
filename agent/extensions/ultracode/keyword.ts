@@ -1,6 +1,6 @@
 /**
- * The "ultracode" keyword detector, transcribed from Claude Code 2.1.217 (the
- * shared scanner it also uses for "ultraplan" and "ultrareview").
+ * The "ultracode" keyword detector — a general scanner, so the same code would
+ * serve "ultraplan" or "ultrareview".
  *
  * A match is a whole word, case-insensitive, EXCEPT when:
  *   - the message is a slash command (starts with "/");
@@ -40,8 +40,8 @@ export function findKeyword(text: string, keyword: string): KeywordMatch[] {
 	if (!new RegExp(keyword, "i").test(text)) return [];
 	if (text.startsWith("/")) return [];
 
-	// Pass 1: mark quoted/bracketed spans. Claude Code keeps only the innermost
-	// "[" when they nest, and never closes an apostrophe mid-word.
+	// Pass 1: mark quoted/bracketed spans. Only the innermost "[" is kept when
+	// they nest, and an apostrophe never closes mid-word.
 	const spans: Array<{ start: number; end: number }> = [];
 	let open: string | null = null;
 	let openStart = 0;

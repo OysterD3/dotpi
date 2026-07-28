@@ -1,11 +1,13 @@
 /**
  * TUI rendering for /goal.
  *
- * Two surfaces, mirroring Claude Code:
+ * Two surfaces:
  *   - the instruction messages that enter LLM context (set / not-met)
  *   - the terminal outcomes, which are display-only (met / impossible)
  *
- * Status wording is taken from Claude Code so the two feel the same to use.
+ * Counting note: a "turn" here is an *evaluation*, not a not-met verdict, which
+ * is why the outcome line reports one more than the misses that preceded it —
+ * the check that ends the goal is itself a turn.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -25,35 +27,87 @@ export type GoalResultDetails = {
 	reason: string;
 	iterations: number;
 	durationMs: number;
+	/** Context tokens spent since the goal was set, when pi could estimate them. */
+	tokens?: number;
 };
 
-/** Compact duration, e.g. "8s", "3m 20s", "1h 04m". */
+/**
+ * Duration in its most significant unit only — "45s", "2m", "1h".
+ *
+ * A goal that took four and a half minutes reads "4m", not "4m 30s": the extra
+ * precision is not useful next to a turn count, and it makes the line longer than
+ * the heading it sits under.
+ */
 export function formatDuration(ms: number): string {
 	const seconds = Math.max(0, Math.round(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
 
 	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+	if (minutes < 60) return `${minutes}m`;
 
-	return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+	return `${Math.floor(minutes / 60)}h`;
 }
 
-/** Footer text while a goal is running. Claude Code shows "/goal active". */
-export function statusText(goal: ActiveGoal | undefined): string | undefined {
-	if (!goal) return undefined;
-	return goal.iterations > 0 ? `/goal active (${goal.iterations})` : "/goal active";
+const UNITS = [
+	{ size: 1_000, suffix: "k" },
+	{ size: 1_000_000, suffix: "M" },
+	{ size: 1_000_000_000, suffix: "B" },
+] as const;
+
+/**
+ * Token count in compact form: 940, 12.4k, 1.2M.
+ *
+ * The unit is chosen from the value *after* rounding, because rounding can push
+ * it into the next one: 999,950 scales to "1000.0k", which has to print as "1M".
+ */
+export function formatTokens(tokens: number): string {
+	const n = Math.max(0, Math.round(tokens));
+	if (n < UNITS[0].size) return `${n}`;
+
+	let unit = UNITS[0];
+	for (const candidate of UNITS) {
+		if (n >= candidate.size) unit = candidate;
+	}
+
+	let scaled = Number((n / unit.size).toFixed(1));
+	const next = UNITS[UNITS.indexOf(unit) + 1];
+	if (scaled >= 1000 && next) {
+		unit = next;
+		scaled = Number((n / unit.size).toFixed(1));
+	}
+
+	return `${scaled}${unit.suffix}`;
 }
 
-/** Single-line summary for `/goal` with no arguments. */
+/** English plural for a count. */
+export function plural(count: number, word: string): string {
+	return count === 1 ? word : `${word}s`;
+}
+
+/** Collapse to one line and cap, for a reason quoted back in a summary. */
+export function oneLine(text: string, limit = 120): string {
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1)}…`;
+}
+
+/**
+ * Summary for `/goal` with no arguments: the condition, then either "not yet
+ * evaluated" or the turn count, then the last judge's reason if there has been
+ * one.
+ */
 export function summaryLine(goal: ActiveGoal | undefined): string {
-	if (!goal) return "No goal set";
+	if (!goal) return "No goal set. Usage: `/goal <condition>`";
 
-	const parts = [`${goal.iterations} iteration${goal.iterations === 1 ? "" : "s"}`];
-	parts.push(formatDuration(Date.now() - goal.setAt));
+	const turns = goal.iterations === 0 ? "not yet evaluated" : `${goal.iterations} ${plural(goal.iterations, "turn")}`;
+	const line = `Goal active: ${goal.condition} (${turns})`;
+	return goal.lastReason ? `${line}\nLast check: ${oneLine(goal.lastReason.trim())}` : line;
+}
 
-	let line = `Goal active: ${goal.condition} (${parts.join(" · ")})`;
-	if (goal.lastReason) line += `\n  ${goal.lastReason}`;
-	return line;
+/** The `duration · N turns · X tokens` stats printed beside an outcome. */
+export function statsLine(details: Pick<GoalResultDetails, "durationMs" | "iterations" | "tokens">): string {
+	const parts = [formatDuration(details.durationMs), `${details.iterations} ${plural(details.iterations, "turn")}`];
+	if (details.tokens !== undefined) parts.push(`${formatTokens(details.tokens)} tokens`);
+	return parts.join(" · ");
 }
 
 export function renderGoalMessage(details: GoalMessageDetails, theme: Theme): Text {
@@ -73,8 +127,6 @@ export function renderGoalMessage(details: GoalMessageDetails, theme: Theme): Te
 }
 
 export function renderGoalResult(details: GoalResultDetails, theme: Theme): Text {
-	const stats = `${details.iterations} iteration${details.iterations === 1 ? "" : "s"} · ${formatDuration(details.durationMs)}`;
-
 	const heading =
 		details.kind === "met"
 			? theme.fg("success", theme.bold("● Goal achieved"))
@@ -84,7 +136,7 @@ export function renderGoalResult(details: GoalResultDetails, theme: Theme): Text
 
 	const lines = [
 		heading,
-		theme.fg("dim", stats),
+		theme.fg("dim", statsLine(details)),
 		theme.fg("text", details.condition),
 		theme.fg("muted", details.reason),
 	];

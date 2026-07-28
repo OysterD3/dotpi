@@ -34,7 +34,7 @@ export function pickerLabel(point: RewindPoint, index: number, now?: number): st
 	return `${String(index + 1).padStart(2)}. ${previewPrompt(point.checkpoint.prompt)}  ·  ${files}  ·  ${relativeTime(point.checkpoint.at, now)}`;
 }
 
-/** Human summary of what a restore did. Claude Code's wording for the headline. */
+/** Human summary of what a restore did. */
 export function summarize(outcome: RestoreOutcome, cwd: string): string {
 	const short = (path: string) => (path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path);
 	const lines: string[] = [];

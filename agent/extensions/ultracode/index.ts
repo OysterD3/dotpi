@@ -1,7 +1,7 @@
 /**
- * ultracode — Claude Code's workflow orchestration trigger, ported to pi.
+ * ultracode — the workflow orchestration trigger.
  *
- * Two halves, matching Claude Code 2.1.217:
+ * Two halves:
  *
  *   1. The `workflow` tool (tool.ts + engine.ts + spawn.ts): a script that
  *      orchestrates headless pi subagents with agent()/parallel()/pipeline().
@@ -20,23 +20,21 @@
  *        (detector and reminder text verbatim from the binary; the keyword
  *        changes nothing else — no effort bump, prompt not rewritten);
  *      - `/ultracode` turns the mode on for the session: thinking is raised to
- *        xhigh (Claude Code: "xhigh + dynamic workflow orchestration, this
- *        session only") and standing reminders follow Claude Code's cadence —
- *        full on entry, "still on" every 10th user turn, exit notice once when
- *        it goes off. Changing the thinking level away from xhigh exits the
- *        mode, exactly as choosing another effort level does in Claude Code.
+ *        xhigh ("xhigh + dynamic workflow orchestration, this session only")
+ *        and standing reminders follow a fixed cadence — full on entry, "still
+ *        on" every 10th user turn, exit notice once when it goes off. Changing
+ *        the thinking level away from xhigh exits the mode.
  *
  * Reminders are injected as hidden custom messages (display: false) via
  * before_agent_start — pi's own plan-mode pattern — so they reach the model as
  * <system-reminder> blocks without appearing in the transcript UI.
  *
- * Deviations from Claude Code, documented in README.md: no worktree isolation,
- * no alt+w keyword dismissal, and the keyword is detected on the pre-expansion
- * text of interactive input only.
+ * Known gaps, documented in README.md: no worktree isolation, no keyword
+ * dismissal shortcut, and the keyword is detected on the pre-expansion text of
+ * interactive input only.
  *
  * Settings (agent settings.json):
- *   ultracode.keywordTrigger  boolean, default true (Claude Code:
- *                             workflowKeywordTriggerEnabled)
+ *   ultracode.keywordTrigger  boolean, default true
  *   ultracode.model           "provider/model-id" for workflow subagents;
  *                             defaults to the session model
  *   ultracode.limits          overrides for concurrency, caps, timeouts,
@@ -212,19 +210,18 @@ export default function (pi: ExtensionAPI) {
 		uiCtx = undefined;
 	});
 
-	// Claude Code scans the text as typed, before any command expansion, and
-	// only for human prompts. pi's input event is exactly that point. Prompts
-	// steered into a running turn never reach before_agent_start, so they must
-	// not touch the flag (deviation from Claude Code, which queues them as full
-	// turns; documented in README.md).
+	// The text is scanned as typed, before any command expansion, and only for
+	// human prompts. pi's input event is exactly that point. Prompts steered into
+	// a running turn never reach before_agent_start, so they must not touch the
+	// flag — a known gap, documented in README.md.
 	pi.on("input", (event) => {
 		if (event.streamingBehavior !== undefined) return { action: "continue" };
 		keywordThisTurn = event.source === "interactive" && hasUltracodeKeyword(event.text);
 		return { action: "continue" };
 	});
 
-	// Reminders ride the turn as one hidden custom message, in Claude Code's
-	// attachment order: keyword first, then the session-mode reminder.
+	// Reminders ride the turn as one hidden custom message, keyword first, then
+	// the session-mode reminder.
 	pi.on("before_agent_start", (event, ctx) => {
 		uiCtx = ctx;
 		const parts: string[] = [];
@@ -255,8 +252,7 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	// Leaving the applied level exits the mode, the way choosing another
-	// /effort level does in Claude Code. Our own setThinkingLevel call is
+	// Leaving the applied level exits the mode. Our own setThinkingLevel call is
 	// guarded out. The user's explicit choice stands: no restore.
 	pi.on("thinking_level_select", (event, ctx) => {
 		if (settingLevel || !mode.isOn()) return;
@@ -290,9 +286,8 @@ export default function (pi: ExtensionAPI) {
 		}
 		// pi clamps the requested level to the model's supported set (upward
 		// first, so models without xhigh but with max get max). Anything below
-		// xhigh is a refusal, mirroring Claude Code's "Ultracode runs at xhigh
-		// effort, which <model> doesn't support — switch to an xhigh-capable
-		// model."
+		// xhigh is a refusal: "Ultracode runs at xhigh effort, which <model>
+		// doesn't support — switch to an xhigh-capable model."
 		const before = pi.getThinkingLevel();
 		setLevel("xhigh");
 		const applied = pi.getThinkingLevel();

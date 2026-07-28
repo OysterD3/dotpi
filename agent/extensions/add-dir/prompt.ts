@@ -5,8 +5,8 @@
  * cwd — `read`, `edit` and `bash` will happily take an absolute path anywhere —
  * so adding a directory is not about lifting a restriction. It is about the model
  * knowing the directory is in scope at all, and about its AGENTS.md being loaded
- * the way the project's own is. Claude Code does the same second part; it keeps a
- * separate list of added directories specifically to pick up their CLAUDE.md.
+ * the way the project's own is — which is why the added directories are tracked
+ * as a separate list at all.
  *
  * The block is appended after pi's `Current working directory:` line, so it reads
  * as a continuation of the same thought. Because it is appended and the directory

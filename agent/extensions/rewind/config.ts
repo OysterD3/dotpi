@@ -32,7 +32,7 @@ export const CONFIG = {
 	promptPreviewChars: 60,
 };
 
-/** Restore modes, matching Claude Code's three options and their labels. */
+/** The three restore modes and their labels. */
 export const MODES = [
 	{ value: "both", label: "Restore code and conversation" },
 	{ value: "conversation", label: "Restore conversation" },

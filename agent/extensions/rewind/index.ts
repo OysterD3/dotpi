@@ -1,9 +1,9 @@
 /**
  * /rewind — restore the code and/or conversation to an earlier point.
  *
- * A port of Claude Code's `/rewind`, whose behaviour was read out of the shipped
- * binary (2.1.217) rather than inferred: the three modes and their exact labels,
- * the aliases (`checkpoint`, `undo`), keying checkpoints to submitted prompts,
+ * The design is deliberate rather than incidental: the three modes and their
+ * labels, the aliases (`checkpoint`, `undo`), keying checkpoints to submitted
+ * prompts,
  * treating "file absent at that point" as "delete it now", and refusing to touch
  * anything that is not a plain regular file.
  *
@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	// Claude Code's aliases, kept so muscle memory carries over.
+	// Aliases, so whichever name comes to mind works.
 	for (const name of ["rewind", "checkpoint", "undo"]) {
 		pi.registerCommand(name, {
 			description: "Restore the code and/or conversation to a previous point",
@@ -147,7 +147,7 @@ export default function (pi: ExtensionAPI) {
 	}
 }
 
-/** Offer code restore only when there is code to restore, as Claude Code does. */
+/** Offer code restore only when there is code to restore. */
 async function chooseMode(
 	ctx: { ui: { select(title: string, options: string[]): Promise<string | undefined> } },
 	point: RewindPoint,

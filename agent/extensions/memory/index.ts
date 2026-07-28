@@ -1,7 +1,7 @@
 /**
- * memory — reads Claude Code's per-project memory and makes it pi's memory.
+ * memory — reads a per-project memory store and makes it pi's memory.
  *
- * At session start it finds the Claude Code memory directory that matches the
+ * At session start it finds the memory directory that matches the
  * project cwd (locate.ts), reads MEMORY.md and the fact files (load.ts), and
  * assembles them within a budget. Each turn, before_agent_start appends that
  * block to the system prompt — so it is cached across the turn rather than
@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
 
 	const status = (ctx: ExtensionContext): string => {
 		if (!settings.enabled) return "Memory is off (memory.enabled is false).";
-		if (!loaded) return `No Claude Code memory found for ${ctx.cwd}. (Looked in ${settings.claudeHome}/projects/…/memory.)`;
+		if (!loaded) return `No memory found for ${ctx.cwd}. (Looked in ${settings.claudeHome}/projects/…/memory.)`;
 		const bits = [`${loaded.factCount} fact${loaded.factCount === 1 ? "" : "s"}`, `${loaded.text.length} chars`];
 		if (loaded.hasIndex) bits.push("index");
 		if (loaded.globalSource) bits.push("global CLAUDE.md");
@@ -99,7 +99,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("memory", {
-		description: "Show the Claude Code memory loaded for this project (/memory [show|reload])",
+		description: "Show the memory loaded for this project (/memory [show|reload])",
 		getArgumentCompletions: (prefix: string) =>
 			["show", "reload", "status"].filter((o) => o.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args: string, ctx) => {

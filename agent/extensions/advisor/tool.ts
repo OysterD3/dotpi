@@ -1,12 +1,12 @@
 /**
- * The `advisor` tool: zero parameters, exactly as Claude Code declares it. When
- * the main agent calls it, the whole session branch is flattened and forwarded
- * to the configured reviewer model, and the reviewer's advice comes back as the
- * tool result.
+ * The `advisor` tool: zero parameters — the conversation is the input. When the
+ * main agent calls it, the whole session branch is flattened and forwarded to the
+ * configured reviewer model, and the reviewer's advice comes back as the tool
+ * result.
  *
- * Claude Code does the forwarding server-side (the `advisor_20260301` beta tool);
- * pi does it here in the client. The behavior the agent sees is the same: call
- * advisor(), wait, get advice.
+ * A server-side version of this would do the forwarding in the API; pi does it
+ * here in the client. The behaviour the agent sees is the same: call advisor(),
+ * wait, get advice.
  *
  * The wait is the part the *human* sees, and it can run for minutes. The tool
  * streams a live status line — elapsed time, whether the reviewer is reasoning
@@ -51,7 +51,7 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 		label: "Advisor",
 		description: ADVISOR_TOOL_GUIDANCE,
 		promptSnippet: ADVISOR_PROMPT_SNIPPET,
-		// No parameters, matching Claude Code: the conversation is the input.
+		// No parameters: the conversation is the input.
 		parameters: Type.Object({}),
 
 		async execute(_toolCallId, _params, signal, onUpdate, ctx: ExtensionContext) {
@@ -68,9 +68,9 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 				throw new Error(`Advisor model "${reference}" could not be used: ${resolved.error}.`);
 			}
 
-			// Note: Claude Code's Czg rule would refuse here when the advisor equals
-			// the session model. pi allows it on purpose — the reviewer still reads
-			// the transcript with a clean context, which is the point. See models.ts.
+			// A stricter rule would refuse here when the advisor equals the session
+			// model. That is allowed on purpose — the reviewer still reads the
+			// transcript with a clean context, which is the point. See models.ts.
 			const reviewerModel = modelRef(resolved.model);
 
 			// A consult runs for minutes with nothing to show for it until the very

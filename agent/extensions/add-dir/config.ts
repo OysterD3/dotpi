@@ -5,7 +5,7 @@
 /** Custom session entry recording a session-scoped add or remove. */
 export const ENTRY_TYPE = "workspace_dir";
 
-/** Key inside the `permissions` block of settings.json, as Claude Code names it. */
+/** Key inside the `permissions` block of settings.json, conventionally named. */
 export const SETTINGS_KEY = "additionalDirectories";
 
 /**
@@ -14,7 +14,7 @@ export const SETTINGS_KEY = "additionalDirectories";
  */
 export const CONTEXT_FILES = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"] as const;
 
-/** The three answers Claude Code offers, with its labels. */
+/** The three answers offered, with their labels. */
 export const CHOICES = [
 	{ value: "session", label: "Yes, for this session" },
 	{ value: "remember", label: "Yes, and remember this directory" },
@@ -26,8 +26,8 @@ export type Choice = (typeof CHOICES)[number]["value"];
 export const CONFIG = {
 	/**
 	 * Read each added directory's AGENTS.md the way pi reads the project's own.
-	 * Claude Code does this too — it tracks the added directories separately for
-	 * exactly this purpose. Set false to add directories without their guidance.
+	 * Tracking the added directories separately exists for exactly this purpose.
+	 * Set false to add directories without their guidance.
 	 */
 	loadContextFiles: true,
 	/** Per-file cap on injected context, so one huge AGENTS.md cannot flood the prompt. */

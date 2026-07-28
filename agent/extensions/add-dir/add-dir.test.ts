@@ -128,7 +128,7 @@ check(
 check("limit is enforced", (await validateDirectory(SIBLING, { ...base, additionalCount: 24 })).resultType, "limitReached");
 
 // A symlink pointing at a directory is a directory as far as stat is concerned,
-// which is what Claude Code does too.
+// which is the conventional behaviour.
 const LINK = join(ROOT, "link");
 symlinkSync(SIBLING, LINK);
 check("symlink to a directory is accepted", (await validateDirectory(LINK, base)).resultType, "success");
@@ -175,7 +175,7 @@ check("context content inlined", withContext.includes("sibling rules"), true);
 // AGENTS.md wins over CLAUDE.md, matching pi's own candidate order.
 const BOTH = join(ROOT, "both");
 mkdirSync(BOTH);
-writeFileSync(join(BOTH, "CLAUDE.md"), "claude");
+writeFileSync(join(BOTH, "CLAUDE.md"), "fallback guidance");
 writeFileSync(join(BOTH, "AGENTS.md"), "agents");
 check("AGENTS.md preferred", findContextFile(BOTH), join(BOTH, "AGENTS.md"));
 

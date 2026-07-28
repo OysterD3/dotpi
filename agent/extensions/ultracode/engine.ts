@@ -1,10 +1,9 @@
 /**
  * The workflow script engine: parses the required `export const meta` literal,
- * then runs the script body in a vm sandbox with the orchestration globals
- * Claude Code's Workflow tool provides — agent(), parallel(), pipeline(),
- * phase(), log(), args, budget.
+ * then runs the script body in a vm sandbox with the orchestration globals —
+ * agent(), parallel(), pipeline(), phase(), log(), args, budget.
  *
- * Semantics mirror Claude Code 2.1.217:
+ * The semantics:
  *   - concurrent agent() calls gated by a semaphore (min(16, cores - 2));
  *   - total agent() calls per run capped (1000) — exceeding fails the run;
  *   - parallel() never rejects for ordinary failures: a thunk that throws
@@ -14,8 +13,8 @@
  *     item to null and skips its remaining stages; stages receive
  *     (prevResult, originalItem, index);
  *   - a single parallel()/pipeline() call accepts at most 4096 items;
- *   - budget is a stub ({total: null}) since pi has no "+500k" directive:
- *     budget-guarded loops written for Claude Code fall through cleanly;
+ *   - budget is a stub ({total: null}) since pi has no token-budget directive,
+ *     so budget-guarded loops fall through cleanly;
  *   - Date.now()/Math.random()/argless new Date() throw, so a journal can be
  *     replayed (opt out per script with `deterministic: false` in meta, at the
  *     cost of that run being unresumable).

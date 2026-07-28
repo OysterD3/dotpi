@@ -1,5 +1,5 @@
 /**
- * Live recap test: does a real model, given the transcribed Claude Code prompt,
+ * Live recap test: does a real model, given the recap prompt,
  * actually produce a short plain-text recap?
  *
  * Everything else about /recap is unit-tested offline. This checks the one thing

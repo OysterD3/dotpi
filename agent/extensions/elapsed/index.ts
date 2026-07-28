@@ -3,13 +3,13 @@
  *
  * pi's working row says only "⠋ Working...", with no indication of whether
  * that has been true for two seconds or two minutes, and nothing records the
- * cost of a turn once it finishes. Two additions, both modelled on Claude Code:
+ * cost of a turn once it finishes. Two additions:
  *
  *   - while the agent runs, the row reads "Working... 12s", updated once a
  *     second (the text only changes that often — durations under a minute are
  *     floored to whole seconds);
  *   - when the turn settles, a dimmed line lands in the transcript:
- *     "✻ Cooked for 1m 4s", using Claude Code's verb pool and duration format.
+ *     "✻ Cooked for 1m 4s", drawing a past-tense verb from a fixed pool.
  *
  * The line is a custom entry, so it stays out of the model's context — the
  * duration is for the person reading the scrollback.
@@ -29,8 +29,8 @@
  *
  * Settings (agent settings.json):
  *   elapsed.workingTimer      boolean, default true
- *   elapsed.showTurnDuration  boolean, default true (Claude Code's key name)
- *   elapsed.minTurnMs         number, default 0 (Claude Code has no threshold)
+ *   elapsed.showTurnDuration  boolean, default true
+ *   elapsed.minTurnMs         number, default 0 (0 reports every turn)
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

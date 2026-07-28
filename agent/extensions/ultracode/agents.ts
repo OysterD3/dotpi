@@ -1,8 +1,8 @@
 /**
  * Resolving `agent({ agentType })` against the standing subagent definitions.
  *
- * Claude Code's Workflow tool can point an agent at a registered subagent type
- * instead of describing the role inline. pi already keeps that registry — the
+ * A workflow can point an agent at a registered subagent type instead of
+ * describing the role inline. pi already keeps that registry — the
  * `subagents` extension's agent/subagents.json — so a workflow can reach for
  * "code-explorer" and get its model, reasoning level, tool allowlist, and role
  * prompt without restating any of it.

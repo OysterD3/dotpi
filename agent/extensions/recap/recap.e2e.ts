@@ -129,7 +129,7 @@ console.log("\n--- manual /recap: nothing to recap ---");
 	const { ctx, notices } = makeCtx({ branch: [], model, authOk: true });
 	events.get("session_start")!({}, ctx);
 	await commands.get("recap")!.handler("", ctx);
-	check("empty branch -> Claude Code's exact wording", notices.at(-1)?.message, "Nothing to recap yet — send a message first.");
+	check("empty branch -> its own wording", notices.at(-1)?.message, "Nothing to recap yet — send a message first.");
 	check("empty branch -> nothing appended", entries.length, 0);
 }
 

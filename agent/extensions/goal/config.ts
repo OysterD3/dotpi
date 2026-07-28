@@ -1,42 +1,51 @@
 /**
  * Tunables for /goal.
  *
- * Values marked "Claude Code parity" are taken from the shipped Claude Code binary
- * (2.1.217) rather than from documentation, so that behaviour matches.
+ * The values here are not arbitrary: each is the point where the behaviour stops
+ * being useful, and the comment on each says which.
  */
 
 export const CONFIG = {
 	/**
-	 * Maximum length of a goal condition. Claude Code parity: it rejects longer
-	 * conditions outright rather than truncating them.
+	 * Maximum length of a goal condition. Longer ones are rejected outright rather
+	 * than truncated: a silently clipped goal is judged against something the user
+	 * never wrote.
 	 */
 	maxConditionChars: 4000,
 
 	/**
 	 * Words that mean "clear the goal" instead of "set this as the goal", matched
-	 * case-insensitively against the trimmed argument. Claude Code parity: this is
-	 * its exact set, even though only `clear` is documented in its argument hint.
+	 * case-insensitively against the trimmed argument. Only `clear` is advertised in
+	 * the argument hint; the rest are here because they are what people type.
 	 */
 	clearWords: new Set(["clear", "stop", "off", "reset", "none", "cancel"]),
 
 	/**
-	 * Fraction of the evaluator model's context window spent on transcript.
-	 * Claude Code parity (its constant is 0.5). Older messages are dropped first.
+	 * Fraction of the evaluator model's context window spent on transcript. Older
+	 * messages are dropped first, since evidence that a goal was met is recent.
 	 */
 	transcriptBudgetFraction: 0.5,
+
+	/**
+	 * Budget fraction for the second attempt after the provider rejects the first
+	 * as too long. One retry at half the budget, then the check reports an error.
+	 */
+	retryBudgetFraction: 0.25,
 
 	/** Rough chars-per-token used to fit the transcript to the budget above. */
 	charsPerToken: 4,
 
-	/** Evaluator request timeout. Claude Code parity: 30s for prompt hooks. */
+	/** Evaluator request timeout. A judge slower than this is not worth waiting for. */
 	timeoutMs: 30_000,
 
 	/**
-	 * Stop re-prompting after this many consecutive not-met verdicts.
+	 * Stop re-prompting after this many not-met verdicts, counted over the goal's
+	 * whole life rather than as a consecutive run — nothing resets the count, and
+	 * a condition judged unmet twenty times is worth giving up on however those
+	 * twenty were spread out.
 	 *
-	 * NOT Claude Code parity — it has no cap and relies on the user interrupting.
-	 * A runaway loop here spends real money unattended, so this defaults to a
-	 * finite number. Set to 0 to disable the cap and match Claude Code exactly.
+	 * A runaway loop spends real money unattended, so this defaults to a finite
+	 * number. Set `goal.maxIterations` to 0 to let a goal run until interrupted.
 	 */
 	maxIterations: 20,
 

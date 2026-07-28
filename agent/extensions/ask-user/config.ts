@@ -1,13 +1,13 @@
 /**
  * Shared constants and types for the ask-user extension.
  *
- * ask_user is Claude Code's AskUserQuestion tool ported to pi: a tool the main
- * agent calls to pause and put a decision back to the human. One call may carry
+ * ask_user is a tool the main agent calls to pause and put a decision back to
+ * the human. One call may carry
  * several questions; each offers suggested options plus a free-text row, any
  * answer can be annotated with a note, and the user reviews everything before it
  * is sent.
  *
- * Claude Code renders a bespoke component with in-dialog key bindings. pi's
+ * This needs a bespoke component with in-dialog key bindings. pi's
  * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
  * `ctx.ui.custom()` — a real focused component (prompt.ts) driving a pure state
  * machine (interaction.ts).
@@ -58,9 +58,9 @@ export const CONFIG = {
 	 * scans as a mark rather than as part of the answer text.
 	 */
 	recommendedBadge: "★ Recommended",
-	/** Hard cap on options per question (Claude Code allows 2-4; extra are dropped). */
+	/** Hard cap on options per question; extra are dropped. */
 	maxOptions: 8,
-	/** Hard cap on questions per call (Claude Code allows 1-4). */
+	/** Hard cap on questions per call. */
 	maxQuestions: 4,
 	/**
 	 * Rows kept for the conversation above the prompt. A tall question scrolls

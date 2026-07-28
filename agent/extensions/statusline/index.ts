@@ -21,7 +21,7 @@
  *
  * Line 3 appears only when the provider actually reports limit windows. Each window is
  * labelled by its own reported duration, not by slot order — a Codex account reports
- * only a weekly window, in the slot Claude Code uses for its 5h session meter.
+ * only a weekly window, in the slot normally used for a 5h session meter.
  *
  * The workflow lines are the one piece of footer content this extension does not
  * source itself: ultracode announces its active runs on WORKFLOW_CHANNEL and they

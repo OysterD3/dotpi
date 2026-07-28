@@ -1,9 +1,8 @@
 /**
  * Tunables for /recap.
  *
- * Values marked "Claude Code parity" are taken from the shipped Claude Code
- * binary (2.1.217) rather than documentation, so behaviour matches. The rest are
- * this port's own, and are called out as such.
+ * Each value below is the point where the behaviour stops being useful, and the
+ * comment on each says which.
  */
 
 /** Custom session-entry type a recap is stored under. Display-only, never in LLM context. */
@@ -21,8 +20,8 @@ export const CONFIG = {
 	charsPerToken: 4,
 
 	/**
-	 * Manual `/recap` request timeout. Claude Code runs its recap with `maxTurns:1`
-	 * and no explicit timeout; 30s matches what the goal evaluator uses.
+	 * Manual `/recap` request timeout. 30s matches what the goal evaluator uses;
+	 * a summary slower than that is not worth waiting on.
 	 */
 	timeoutMs: 30_000,
 
@@ -35,34 +34,33 @@ export const CONFIG = {
 
 	/**
 	 * Idle gap that counts as "stepped away", measured from when the agent last
-	 * went idle to the next interactive input. Claude Code parity: its away
-	 * threshold ($IS) is 300_000 ms. Claude Code measures real terminal blur;
-	 * pi exposes no focus events, so this is wall-clock idle instead — see
-	 * settings.ts and index.ts.
+	 * went idle to the next interactive input. Real terminal blur would be the
+	 * better signal; pi exposes no focus events, so this is wall-clock idle
+	 * instead — see settings.ts and index.ts.
 	 */
 	idleThresholdMs: 300_000,
 
 	/**
 	 * Minimum user turns in the session before an auto-recap is worth making.
-	 * Claude Code parity (BIS = 3): nothing to recap after one exchange.
+	 * Nothing worth recapping after one exchange.
 	 */
 	minUserTurns: 3,
 
 	/**
 	 * Minimum user turns since the last recap before making another automatically.
-	 * Claude Code parity (UIS = 2): don't recap the same spot twice.
+	 * Don't recap the same spot twice.
 	 */
 	minTurnsSinceLastRecap: 2,
 
 	/**
 	 * Whether auto-recap-on-return is on by default.
 	 *
-	 * NOT Claude Code parity — Claude Code defaults its away summary ON, but it
-	 * has real focus detection and generates the recap proactively while you are
-	 * away, so it costs nothing extra and is ready the instant you return. pi has
-	 * neither, so an auto-recap here costs a model call and a few seconds in front
-	 * of your own message every time you return after an idle gap. That is a real
-	 * cost to opt into, so it defaults off. Enable with `recap.autoOnReturn: true`.
+	 * With real focus detection the recap could be generated proactively while you
+	 * are away, costing nothing extra and ready the instant you return. pi has no
+	 * focus events, so an auto-recap here costs a model call and a few seconds in
+	 * front of your own message every time you return after an idle gap. That is a
+	 * real cost to opt into, so it defaults off. Enable with
+	 * `recap.autoOnReturn: true`.
 	 */
 	autoOnReturnDefault: false,
 };

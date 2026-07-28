@@ -1,16 +1,16 @@
 /**
  * Path expansion and containment.
  *
- * Ported from Claude Code's own helpers rather than re-invented, because the
- * containment test decides whether adding a directory is a no-op, and getting it
- * subtly wrong is how you end up with `/add-dir .` silently adding the cwd twice
- * or refusing a directory that is genuinely new.
+ * Worth reading carefully rather than skimming: the containment test decides
+ * whether adding a directory is a no-op, and getting it subtly wrong is how you
+ * end up with `/add-dir .` silently adding the cwd twice, or refusing a directory
+ * that is genuinely new.
  *
  * The one non-obvious rule is the `/private` normalization. On macOS `/tmp` and
  * `/var` are symlinks into `/private`, so `path.resolve` and `realpath` disagree
- * about the same directory. Claude Code rewrites both sides before comparing;
- * without it, adding `/tmp/work` while `/private/tmp/work` is already in the
- * workspace looks like a new directory.
+ * about the same directory. Both sides are rewritten before comparing; without
+ * that, adding `/tmp/work` while `/private/tmp/work` is already in the workspace
+ * looks like a new directory.
  */
 
 import { homedir } from "node:os";
@@ -19,9 +19,9 @@ import { isAbsolute, normalize, posix, relative, resolve, sep } from "node:path"
 /**
  * Expand `~` and resolve against a base directory.
  *
- * Mirrors Claude Code's expansion, including the null-byte rejection: a NUL in a
- * path is never legitimate here and Node's fs calls throw on it anyway, so it is
- * better to fail with a clear message than a stack trace.
+ * Note the null-byte rejection: a NUL in a path is never legitimate here and
+ * Node's fs calls throw on it anyway, so it is better to fail with a clear
+ * message than a stack trace.
  */
 export function expandPath(input: string, base: string): string {
 	if (input.includes("\0") || base.includes("\0")) throw new Error("Path contains null bytes");

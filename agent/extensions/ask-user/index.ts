@@ -1,12 +1,12 @@
 /**
- * ask-user — Claude Code's AskUserQuestion tool, ported to pi.
+ * ask-user — a structured question tool for the main agent.
  *
  * Gives the main agent an `ask_user` tool to pause and put decisions back to the
  * human: up to four questions at once, each with 2-4 suggested options plus a
  * free-text row, any answer annotatable with a note, and a review step before
  * anything is sent.
  *
- * Claude Code renders a bespoke component with in-component key bindings. pi's
+ * This needs a bespoke component with in-component key bindings. pi's
  * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
  * `ctx.ui.custom()`: a focused component (prompt.ts) over a pure state machine
  * (interaction.ts). That is what makes Tab-to-annotate and ← / → possible at

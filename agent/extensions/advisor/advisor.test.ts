@@ -1,6 +1,6 @@
 /**
  * Tests for the advisor extension: the branch→transcript flattening, the
- * reviewer prompt assembly, model resolution and the Claude Code validation
+ * reviewer prompt assembly, model resolution and the validation
  * rules that port, the usage mapping, settings parsing, and the wiring against
  * a fake pi (tool/flag/command registration, active-tool sync, and the /advisor
  * paths and pre-spawn tool branches that do not touch a subprocess).
@@ -99,14 +99,14 @@ checkTrue("wraps the transcript in markers", prompt.includes("--- BEGIN SESSION 
 checkTrue("includes the transcript body", prompt.includes("User:\nhello"));
 checkTrue("ends with the cue", prompt.trimEnd().endsWith("Give your advice now."));
 checkTrue("empty transcript gets a placeholder", buildReviewerPrompt("   ").includes("no prior messages yet"));
-checkTrue("the main-agent guidance is Claude Code's, verbatim", ADVISOR_TOOL_GUIDANCE.includes("backed by a stronger reviewer model") && ADVISOR_TOOL_GUIDANCE.includes("Orientation is not substantive work"));
+checkTrue("the main-agent guidance carries its load-bearing lines", ADVISOR_TOOL_GUIDANCE.includes("backed by a stronger reviewer model") && ADVISOR_TOOL_GUIDANCE.includes("Orientation is not substantive work"));
 
 // -------------------------------------------------------------------- models
 
 console.log("\n--- model resolution ---");
 const MODELS = [
-	{ id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic", contextWindow: 1_000_000 },
-	{ id: "claude-sonnet-5", name: "Claude Sonnet 5", provider: "anthropic", contextWindow: 1_000_000 },
+	{ id: "claude-opus-4-8", name: "Opus 4.8", provider: "anthropic", contextWindow: 1_000_000 },
+	{ id: "claude-sonnet-5", name: "Sonnet 5", provider: "anthropic", contextWindow: 1_000_000 },
 	{ id: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "openai-codex", contextWindow: 400_000 },
 ];
 const resolvedId = (ref: string) => {
@@ -121,7 +121,7 @@ checkTrue("ambiguous partial is rejected", resolvedId("claude").startsWith("ERR:
 checkTrue("unknown reference is rejected", resolvedId("does-not-exist").startsWith("ERR:"));
 checkTrue("empty reference is rejected", resolvedId("").startsWith("ERR:"));
 
-console.log("\n--- sameModel: labels a self-advising setup (allowed here, unlike Claude Code's Czg) ---");
+console.log("\n--- sameModel: labels a self-advising setup (allowed on purpose) ---");
 const opus = MODELS[0];
 const sonnet = MODELS[1];
 check("same model detected", sameModel(opus, { ...opus }), true);
@@ -354,7 +354,7 @@ console.log("\n--- the tool's pre-spawn branches (no subprocess) ---");
 	const pi = { registerTool: (def: any) => (toolDef = def) };
 	let reference: string | undefined;
 	registerAdvisorTool(pi as never, { reference: () => reference });
-	check("registered under the Claude Code name", toolDef.name, "advisor");
+	check("registered under the expected name", toolDef.name, "advisor");
 	check("takes no parameters", Object.keys(toolDef.parameters.properties ?? {}), []);
 	checkTrue("description is the verbatim guidance", toolDef.description.includes("backed by a stronger reviewer model"));
 
@@ -385,9 +385,9 @@ console.log("\n--- the tool's pre-spawn branches (no subprocess) ---");
 	}
 	checkTrue("unresolvable model throws", threw.includes("could not be used"));
 
-	// A same-model advisor is allowed here (pi diverges from Claude Code's Czg
-	// rule), so it no longer short-circuits before the spawn — there is no
-	// pre-spawn branch left to assert. advisor.live.ts covers the real call.
+	// A same-model advisor is allowed here — a stricter rule would refuse it — so
+	// it no longer short-circuits before the spawn, and there is no pre-spawn
+	// branch left to assert. advisor.live.ts covers the real call.
 }
 
 // ------------------------------------------------------ wiring against a fake pi

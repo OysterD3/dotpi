@@ -1,6 +1,6 @@
 /**
  * Offline tests for the ultracode extension's pure pieces: the keyword scanner
- * (cases derived from Claude Code's matcher) and the workflow script engine
+ * and the workflow script engine
  * (run against a fake spawner — no processes, no network).
  *
  * Run with jiti from any directory where pi's packages resolve (they are not

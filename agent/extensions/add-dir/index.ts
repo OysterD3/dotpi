@@ -1,16 +1,14 @@
 /**
  * /add-dir — bring another directory into the workspace.
  *
- * A port of Claude Code's `/add-dir`, whose behaviour was read out of the shipped
- * binary (2.1.217): the validation result types and their exact wording, the
- * three-way answer ("this session" / "remember" / "no"), persisting under
+ * The pieces: the validation result types and their wording, the three-way answer
+ * ("this session" / "remember" / "no"), persisting under
  * `permissions.additionalDirectories`, and loading each added directory's
  * guidance file the way the project's own is loaded.
  *
- * What it means here is not quite what it means there, and the difference is
- * worth being clear about. In Claude Code the workspace is a permission boundary:
- * tools refuse paths outside it, so `/add-dir` unlocks access. pi has no such
- * fence — `read`, `edit` and `bash` already accept any absolute path. So this
+ * What the name means here is weaker than it means elsewhere, and the difference
+ * is worth being clear about. Where the workspace is a permission boundary, tools
+ * refuse paths outside it and `/add-dir` unlocks access. pi has no such fence — `read`, `edit` and `bash` already accept any absolute path. So this
  * does not grant anything. It tells the model the directory is in scope, and it
  * loads that directory's AGENTS.md. That is the whole of it, and it is the part
  * that was actually missing.
@@ -22,8 +20,7 @@
  *   prompt.ts     what gets appended to the system prompt (pure but for reads)
  *   config.ts     caps and labels
  *
- * Companion command `/dirs` lists the workspace and removes directories from it,
- * which Claude Code folds into its `/permissions` UI.
+ * Companion command `/dirs` lists the workspace and removes directories from it.
  */
 
 import { type Dirent, readdirSync, statSync } from "node:fs";
@@ -144,11 +141,10 @@ async function addDirectory(
 /**
  * Persist a directory, after asking which settings file.
  *
- * Claude Code has no equivalent question because it always writes
- * `.claude/settings.local.json`, a per-project file its own setup gitignores. pi
- * has no local-settings tier, so the choice is between a file that may be
- * committed with the project and one that applies to every project. Both are
- * reasonable and neither is a safe default to pick silently.
+ * A local-settings tier would make this question unnecessary — write there and
+ * move on. pi has none, so the choice is between a file that may be committed
+ * with the project and one that applies to every project. Both are reasonable and
+ * neither is a safe default to pick silently.
  */
 async function remember(
 	workspace: Workspace,
@@ -188,7 +184,7 @@ async function remember(
 		workspace.addPersisted(dir, target);
 		ctx.ui.notify(`Added ${dir} as a working directory and saved to ${target} · ${MANAGE_HINT}`, "info");
 	} catch (error) {
-		// Claude Code's fallback: the directory is still added, the failure is named.
+		// Fallback: the directory is still added, and the failure is named.
 		workspace.addSession(dir);
 		const reason = error instanceof Error ? error.message : String(error);
 		ctx.ui.notify(`Added ${dir} as a working directory. Failed to save to ${target}: ${reason}`, "warning");

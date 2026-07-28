@@ -1,15 +1,14 @@
 /**
  * The decision to auto-recap on return — kept pure so it can be tested exactly.
  *
- * This is the pi-native stand-in for Claude Code's `qIS` gate plus its "away"
- * threshold. Claude Code knows you were away because the terminal lost focus; pi
+ * The ideal version knows you were away because the terminal lost focus; pi
  * exposes no focus events, so "away" is inferred from wall-clock idle: the gap
- * between the agent last going idle and your next interactive message. Every
- * other condition mirrors Claude Code:
+ * between the agent last going idle and your next interactive message. Three
+ * other conditions apply:
  *
- *   - a minimum of user turns before a recap is worth it (BIS)
+ *   - a minimum of user turns before a recap is worth it
  *   - a minimum of user turns since the last recap, so the same spot is not
- *     recapped twice (UIS)
+ *     recapped twice
  *   - never while background work is pending
  */
 

@@ -109,9 +109,9 @@ export class HistoryStore {
 	 * Seed a new session's history from the one it replaced.
 	 *
 	 * Rewinding forks the session, which gives it a new id and would otherwise
-	 * orphan every checkpoint — you could rewind once and never again. Claude Code
-	 * copies its history forward for the same reason. No-op if the target already
-	 * has history, so this can be called on every session start.
+	 * orphan every checkpoint — you could rewind once and never again, so history
+	 * is copied forward. No-op if the target already has history, so this can be
+	 * called on every session start.
 	 */
 	static inherit(agentDir: string, fromSessionId: string, toSessionId: string): void {
 		const root = join(agentDir, CONFIG.historyDirName);

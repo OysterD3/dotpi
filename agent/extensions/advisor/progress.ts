@@ -92,7 +92,7 @@ export function phaseFor(
  * A fourth hand-written elapsed formatter in this repo, and deliberately so:
  * every extension here is independently installable, so none imports another's
  * helpers. The copies are not identical — ultracode's panel writes "4m02s"
- * without the space, and elapsed/duration.ts is Claude Code's `formatDuration`
+ * without the space, and elapsed/duration.ts is the full duration format
  * transcribed, which carries rounding rules this line does not want. Divergence
  * is the cost of that rule, and it has already bitten once: a README sample was
  * written with ultracode's zero-padding for output this function cannot emit.

@@ -7,7 +7,7 @@
  * usual here, since it decides whether a deny rule protects a file or silently
  * fails to.
  *
- * Supported, matching the syntax Claude Code documents for path rules:
+ * Supported, matching the conventional syntax for path rules:
  *   *   any run of characters except "/"
  *   **  any run of characters including "/" (whole path segments)
  *   ?   exactly one character except "/"
@@ -60,7 +60,7 @@ export function matchGlob(pattern: string, path: string): boolean {
  * Match a raw string pattern where only `*` is special and `/` is not.
  *
  * Used for Bash command rules, which are string patterns rather than paths:
- * Claude Code documents these as prefix string matches with no argument parsing.
+ * These are prefix string matches with no argument parsing.
  */
 export function matchCommandPattern(pattern: string, command: string): boolean {
 	const source = pattern

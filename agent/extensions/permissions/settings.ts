@@ -1,8 +1,8 @@
 /**
  * Loading and layering permission settings.
  *
- * Rules live under a `permissions` key in pi's own settings files, the way
- * Claude Code puts them in its `settings.json`:
+ * Rules live under a `permissions` key in pi's own settings files, the same
+ * place the conventional `settings.json` puts them:
  *
  *   ~/.pi/agent/settings.json    yours, applies everywhere
  *   <cwd>/.pi/settings.json      the project's

@@ -1,6 +1,6 @@
 /**
- * Tests for the elapsed-time extension: the duration format transcribed from
- * Claude Code, the end-of-turn line, and the wiring against a fake pi.
+ * Tests for the elapsed-time extension: the duration format, the end-of-turn
+ * line, and the wiring against a fake pi.
  *
  * Run with jiti from a directory where pi's packages resolve (they are not
  * dependencies of this repo):
@@ -34,8 +34,8 @@ function check(label: string, got: unknown, want: unknown) {
 
 // ------------------------------------------------------------------ duration
 
-console.log("--- duration: Claude Code's table, verbatim ---");
-// Each row was produced by running Claude Code's own transcribed function.
+console.log("--- duration: the full table ---");
+// Every row is a fixed expectation; a change here is a change in behaviour.
 const TABLE: Array<[number, string, string, string]> = [
 	// ms, default, mostSignificantOnly, hideTrailingZeros
 	[0, "0s", "0s", "0s"],
@@ -69,9 +69,9 @@ check("rounding carries into hours", formatDuration(3_599_600), "1h 0m 0s");
 // ---------------------------------------------------------- end-of-turn line
 
 console.log("\n--- the end-of-turn line ---");
-check("Claude Code's shape", turnDurationLine({ durationMs: 64_000, verbIndex: 4 }), "Cooked for 1m 4s");
+check("the line's shape", turnDurationLine({ durationMs: 64_000, verbIndex: 4 }), "Cooked for 1m 4s");
 check("short turn", turnDurationLine({ durationMs: 12_000, verbIndex: 2 }), "Churned for 12s");
-check("verb pool is Claude Code's", [...CONFIG.verbs], ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"]);
+check("the verb pool", [...CONFIG.verbs], ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"]);
 check("index wraps rather than breaking", verbFor(CONFIG.verbs.length), "Baked");
 check("negative index is still a verb", verbFor(-1), "Worked");
 check("lowest random picks the first", pickVerbIndex(() => 0), 0);

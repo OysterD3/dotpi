@@ -1,7 +1,6 @@
 /**
- * Duration formatting, transcribed from Claude Code 2.1.217's `formatDuration`
- * (the same function it uses for both the spinner's elapsed time and the
- * end-of-turn line), so a pi turn reads the way a Claude Code turn does.
+ * Duration formatting — one function for both the spinner's elapsed time and
+ * the end-of-turn line, so the two always read alike.
  *
  * The shape worth knowing: a hard cut at one minute. Below it, seconds are
  * FLOORED ("45s"), so a ticking counter never shows a second that has not

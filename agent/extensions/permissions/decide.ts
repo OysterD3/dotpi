@@ -9,13 +9,13 @@
  *   4. allow rules
  *   5. the mode's default
  *
- * Claude Code evaluates deny, then ask, then allow. Step 2 is inserted ahead of
- * allow deliberately, and it is the one place this departs from Claude Code.
- * The reason is a trap Claude Code documents in its own guidance: prefix rules
- * are string matches with no flag analysis, so `Bash(git *)` also permits
- * `git push --force` and `git reset --hard`. Someone who allowlists `git` to
- * stop being nagged about `git status` has not agreed to silent history
- * rewrites. Set `destructiveOverridesAllow: false` for strict Claude Code order.
+ * The conventional order is deny, then ask, then allow. Step 2 is inserted ahead
+ * of allow deliberately, and it is the one place this departs from that. The
+ * reason is a trap in the conventional order: prefix rules are string matches
+ * with no flag analysis, so `Bash(git *)` also permits `git push --force` and
+ * `git reset --hard`. Someone who allowlists `git` to stop being nagged about
+ * `git status` has not agreed to silent history rewrites. Set
+ * `destructiveOverridesAllow: false` for the strict conventional order.
  */
 
 import { findDestructive, type Finding } from "./destructive.ts";

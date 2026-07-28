@@ -1,24 +1,55 @@
 /**
  * The evaluator: a separate LLM call that decides whether the goal is met.
  *
- * Claude Code constrains its judge with a provider-level JSON schema. pi's stream
+ * The right way to constrain a judge is a provider-level JSON schema. pi's stream
  * options have no equivalent, so the schema is enforced here instead: the prompt
  * demands bare JSON, and the response is parsed leniently and then validated.
  * Anything that fails validation is an *error*, never a silent "met" — a judge
  * that cannot be understood must not be able to end the goal.
+ *
+ * Two details change what the judge sees rather than merely how it is called:
+ *
+ *   - the evaluator is a *separate* model from the session's, so judging never
+ *     has to cost a frontier call. pi has no small-model concept, so `goal.model`
+ *     names one; unset, the session model judges (see settings.ts).
+ *   - one retry at half the transcript budget when the provider rejects the
+ *     first attempt as too long, rather than failing the check outright.
+ *
+ * A provider rejection is NOT an exception. `completeSimple` resolves with an
+ * assistant message carrying `stopReason: "error"` (or `"aborted"`) and the
+ * provider's text in `errorMessage`; only transport-level failures throw. So
+ * every outcome is read off the resolved value.
+ *
+ * The order that read happens in is load-bearing:
+ *
+ *   1. an abort wins over everything. A cancelled call can carry a *complete*
+ *      JSON verdict followed by truncated prose, and parsing that would let
+ *      Esc silently register as "Goal achieved".
+ *   2. then a parsed verdict wins over overflow. `isContextOverflow`'s silent
+ *      -overflow arm fires on `usage.input > contextWindow`, which a successful
+ *      call can trip when the registry under-declares the window or the
+ *      chars-per-token estimate under-counts (CJK, dense code). Throwing away a
+ *      verdict we can read, in favour of a heuristic about how it was billed,
+ *      would be strictly worse.
+ *   3. only an unreadable response is diagnosed — overflow, then error.
  */
 
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { completeSimple, isContextOverflow } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
+import { resolveModel } from "./model.ts";
 import { JUDGE_SYSTEM, judgeQuestion } from "./prompts.ts";
-import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
+import { buildSections, fitSections, type TranscriptEntry } from "./transcript.ts";
 
 export type Verdict =
 	| { kind: "met"; reason: string }
 	| { kind: "not_met"; reason: string }
 	| { kind: "impossible"; reason: string }
-	| { kind: "error"; reason: string };
+	| { kind: "error"; reason: string }
+	/** The user interrupted. Not a failure, and not worth a warning. */
+	| { kind: "aborted" };
+
+const ABORTED: Verdict = { kind: "aborted" };
 
 /**
  * Pull a JSON object out of a model response.
@@ -84,49 +115,111 @@ export function toVerdict(parsed: unknown): Verdict {
 	return { kind: "not_met", reason };
 }
 
+/** Pick the model the evaluator runs on: `goal.model` if set and resolvable. */
+export function selectModel(
+	ctx: ExtensionContext,
+	reference: string | undefined,
+): { model: NonNullable<ExtensionContext["model"]> } | { error: string } {
+	if (reference) {
+		const resolved = resolveModel(reference, ctx.modelRegistry.getAll());
+		if (resolved.ok) return { model: resolved.model };
+		return { error: resolved.error };
+	}
+	if (ctx.model) return { model: ctx.model };
+	return { error: "no model selected" };
+}
+
 /** Run one evaluation against the current session transcript. */
 export async function evaluate(
 	ctx: ExtensionContext,
 	condition: string,
 	signal?: AbortSignal,
+	modelReference?: string,
 ): Promise<Verdict> {
-	const model = ctx.model;
-	if (!model) return { kind: "error", reason: "no model selected" };
+	const selected = selectModel(ctx, modelReference);
+	if ("error" in selected) return { kind: "error", reason: selected.error };
+	const model = selected.model;
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) return { kind: "error", reason: auth.error };
 
-	const entries = ctx.sessionManager.getBranch() as TranscriptEntry[];
-	const transcript = buildTranscript(entries, model.contextWindow);
-	if (transcript.text.trim().length === 0) {
-		return { kind: "not_met", reason: "insufficient evidence in transcript" };
-	}
+	// Flattened once: a retry re-slices these sections rather than re-walking
+	// the branch and re-serialising every tool call.
+	const sections = buildSections(ctx.sessionManager.getBranch() as TranscriptEntry[]);
 
-	const prompt = `<transcript>\n${transcript.text}\n</transcript>\n\n${judgeQuestion(condition)}`;
+	/** One attempt. "overflow" means the transcript did not fit, so a smaller one might. */
+	const ask = async (budgetFraction: number): Promise<Verdict | "overflow"> => {
+		const transcript = fitSections(sections, model.contextWindow, budgetFraction);
+		if (transcript.text.trim().length === 0) {
+			return { kind: "not_met", reason: "insufficient evidence in transcript" };
+		}
 
-	try {
+		const prompt = `<transcript>\n${transcript.text}\n</transcript>\n\n${judgeQuestion(condition)}`;
+
 		const response = await completeSimple(
 			model,
-			{ systemPrompt: JUDGE_SYSTEM, messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] },
+			{
+				systemPrompt: JUDGE_SYSTEM,
+				messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
+			},
 			{
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				env: auth.env,
 				signal,
 				timeoutMs: CONFIG.timeoutMs,
-				// Claude Code disables thinking for this call; "minimal" is the
-				// cheapest level pi exposes.
+				// This is a single yes/no read, so thinking earns nothing; "minimal"
+				// is the cheapest level pi exposes.
 				reasoning: "minimal",
 			},
 		);
 
+		// (1) An interrupted call is not evidence of anything, whatever it managed
+		// to emit before it stopped.
+		if (response.stopReason === "aborted" || signal?.aborted) return ABORTED;
+
+		// (2) A response we can read is a verdict, whatever the usage numbers say.
 		const text = response.content
 			.filter((block): block is { type: "text"; text: string } => block.type === "text")
 			.map((block) => block.text)
 			.join("\n");
+		const parsed = extractJson(text);
+		if (parsed !== undefined) return toVerdict(parsed);
 
-		return toVerdict(extractJson(text));
+		// (3) Nothing readable — now work out why.
+		if (isContextOverflow(response, model.contextWindow)) return "overflow";
+		if (response.stopReason === "error") {
+			return { kind: "error", reason: response.errorMessage?.trim() || "evaluator call failed" };
+		}
+		return toVerdict(undefined);
+	};
+
+	const tooLong = { kind: "error", reason: "transcript too long for the evaluator" } as const;
+
+	try {
+		const first = await ask(CONFIG.transcriptBudgetFraction);
+		if (first !== "overflow") return first;
+
+		// fitSections always keeps the newest section, so when one message alone
+		// blows the budget — a write tool call carrying a whole file, say — the
+		// smaller budget yields byte-identical text. Retrying that buys a second
+		// rejection and another 30s of the user's time.
+		if (!fitsSmaller(sections, model.contextWindow)) return tooLong;
+
+		const retried = await ask(CONFIG.retryBudgetFraction);
+		if (retried !== "overflow") return retried;
+		return tooLong;
 	} catch (error) {
+		// Only transport-level failures reach here: timeout, socket, timeoutMs.
+		if (signal?.aborted) return ABORTED;
 		return { kind: "error", reason: error instanceof Error ? error.message : String(error) };
 	}
+}
+
+/** Whether the retry budget would actually produce a smaller prompt than the first. */
+function fitsSmaller(sections: string[], contextWindow: number): boolean {
+	return (
+		fitSections(sections, contextWindow, CONFIG.retryBudgetFraction).text.length <
+		fitSections(sections, contextWindow, CONFIG.transcriptBudgetFraction).text.length
+	);
 }

@@ -80,16 +80,20 @@ export type Transcript = {
 };
 
 /**
- * Flatten and fit to the evaluator's budget, dropping the OLDEST messages first.
+ * Fit already-flattened sections to a budget, dropping the OLDEST first.
  *
  * Dropping from the front rather than the back is the only correct direction
  * here: evidence that a goal was met is almost always in the most recent work.
+ *
+ * Separate from buildSections so a retry at a smaller budget re-slices what has
+ * already been flattened instead of walking the whole branch again.
  */
-export function buildTranscript(entries: TranscriptEntry[], contextWindow: number): Transcript {
-	const sections = buildSections(entries);
-	const budgetChars = Math.floor(
-		contextWindow * CONFIG.transcriptBudgetFraction * CONFIG.charsPerToken,
-	);
+export function fitSections(
+	sections: string[],
+	contextWindow: number,
+	budgetFraction: number = CONFIG.transcriptBudgetFraction,
+): Transcript {
+	const budgetChars = Math.floor(contextWindow * budgetFraction * CONFIG.charsPerToken);
 
 	let used = 0;
 	let start = sections.length;
@@ -108,4 +112,13 @@ export function buildTranscript(entries: TranscriptEntry[], contextWindow: numbe
 		text: dropped > 0 ? `${TRUNCATION_NOTICE(dropped)}\n\n${body}` : body,
 		dropped,
 	};
+}
+
+/** Flatten a branch and fit it in one step. */
+export function buildTranscript(
+	entries: TranscriptEntry[],
+	contextWindow: number,
+	budgetFraction: number = CONFIG.transcriptBudgetFraction,
+): Transcript {
+	return fitSections(buildSections(entries), contextWindow, budgetFraction);
 }

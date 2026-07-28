@@ -11,7 +11,7 @@ export type ModelLike = { readonly id: string; readonly name?: string; readonly 
 
 export type Resolution<M> = { ok: true; model: M } | { ok: false; error: string };
 
-/** True for an undated alias id like `claude-haiku-4-5` (no trailing `-YYYYMMDD`). */
+/** True for an undated alias id (no trailing `-YYYYMMDD`). */
 function isAlias(id: string): boolean {
 	return !/-\d{8}$/.test(id);
 }

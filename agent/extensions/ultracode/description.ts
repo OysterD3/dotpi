@@ -1,8 +1,7 @@
 /**
- * The workflow tool's LLM-facing description: Claude Code's Workflow tool
- * description, cut to the features this port implements (no resume, no
- * worktree isolation, no nested workflow(), no budget directive) and with the
- * same Ultracode section the reminder texts reference.
+ * The workflow tool's LLM-facing description, covering exactly the features
+ * implemented here (no resume, no worktree isolation, no nested workflow(), no
+ * budget directive) and the Ultracode section the reminder texts reference.
  */
 
 export const WORKFLOW_DESCRIPTION = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.

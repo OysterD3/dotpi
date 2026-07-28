@@ -1,13 +1,13 @@
 /**
  * The `task` dispatch tool: the main agent delegates a scoped task to one of
- * the configured subagents by name (Claude Code's `subagent_type`). The chosen
+ * the configured subagents by name. The chosen
  * subagent runs as a headless pi subprocess with its own model, reasoning
  * level, tool allowlist, and role prompt, and its final message is returned.
  *
  * The tool description is built from the current registry so the model sees the
  * available subagents and their purposes; index.ts re-registers on session
  * start to keep it fresh. `subagent_type` is a plain string validated here
- * (unknown -> a clear "Valid options:" error, as Claude Code does) rather than a
+ * (unknown -> a clear "Valid options:" error) rather than a
  * schema enum, so the set can change with config without a schema rebuild.
  */
 import { Type } from "typebox";

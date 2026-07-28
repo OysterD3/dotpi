@@ -3,10 +3,9 @@
  * the one-line prompt snippet, and the guideline bullets pi appends to the
  * system prompt while the tool is active.
  *
- * Adapted from Claude Code's AskUserQuestion tool (its guidance ships in the
- * client and steers the model toward using the tool only for genuine user
- * decisions, not for anything it can resolve itself). Reworded for pi and this
- * tool's shape; not a verbatim copy.
+ * The guidance steers the model toward using the tool only for genuine user
+ * decisions, not for anything it can resolve itself — the failure mode this is
+ * written against is a model asking permission instead of doing the work.
  *
  * The question cap is interpolated from CONFIG rather than written out, because
  * the schema derives its `maxItems` from the same constant: a hardcoded "4" here

@@ -1,10 +1,10 @@
 /**
- * subagents — configurable named subagents, ported from Claude Code.
+ * subagents — configurable named subagents.
  *
  * You define a set of subagents, each with a model, a reasoning (thinking)
  * level, a purpose, and optionally a tool allowlist and a role prompt. The main
- * agent delegates a scoped task to one by name through the `task` tool (Claude
- * Code's `subagent_type`), which runs it as a headless pi subprocess (spawn.ts)
+ * agent delegates a scoped task to one by name through the `task` tool, which
+ * runs it as a headless pi subprocess (spawn.ts)
  * with those settings and returns its report. `/subagents` shows the table —
  * Subagent | Model | Reasoning | Purpose.
  *

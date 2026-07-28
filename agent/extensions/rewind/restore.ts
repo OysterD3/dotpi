@@ -2,7 +2,7 @@
  * Applying a code rewind.
  *
  * This is the only part of the extension that destroys work, so it is
- * deliberately timid. It follows Claude Code's rules: never follow a symlink,
+ * deliberately timid: never follow a symlink,
  * never touch anything that is not a regular file, and refuse rather than force
  * when the path on disk is not what the checkpoint expects. A refusal is
  * reported, never silent — the whole point is that the user can trust what the

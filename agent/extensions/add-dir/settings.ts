@@ -2,8 +2,8 @@
  * Reading and writing `permissions.additionalDirectories`.
  *
  * The key sits inside the same `permissions` block the permissions extension
- * uses, and is spelled the way Claude Code spells it, so a settings file is
- * recognisable to anyone who has configured Claude Code:
+ * uses, and is spelled the conventional way, so a settings file is recognisable
+ * to anyone who has configured one before:
  *
  *   ~/.pi/agent/settings.json    yours, applies everywhere
  *   <cwd>/.pi/settings.json      the project's

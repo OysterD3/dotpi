@@ -1,9 +1,9 @@
 /**
- * Reading and assembling Claude Code memory into one injectable block.
+ * Reading and assembling stored memory into one injectable block.
  *
  * readMemory() touches the filesystem; parseFrontmatter() and assemble() are
  * pure so the shaping and budgeting are testable without a memory directory.
- * A fact file's YAML frontmatter is parsed leniently — Claude Code has written
+ * A fact file's YAML frontmatter is parsed leniently — the store has written
  * both a flat `type:` and a nested `metadata:\n  type:`, and older files have no
  * frontmatter at all — so anything unrecognised just falls back to the filename
  * and the raw body.

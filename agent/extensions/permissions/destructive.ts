@@ -16,16 +16,16 @@
  * Second, command substitutions are pulled out and judged too, because
  * `$(rm -rf /)` runs. And a destructive-capable command whose arguments are
  * computed at runtime — `rm $(cat list)` — is treated as destructive precisely
- * because it cannot be read statically. Claude Code takes the same position:
- * an argument that is runtime-determined "could resolve to a dangerous action".
+ * because it cannot be read statically: an argument that is runtime-determined
+ * could resolve to a dangerous action.
  *
  * Pure, so every rule below is directly testable.
  *
  * ## Where this table comes from
  *
  * Originally: written from scratch, not derived from anything. It was then
- * audited (2026-07) against the shipped Claude Code binary, which turned out to
- * contain three distinct things worth separating:
+ * audited (2026-07) against a comparable agent's shipped implementation, which
+ * turned out to contain three distinct things worth separating:
  *
  *   1. An enumerated destructive regex table (`q2g`, 16 Bash entries) that never
  *      blocks. Its only consumers are an advisory "Note: may …" string behind a
@@ -42,7 +42,7 @@
  *      for an LLM classifier, and whose own text says "RULE LISTS ARE EXAMPLES,
  *      NOT BOUNDARIES".
  *
- * So there was no denylist to copy: Claude Code gates deterministically with an
+ * So there was no denylist to copy: that one gates deterministically with an
  * allowlist and defers everything else to a model. The 66 rule names were used as
  * a coverage checklist, and the entries marked `[added after the 2026-07 audit]`
  * came from that pass — each one adversarially reviewed for false positives

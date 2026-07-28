@@ -189,7 +189,7 @@ addDir(pi as any);
 
 console.log("\n--- registration ---");
 check("both commands registered", [...commands.keys()], ["add-dir", "dirs"]);
-check("description matches Claude Code", commands.get("add-dir")?.description, "Add a new working directory");
+check("the command description", commands.get("add-dir")?.description, "Add a new working directory");
 check("session_start hooked", handlers.has("session_start"), true);
 check("before_agent_start hooked", handlers.has("before_agent_start"), true);
 

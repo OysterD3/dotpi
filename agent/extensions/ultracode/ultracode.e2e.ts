@@ -268,7 +268,7 @@ writeSettings({});
 	check("toggle entry appended", appended, [{ customType: "ultracode", data: { action: "on", previousLevel: "medium" } }]);
 	check("badge set", statuses.at(-1), { key: "ultracode", text: "✦ ultracode" });
 	check(
-		"Claude Code's success wording",
+		"the success wording",
 		notices.at(-1)?.message,
 		"Set effort level to ultracode (this session only): xhigh + dynamic workflow orchestration",
 	);
@@ -288,8 +288,7 @@ writeSettings({});
 		`<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>`,
 	);
 	// Walk the cadence to the next sparse turn and land the keyword on it: the
-	// combined message carries both reminders, keyword first (Claude Code's
-	// attachment order).
+	// combined message carries both reminders, keyword first.
 	for (let i = 0; i < 8; i++) await turn(`quiet ${i}`);
 	const combined = await turn("ultracode audit everything again");
 	check(
@@ -329,7 +328,7 @@ console.log("\n--- /ultracode guards ---");
 	clampLevel = (level) => level;
 }
 {
-	// pi clamps xhigh UP to max (Claude models): accepted, reported honestly.
+	// pi clamps xhigh UP to max on models that go that high: accepted, reported honestly.
 	clampLevel = (level) => (level === "xhigh" ? "max" : level);
 	thinkingLevel = "medium";
 	const { ctx, notices } = makeCtx({ model: MODEL });

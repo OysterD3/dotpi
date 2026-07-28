@@ -26,10 +26,10 @@ export interface AskUserToolOptions {
 /**
  * A trailing "(Recommended)" written into the label itself.
  *
- * Claude Code's tool has no recommendation field and tells the model to append
- * exactly this to the label instead, so a model carrying that habit over would
- * put the marker in as literal text — beside our own badge, or instead of it.
- * Lifting it out means either shape produces the same rendered row.
+ * The common convention elsewhere is to have no recommendation field and to tell
+ * the model to append exactly this to the label instead, so a model carrying that
+ * habit over would put the marker in as literal text — beside our own badge, or
+ * instead of it. Lifting it out means either shape produces the same rendered row.
  *
  * Deliberately only the bracketed form: a bare trailing word would also eat the
  * "recommended" out of a label like "Not recommended" and badge its opposite.

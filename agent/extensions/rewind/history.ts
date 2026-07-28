@@ -2,9 +2,9 @@
  * The checkpoint model — pure, so the interesting logic is testable without a
  * session, a filesystem, or an agent.
  *
- * The scheme is Claude Code's, simplified in one place. Claude Code versions each
- * backup (`<hash>@v3`) and has later snapshots inherit pointers from earlier ones.
- * Here, blobs are content-addressed by digest, so two checkpoints that share a
+ * The obvious scheme versions each backup (`<hash>@v3`) and has later snapshots
+ * inherit pointers from earlier ones. This one is simpler: blobs are
+ * content-addressed by digest, so two checkpoints that share a
  * file's contents share the blob automatically and no inheritance pass is needed.
  *
  * What gets recorded is the content of a file **before** each mutation. That is

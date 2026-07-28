@@ -1,15 +1,12 @@
 /**
  * Shared constants for the advisor extension.
  *
- * The advisor is Claude Code's Advisor Tool ported to pi. In Claude Code it is
- * a server-side beta tool (the API request carries a tool schema
- * `{type:"advisor_20260301", name:"advisor", model}` and the API forwards the
- * whole conversation to `model`). pi has no such server tool, so the forwarding
- * is done client-side: the tool reads the session branch, flattens it, and
- * sends it to the configured reviewer model as a tool-less headless pi call.
+ * The natural shape for this is a server-side tool, where the API forwards the
+ * whole conversation to the reviewer model. pi has no such server tool, so the
+ * forwarding is done client-side: the tool reads the session branch, flattens it,
+ * and sends it to the configured reviewer model as a tool-less headless pi call.
  *
- * Values that mirror Claude Code are marked with the source they came from in
- * the 2.1.218 binary; the rest are pi-side choices documented in README.md.
+ * The values below are pi-side choices, documented in README.md.
  */
 
 /** Custom session-entry type the advisor status marker is stored under (display only). */
@@ -18,7 +15,7 @@ export const ENTRY_TYPE = "advisor";
 /** settings.json key for the advisor block. */
 export const SETTINGS_KEY = "advisor";
 
-/** The tool name, verbatim from Claude Code (`name:"advisor"`). */
+/** The tool name as the model sees it. */
 export const TOOL_NAME = "advisor";
 
 export const CONFIG = {
@@ -50,15 +47,13 @@ export interface AdvisorSettings {
 	 * The reviewer model, as a pi model reference ("sonnet", "opus",
 	 * "openai-codex/gpt-5.6-sol", ...). This is the whole point of the feature
 	 * and it is required: with no model set the advisor tool is not offered.
-	 * Claude Code stores this as `advisorModel`; there is no baked-in default
-	 * (Claude Code's `Lyo()` returns undefined when unset, which disables the
-	 * tool). Configurable, and it must be.
+	 * There is deliberately no baked-in default — which model is worth consulting
+	 * depends entirely on which one you are already running.
 	 */
 	model?: string;
 	/**
-	 * Kill switch. Defaults to true. Mirrors Claude Code's
-	 * CLAUDE_CODE_DISABLE_ADVISOR_TOOL / the `rY()` gate: even with a model set,
-	 * `enabled: false` keeps the tool out of the session.
+	 * Kill switch. Defaults to true. Even with a model set, `enabled: false` keeps
+	 * the tool out of the session.
 	 */
 	enabled: boolean;
 }

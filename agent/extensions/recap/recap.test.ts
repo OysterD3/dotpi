@@ -34,7 +34,7 @@ const M = (provider: string, id: string, name = id) => ({ provider, id, name, co
 const MODELS = [
 	M("anthropic", "claude-haiku-4-5"),
 	M("anthropic", "claude-haiku-4-5-20251001"),
-	M("anthropic", "claude-sonnet-5", "Claude Sonnet 5"),
+	M("anthropic", "claude-sonnet-5", "Sonnet 5"),
 	M("openai-codex", "gpt-5.6-sol"),
 	M("openrouter", "claude-haiku-4-5"), // same id, different provider — bare id is ambiguous
 ];

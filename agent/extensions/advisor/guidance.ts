@@ -1,21 +1,17 @@
 /**
  * The two prompts the advisor feature needs.
  *
- * ADVISOR_TOOL_GUIDANCE is Claude Code's own text, transcribed verbatim from
- * the 2.1.218 binary (the `q7u` system-prompt block Claude Code appends when an
- * advisor model is configured). It tells the MAIN agent when and how to call
- * the tool. Claude Code puts it in the system prompt; the closest pi-native,
- * cache-stable placement is the tool's own `description`, which pi includes in
- * the system prompt while the tool is active — so this is used as the
- * description. The one adaptation: Claude Code says history is "automatically
- * forwarded" (its server tool does the forwarding); in pi the tool forwards it
- * when called. Same effect, so the wording is kept.
+ * ADVISOR_TOOL_GUIDANCE tells the MAIN agent when and how to call the tool. It
+ * belongs in the system prompt; the closest pi-native, cache-stable placement is
+ * the tool's own `description`, which pi includes in the system prompt while the
+ * tool is active — so that is where it goes. It describes history as
+ * "automatically forwarded" because from the calling agent's side it is: the tool
+ * forwards the branch itself when called.
  *
- * REVIEWER_PROMPT is NOT from the binary: Claude Code runs the reviewer
- * server-side, so its instructions never ship in the client. This is a faithful
- * reconstruction from the documented behavior ("a stronger reviewer model" that
- * "sees the task, every tool call you've made, every result you've seen" and
- * gives advice). It is authored, and marked as such here and in README.md.
+ * REVIEWER_PROMPT is the other side — what the reviewer is told it is doing.
+ * Server-side implementations of this pattern keep their reviewer instructions
+ * off the wire entirely, so this one is authored, reconstructed from the
+ * behaviour that shows up in the advice.
  */
 
 export const ADVISOR_TOOL_GUIDANCE = `You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters -- when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.

@@ -47,7 +47,7 @@ function checkTrue(label: string, got: boolean) {
 const MODELS = [
 	{ id: "gpt-5.6-luna", name: "GPT 5.6 Luna", provider: "openai-codex" },
 	{ id: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "openai-codex" },
-	{ id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic" },
+	{ id: "claude-opus-4-8", name: "Opus 4.8", provider: "anthropic" },
 ];
 
 // --------------------------------------------------------------- parsing

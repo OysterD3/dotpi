@@ -1,7 +1,7 @@
 /**
  * Resolving the configured advisor reference ("sonnet", "opus",
  * "openai-codex/gpt-5.6-sol") to a real registry model, and the validation
- * Claude Code applies before it will use one.
+ * applied before it will be used.
  *
  * The matching rules are pi's own `--model` rules reproduced against the
  * ModelRegistry list (pi's resolver is not exported to extensions), the same
@@ -12,26 +12,24 @@
  *   3. bare `id`                 exact, but rejected if ambiguous
  *   4. partial                   substring of id or name; prefer an alias
  *
- * Claude Code's capability checks are ported as far as they port:
- *   - Rut(main, advisor): the advisor must be "at least as capable" as the main
- *     model. Claude Code ranks by a per-model `advisor_rank` field and, tellingly,
- *     ALLOWS when either rank is unknown (`if(r===void 0||n===void 0)return!0`).
- *     pi's registry carries no such rank for arbitrary providers, so every pair
- *     is "unknown" and this reduces to allow — faithfully, not by omission.
- *   - Czg / "cannot be used as an advisor when the request model is <same>":
- *     Claude Code refuses to let a model advise itself. pi deliberately does NOT
- *     enforce this. What the advisor actually buys is a clean-context read of the
- *     whole session, and that is worth having even from the same model: the
- *     reviewer sees the transcript without the anchoring of having produced it,
- *     and for a single-model setup it is that or no advisor at all. sameModel()
- *     survives only to label the case in `/advisor status`.
+ * Two capability checks you might expect, and what happens to them here:
+ *   - "the advisor must be at least as capable as the main model". This needs a
+ *     per-model capability rank. pi's registry carries no such rank for arbitrary
+ *     providers, so every pair is unknown and the check reduces to allow —
+ *     deliberately, not by omission.
+ *   - "a model cannot advise itself". Deliberately NOT enforced. What the advisor
+ *     actually buys is a clean-context read of the whole session, and that is
+ *     worth having even from the same model: the reviewer sees the transcript
+ *     without the anchoring of having produced it, and for a single-model setup
+ *     it is that or no advisor at all. sameModel() survives only to label the
+ *     case in `/advisor status`.
  */
 
 export type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string; readonly contextWindow?: number };
 
 export type Resolution<M> = { ok: true; model: M } | { ok: false; error: string };
 
-/** True for an undated alias id like `claude-haiku-4-5` (no trailing `-YYYYMMDD`). */
+/** True for an undated alias id (no trailing `-YYYYMMDD`). */
 function isAlias(id: string): boolean {
 	return !/-\d{8}$/.test(id);
 }

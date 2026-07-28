@@ -9,7 +9,7 @@
  *   ctx.modelRegistry.getProviderAuth("openai-codex")  ->  Authorization header
  *   GET https://chatgpt.com/backend-api/wham/usage     ->  rate_limit.{primary,secondary}_window
  *
- * `primary_window` is the rolling ~5h window (Claude Code calls this "Session"),
+ * `primary_window` is the rolling ~5h window (often labelled "Session"),
  * `secondary_window` the weekly one. Each carries used_percent / reset_at /
  * limit_window_seconds.
  *
@@ -49,8 +49,8 @@ export type CodexUsage = {
 	 *
 	 * Deliberately NOT named session/weekly: which windows exist differs per provider
 	 * and plan. A ChatGPT/Codex account reports only a weekly window in
-	 * `primary_window` — assuming primary means "5h session" the way Claude Code's
-	 * footer does mislabels it. Callers derive the label from `windowMinutes`.
+	 * `primary_window` — assuming primary means "5h session", the way a footer
+	 * normally would, mislabels it. Callers derive the label from `windowMinutes`.
 	 */
 	windows: LimitWindow[];
 	planType?: string;

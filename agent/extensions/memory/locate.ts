@@ -1,10 +1,10 @@
 /**
- * Finding the Claude Code memory that belongs to pi's current project.
+ * Finding the stored memory that belongs to pi's current project.
  *
- * Claude Code encodes a project's cwd into its data-dir name by replacing every
+ * The store encodes a project's cwd into its data-dir name by replacing every
  * non-alphanumeric character with "-": /Users/me/.pi → -Users-me--pi. That
  * reproduces every real directory observed on disk. Underscore-containing paths
- * are the one ambiguity (some Claude Code code paths keep "_"), so a second
+ * are the one ambiguity (some code paths keep "_"), so a second
  * candidate that preserves "_" and "-" is tried too, and whichever memory
  * directory actually exists wins.
  */
@@ -27,7 +27,7 @@ export function memoryDirFor(cwd: string, claudeHome: string): string | undefine
 	return undefined;
 }
 
-/** Global user memory, if present (Claude Code's ~/.claude/CLAUDE.md). */
+/** Global user memory, if present (~/.claude/CLAUDE.md). */
 export function globalClaudeMd(claudeHome: string): string | undefined {
 	const path = join(claudeHome, "CLAUDE.md");
 	return existsSync(path) ? path : undefined;

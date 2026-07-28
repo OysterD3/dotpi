@@ -1,28 +1,24 @@
 /**
  * /recap — a one-line summary of where the session stands.
  *
- * A port of Claude Code's recap (its "away summary"), read out of the shipped
- * binary (2.1.217): the prompt is verbatim, and the outcomes and their wording
- * ("Nothing to recap yet — send a message first.", "Recap cancelled.") match.
+ * Two entry points into one generator — a manual `/recap`, and an automatic
+ * summary shown when you return to the terminal after being away 5+ minutes. The
+ * ideal version knows you were away because the terminal lost and regained focus,
+ * and generates the summary *while* you are away so it is ready the instant you
+ * return. pi exposes no focus events, so:
  *
- * Claude Code has two entry points into one generator — a manual `/recap`, and an
- * automatic summary shown when you return to the terminal after being away 5+
- * minutes. It knows you were away because the terminal lost and regained focus,
- * and it generates the summary *while* you are away so it is ready the instant
- * you return. pi exposes no focus events, so:
- *
- *   - `/recap` is faithful and always available.
+ *   - `/recap` is always available and does exactly what it says.
  *   - Auto-on-return is approximated from wall-clock idle — the gap between the
  *     agent going idle and your next message — and generated reactively when you
  *     return, not proactively. Because that costs a model call and a short wait in
- *     front of your own message, it is OFF by default (Claude Code's is on). Turn
- *     it on with `recap.autoOnReturn: true`.
+ *     front of your own message, it is OFF by default. Turn it on with
+ *     `recap.autoOnReturn: true`.
  *
  * The recap model is configurable: `recap.model` in settings.json, falling back
  * to the active session model. A recap is display-only — information for the
  * person returning, stored as a custom entry that never enters LLM context.
  *
- *   prompts.ts     the recap prompt, transcribed from Claude Code
+ *   prompts.ts     the recap prompt
  *   generate.ts    the tool-less LLM call and its outcomes
  *   model.ts       resolving `recap.model` the way pi resolves --model (pure)
  *   transcript.ts  session branch -> budgeted transcript text (pure)
@@ -30,7 +26,7 @@
  *   gate.ts        the auto-on-return decision (pure)
  *   state.ts       idle timing and a reentrancy guard
  *   render.ts      the recap entry's appearance (pure)
- *   config.ts      limits and Claude Code's constants
+ *   config.ts      limits and constants
  */
 
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";

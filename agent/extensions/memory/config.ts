@@ -1,11 +1,11 @@
 /**
- * Memory for pi — as a start, reads Claude Code's memory.
+ * Memory for pi — as a start, reads another agent's store on this machine.
  *
- * Claude Code keeps per-project memory in ~/.claude/projects/<slug>/memory/: a
+ * That store keeps per-project memory in ~/.claude/projects/<slug>/memory/: a
  * MEMORY.md index (loaded into context each session) plus per-fact markdown
  * files with YAML frontmatter (name / description / type, body with **Why:** /
  * **How to apply:**). This extension finds the memory that matches pi's current
- * project (by the same cwd→slug encoding Claude Code uses), assembles it within
+ * project (by the same cwd→slug encoding that store uses), assembles it within
  * a budget, and appends it to pi's system prompt each turn (cached, not resent).
  *
  * pi already loads project CLAUDE.md/AGENTS.md as context files, so those are
@@ -23,7 +23,7 @@ export const SETTINGS_KEY = "memory";
 export const CONFIG = {
 	/** Header that frames the injected block for the model. */
 	header:
-		"# Memory\n\nYour persistent memory for this project, loaded from Claude Code's memory store. Treat it as background knowledge that reflects what was true when it was written — verify specifics (files, commands, flags) against the current code before relying on them.",
+		"# Memory\n\nYour persistent memory for this project, loaded from the memory store on this machine. Treat it as background knowledge that reflects what was true when it was written — verify specifics (files, commands, flags) against the current code before relying on them.",
 } as const;
 
 export interface MemorySettings {
@@ -33,7 +33,7 @@ export interface MemorySettings {
 	includeFacts: boolean;
 	/** Character budget for the injected memory block. Default 24000. */
 	maxChars: number;
-	/** Root of Claude Code's data dir. Default ~/.claude. */
+	/** Root of the store's data dir. Default ~/.claude. */
 	claudeHome: string;
 }
 

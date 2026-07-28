@@ -78,43 +78,60 @@ no LSP support of its own, so this is a complete client.
 | `render.ts` | Collapsed/expanded TUI view |
 | `config.ts` | Timeouts and limits |
 
-**`agent/extensions/goal/`** — adds `/goal`, a port of Claude Code's command of the same name. Set
-a condition and pi keeps working until it holds.
+**`agent/extensions/goal/`** — adds `/goal`. Set a condition and pi keeps working until it holds.
 
 ```
 /goal all tests pass and the linter is clean
-/goal                 # show the active goal, its iteration count and elapsed time
+/goal                 # show the active goal and how many turns it has been judged over
 /goal clear           # clear it early (also: stop, off, reset, none, cancel)
 ```
 
 When the agent finishes a run, a separate LLM call judges the transcript against the condition. If
-it is met, the goal clears itself. If not, the reason is fed back and the agent resumes. The judge
-can also rule a condition **impossible**, which stops the loop instead of retrying forever.
+it is met, the goal clears itself and prints `Goal achieved (1m · 3 turns · 12.4k tokens)`. If not,
+the reason is fed back and the agent resumes. The judge can also rule a condition **impossible**,
+which stops the loop instead of retrying forever.
 
-The logic is taken from the Claude Code binary rather than guessed at, so the prompts, the 4000
-character limit, the clear-words and the impossible escape hatch all match. One thing does not:
-Claude Code implements this as a **Stop hook** that vetoes the agent's attempt to stop. pi has no
-Stop hook and no event that can veto the end of a run, so the block is expressed as pi's own
-shipped examples do it — evaluate on `agent_end`, and resume by delivering a follow-up message.
-Same behaviour, pi-native mechanism.
+Failures are non-blocking by design: an evaluator that cannot be reached or parsed lets the agent
+stop rather than trapping it, and never counts as met. A judge whose answer can't be understood
+must not be able to end a goal, and must not be able to hold one open either.
 
-Two things worth knowing before you use it. Every stop attempt while a goal is active costs an
-extra LLM call carrying up to half the context window; that is inherent to the design, not this
-port. And `maxIterations` in `config.ts` (default 20) has no Claude Code equivalent — it exists so
-an unsatisfiable goal cannot spend money unattended. Set it to `0` for exact parity.
+The natural way to build this is a **stop hook** that vetoes the agent's attempt to end a run. pi
+has no stop hook and no event whose return value can veto the end of a run, so the block is
+expressed as pi's own shipped examples do it — evaluate on `agent_end`, resume by delivering a
+follow-up message. Same behaviour, pi-native mechanism.
+
+The evaluator is a separate model from the session's, so judging never has to cost a frontier call.
+Set `goal.model` to name a small, fast one; unset, the session model judges its own work.
+
+```jsonc
+// ~/.pi/agent/settings.json — or <project>/.pi/settings.json when the project is trusted
+{
+  "goal": {
+    "model": "<provider>/<small-fast-model>",  // evaluator model; unset = the session model
+    "maxIterations": 20                     // 0 = no cap
+  }
+}
+```
+
+One thing worth knowing before you use it: every stop attempt while a goal is active costs an extra
+LLM call carrying up to half the context window. That is inherent to the design — `goal.model` is
+how you make it cheap. `maxIterations` (default 20) exists so an unsatisfiable goal cannot spend
+money unattended; set it to `0` to let a goal run until you interrupt it.
 
 | File | Role |
 | --- | --- |
 | `index.ts` | Command, `agent_end` hook, renderers |
-| `prompts.ts` | **Evaluator and instruction prompts, transcribed from Claude Code** |
-| `judge.ts` | The evaluator call and verdict parsing |
+| `prompts.ts` | Evaluator and instruction prompts |
+| `judge.ts` | The evaluator call, model selection and verdict parsing |
 | `transcript.ts` | Session branch → budgeted transcript text (pure) |
 | `state.ts` | Active goal, iteration count, persistence across `/resume` |
-| `render.ts` | TUI panels and footer status (pure) |
+| `render.ts` | TUI panels and summary text (pure) |
+| `settings.ts` | The `goal` settings block |
+| `model.ts` | Resolving `goal.model` the way pi resolves `--model` |
 | `config.ts` | Limits and timeouts |
 
-**`agent/extensions/rewind/`** — adds `/rewind` (aliases `/checkpoint`, `/undo`), a port of Claude
-Code's command. Pick an earlier prompt, then choose what to restore:
+**`agent/extensions/rewind/`** — adds `/rewind` (aliases `/checkpoint`, `/undo`). Pick an earlier
+prompt, then choose what to restore:
 
 | Mode | Effect |
 | --- | --- |
@@ -153,12 +170,12 @@ anything that is not a plain regular file, so a symlink in the way is reported, 
 | `render.ts` | Picker rows and result summaries (pure) |
 | `config.ts` | Tracked tools, size caps, retention |
 
-**`agent/extensions/permissions/`** — tool permissions in Claude Code's `settings.json` shape. pi
+**`agent/extensions/permissions/`** — tool permissions in the widely-used `settings.json` shape. pi
 ships nothing like this; its security doc states plainly that built-in tools "can read files, write
 files, edit files, and run shell commands with the permissions of the pi process".
 
-Rules live under a `permissions` key in pi's own settings files, exactly like Claude Code's
-`settings.json`, so an existing policy can be pasted straight in:
+Rules live under a `permissions` key in pi's own settings files, so an existing policy in that
+shape can be pasted straight in:
 
 ```jsonc
 // agent/settings.json  (or <project>/.pi/settings.json)
@@ -199,14 +216,14 @@ front of every command, so it is fast, offline, free, and auditable. `/permissio
 them; silence any single one by id via `allowDestructive`.
 
 **Provenance, since this is a security control and it matters:** the table was written from
-scratch, then audited against the shipped Claude Code binary. Claude Code turned out not to gate on
-a destructive denylist at all — it has an enumerated destructive regex table that is *advisory
-only* (behind a default-off flag, feeding a "Note: may …" hint and telemetry), narrow deterministic
-blocking only for `rm` path shape, and a 66-rule taxonomy that is a prompt for an LLM classifier
-whose own text says "RULE LISTS ARE EXAMPLES, NOT BOUNDARIES". So nothing was copied; those 66 rule
-names were used as a coverage checklist, and the audit added 21 patterns and fixed 18 existing ones
-— including `rm -v -rf /srv/data`, which the headline rule silently missed because it required the
-flag to be the first token. Detection splits on `;`, `&&`, `||` and
+scratch, then audited against a comparable agent's shipped implementation. That one turned out not
+to gate on a destructive denylist at all — it has an enumerated destructive regex table that is
+*advisory only* (behind a default-off flag, feeding a "Note: may …" hint and telemetry), narrow
+deterministic blocking only for `rm` path shape, and a 66-rule taxonomy that is a prompt for an LLM
+classifier whose own text says "RULE LISTS ARE EXAMPLES, NOT BOUNDARIES". So nothing was copied;
+those 66 rule names were used as a coverage checklist, and the audit added 21 patterns and fixed 18
+existing ones — including `rm -v -rf /srv/data`, which the headline rule silently missed because it
+required the flag to be the first token. Detection splits on `;`, `&&`, `||` and
 newlines while respecting quotes, and looks inside `$(...)` and backticks, so `echo ok && rm -rf x`
 and `echo "$(git reset --hard)"` are both caught. It also treats a destructive command with
 runtime-computed arguments (`rm $(cat list)`) as destructive, since it cannot be read statically.
@@ -214,11 +231,11 @@ runtime-computed arguments (`rm $(cat list)`) as destructive, since it cannot be
 not prompt.
 
 Precedence is **deny → destructive → ask → allow → mode**. The destructive check sitting ahead of
-`allow` is the one deliberate departure from Claude Code, and it fixes a trap Claude Code documents
-in its own guidance: prefix rules are string matches with no flag analysis, so `Bash(git *)` also
-permits `git push --force` and `git reset --hard`. Allowlisting `git` to stop being nagged about
+`allow` is a deliberate departure from the conventional ordering, and it fixes a trap that ordering
+has: prefix rules are string matches with no flag analysis, so `Bash(git *)` also permits
+`git push --force` and `git reset --hard`. Allowlisting `git` to stop being nagged about
 `git status` is not consent to silent history rewrites. Set `destructiveOverridesAllow: false` for
-strict Claude Code ordering.
+the strict conventional ordering.
 
 Two other safety choices: a project's `.pi/settings.json` can always add `deny`/`ask` rules, but
 its `allow` rules and any loosening of the mode are **ignored unless the project is trusted**, so
@@ -256,15 +273,15 @@ that is already executing, and `bash` remains able to do anything the pattern ta
 | `index.ts` | Event wiring, the approval prompt, `/permissions` |
 | `destructive.ts` | **What counts as destructive — edit this table to taste** |
 | `decide.ts` | Precedence engine (pure) |
-| `rules.ts` | Claude Code rule syntax: parsing and matching (pure) |
+| `rules.ts` | Rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
 | `grants.ts` | Session-scoped approvals and what each one covers |
 | `config.ts` | Modes and their ordering |
 | `corpus.test.ts` | 171 safe / 85 dangerous commands the table must get right |
 
-**`agent/extensions/add-dir/`** — adds `/add-dir`, a port of Claude Code's command, plus `/dirs` to
-list and remove. Brings another directory into the session's workspace:
+**`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
+directory into the session's workspace:
 
 ```
 /add-dir ../design-system     # tab-completes directories
@@ -272,31 +289,28 @@ list and remove. Brings another directory into the session's workspace:
 /dirs                         # list the workspace, remove a directory
 ```
 
-After the path checks out you get Claude Code's three-way answer — **this session** / **remember
-it** / **no** — and choosing to remember asks one more question pi needs and Claude Code does not:
-which settings file. Claude Code always writes `.claude/settings.local.json`, a per-project file
-its own setup gitignores; pi has no local-settings tier, so the choice is between this project's
-`.pi/settings.json` (may get committed) and your global one (applies everywhere). Neither is a safe
-silent default. It lands under the same `permissions` block:
+After the path checks out you get a three-way answer — **this session** / **remember it** / **no** —
+and choosing to remember asks one more question: which settings file. pi has no local-settings tier
+to write to silently, so the choice is between this project's `.pi/settings.json` (may get
+committed) and your global one (applies everywhere). Neither is a safe silent default. It lands
+under the same `permissions` block:
 
 ```jsonc
 { "permissions": { "additionalDirectories": ["/Users/me/work/design-system"] } }
 ```
 
 **What this does and does not do is worth being precise about**, because the name is borrowed from
-a tool where it means something stronger. In Claude Code the workspace is a permission boundary:
-tools refuse paths outside it, so `/add-dir` unlocks access. pi has no such fence — `read`, `edit`
-and `bash` already accept any absolute path. So this **grants nothing**. What it does is tell the
-model the directory is in scope, and load that directory's `AGENTS.md` the way pi loads the
-project's own. Claude Code does that second part too; it keeps a separate list of added directories
-for exactly this. Both are capped (24 directories, 48k characters of guidance) because they are
-re-sent every turn.
+tools where it means something stronger. Elsewhere the workspace is a permission boundary: tools
+refuse paths outside it, so `/add-dir` unlocks access. pi has no such fence — `read`, `edit` and
+`bash` already accept any absolute path. So this **grants nothing**. What it does is tell the model
+the directory is in scope, and load that directory's `AGENTS.md` the way pi loads the project's own.
+Both are capped (24 directories, 48k characters of guidance) because they are re-sent every turn.
 
 Session-scoped additions are written to the session as custom entries rather than held in memory,
 which makes them behave correctly around `/rewind`: rewinding past an `/add-dir` un-adds the
-directory, and resuming a session keeps what you added. Validation is Claude Code's, including its
-wording — a path that is already covered says *which* directory covers it, and pointing at a file
-suggests its parent. macOS `/tmp` vs `/private/tmp` is normalised, so those are not two directories.
+directory, and resuming a session keeps what you added. Validation is specific rather than generic —
+a path that is already covered says *which* directory covers it, and pointing at a file suggests its
+parent. macOS `/tmp` vs `/private/tmp` is normalised, so those are not two directories.
 
 The same trust rule as `permissions` applies: an untrusted project's `additionalDirectories` is
 ignored on load, and choosing to remember into an untrusted project says so and falls back to the
@@ -306,34 +320,34 @@ session rather than writing a file that would be quietly ignored.
 | --- | --- |
 | `index.ts` | Commands, dialogs, prompt injection |
 | `paths.ts` | Expansion and containment (pure) |
-| `validate.ts` | The checks and Claude Code's wording for each |
+| `validate.ts` | The checks and the wording for each |
 | `workspace.ts` | The directory set and its session persistence |
 | `settings.ts` | Reading and writing `settings.json` without losing pi's own writes |
 | `prompt.ts` | What gets appended to the system prompt |
 | `config.ts` | Caps and labels |
 | `add-dir.test.ts` / `add-dir.e2e.ts` | Unit and end-to-end coverage |
 
-**`agent/extensions/recap/`** — adds `/recap`, a port of Claude Code's recap (its "away summary"):
-a one- or two-line plain-text summary of where the session stands.
+**`agent/extensions/recap/`** — adds `/recap`, an "away summary": a one- or two-line plain-text
+summary of where the session stands.
 
 ```
 /recap                         # summarise now
 ```
 
-The prompt is transcribed verbatim from the Claude Code binary, so a recap leads with the overall
-goal and current task, then the one next action, in under 40 words with no markdown. It runs as a
-tool-less LLM call over a recent-biased transcript of the branch, and shows up as a display-only
-entry — information for the person returning, never fed back into the model's context.
+A recap leads with the overall goal and current task, then the one next action, in under 40 words
+with no markdown. It runs as a tool-less LLM call over a recent-biased transcript of the branch, and
+shows up as a display-only entry — information for the person returning, never fed back into the
+model's context.
 
-**The recap model is configurable.** Set `recap.model` in settings.json to a model reference
-(`claude-haiku-4-5`, or `anthropic/claude-haiku-4-5` to disambiguate); it falls back to the active
-session model. Resolution uses the same rules as pi's `--model`, so an ambiguous bare id is an
-error rather than a silent pick:
+**The recap model is configurable.** Set `recap.model` in settings.json to a model reference (a
+bare id, or `provider/id` to disambiguate); it falls back to the active session model. Resolution
+uses the same rules as pi's `--model`, so an ambiguous bare id is an error rather than a silent
+pick:
 
 ```jsonc
 {
   "recap": {
-    "model": "claude-haiku-4-5",   // optional; default: the active model
+    "model": "<small-fast-model>", // optional; default: the active model
     "autoOnReturn": false,          // optional; see below
     "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
     "minUserTurns": 3               // optional
@@ -341,28 +355,27 @@ error rather than a silent pick:
 }
 ```
 
-**Where this diverges from Claude Code, and why.** Claude Code has two doors into one generator: the
-manual `/recap`, and an automatic summary shown when you return to the terminal after being away 5+
-minutes. It knows you were away because the terminal loses and regains focus, and it generates the
-summary *while* you are away so it is ready the instant you come back. pi exposes no focus events,
-so:
+**Two doors into one generator.** There is the manual `/recap`, and an automatic summary shown when
+you return to the terminal after being away 5+ minutes. The ideal version knows you were away
+because the terminal loses and regains focus, and generates the summary *while* you are away so it
+is ready the instant you come back. pi exposes no focus events, so:
 
-- `/recap` is faithful and always available.
+- `/recap` is always available and does exactly what it says.
 - Auto-on-return is approximated from wall-clock idle — the gap between the agent going idle
   (`agent_settled`) and your next message — and generated *reactively* when you return, not
   proactively. Because that costs a model call and a few seconds in front of your own message,
-  it is **off by default** (Claude Code's is on). Enable it with `recap.autoOnReturn: true`.
+  it is **off by default**. Enable it with `recap.autoOnReturn: true`.
 
-The auto path reuses Claude Code's other gates exactly: a minimum of user turns before a recap is
-worthwhile (its `BIS` = 3), a minimum of turns since the last recap so the same spot is not
-recapped twice (`UIS` = 2), and never while background work is pending. A project's `.pi/settings.json`
-can turn auto-recap on for itself, but its `recap.model` is honoured only when the project is
-trusted — a clone cannot silently redirect where your transcript is sent.
+The auto path has three more gates: a minimum of user turns before a recap is worthwhile (3), a
+minimum of turns since the last recap so the same spot is not recapped twice (2), and never while
+background work is pending. A project's `.pi/settings.json` can turn auto-recap on for itself, but
+its `recap.model` is honoured only when the project is trusted — a clone cannot silently redirect
+where your transcript is sent.
 
 | File | Role |
 | --- | --- |
 | `index.ts` | Command, event wiring, the auto-on-return flow |
-| `prompts.ts` | **The recap prompt, transcribed from Claude Code** |
+| `prompts.ts` | The recap prompt |
 | `generate.ts` | The tool-less LLM call and its outcomes |
 | `model.ts` | Resolving `recap.model` the way pi resolves `--model` (pure) |
 | `transcript.ts` | Session branch → budgeted transcript text (pure) |
@@ -370,30 +383,28 @@ trusted — a clone cannot silently redirect where your transcript is sent.
 | `gate.ts` | The auto-on-return decision (pure) |
 | `state.ts` | Idle timing and a reentrancy guard |
 | `render.ts` | The recap entry's appearance (pure) |
-| `config.ts` | Limits and Claude Code's constants |
+| `config.ts` | Limits and constants |
 | `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
 
-**`agent/extensions/ultracode/`** — a port of Claude Code's ultracode: a `workflow` tool that
-orchestrates fleets of subagents from a script, and the triggers that opt the model into using it.
+**`agent/extensions/ultracode/`** — ultracode: a `workflow` tool that orchestrates fleets of
+subagents from a script, and the triggers that opt the model into using it.
 
 ```
 ultracode find every place this event is mishandled     # keyword: opts in this one turn
 /ultracode                                              # session mode: on until turned off
 ```
 
-The **keyword** works exactly as in Claude Code — the detector is transcribed from the binary, so
-a whole-word "ultracode" triggers it but `ultracode.ts`, `extensions/ultracode`, a quoted
-"ultracode", or `/effort ultracode` do not. It injects Claude Code's verbatim reminder for that
-turn and nothing else: the prompt is not rewritten and the thinking level is untouched (that
-matches Claude Code, where the keyword and the session mode are independent).
+The **keyword** is matched on whole words, so a whole-word "ultracode" triggers it but
+`ultracode.ts`, `extensions/ultracode`, a quoted "ultracode", or `/effort ultracode` do not. It
+injects the reminder for that turn and nothing else: the prompt is not rewritten and the thinking
+level is untouched — the keyword and the session mode are independent.
 
-The **session mode** (`/ultracode`, or `/ultracode on|off|status`) is Claude Code's
-`/effort ultracode`: thinking is raised to xhigh for the session and standing reminders follow the
-same cadence — the full "Ultracode is on" reminder on entry, a sparse "still on" nudge every 10th
-user turn (its `TURNS_BETWEEN_MAINTENANCE`), and one exit notice when it goes off. Changing the
-thinking level away from xhigh exits the mode, the way picking another effort level does in Claude
-Code. The mode survives session resume: toggles are replayed from the branch, and delivered
-reminders are counted so a resumed session continues the cadence instead of re-announcing.
+The **session mode** (`/ultracode`, or `/ultracode on|off|status`) raises thinking to xhigh for the
+session, and standing reminders follow a fixed cadence — the full "Ultracode is on" reminder on
+entry, a sparse "still on" nudge every 10th user turn, and one exit notice when it goes off.
+Changing the thinking level away from xhigh exits the mode. The mode survives session resume:
+toggles are replayed from the branch, and delivered reminders are counted so a resumed session
+continues the cadence instead of re-announcing.
 
 The **`workflow` tool** is the thing the reminders point at: the model writes a plain-JS script
 with `export const meta = {...}` and orchestrates subagents with `agent()`, `parallel()`, and
@@ -401,8 +412,8 @@ with `export const meta = {...}` and orchestrates subagents with `agent()`, `par
 one retry on unusable output). Each subagent is a headless `pi --mode json -p --no-extensions
 --no-skills` subprocess in the project directory — pi's own vendor pattern — so a wedged agent
 cannot take down the session, subagents cannot recurse into further workflows, and project trust
-is forwarded (`--approve` only when the parent session trusts the project). Concurrency is Claude
-Code's `min(16, cores − 2)` with its 1000-agent and 4096-item caps; all of those are settings.
+is forwarded (`--approve` only when the parent session trusts the project). Concurrency is
+`min(16, cores − 2)` with 1000-agent and 4096-item caps; all of those are settings.
 
 **Every run is a directory.** `~/.pi/agent/workflow-runs/<runId>/` holds `run.json` (the row
 `/workflows` lists), `journal.jsonl` (an append-only record of every agent, log line and result),
@@ -418,8 +429,7 @@ result instantly, while new, edited and previously *failed* agents actually run.
 content hash rather than call order — `pipeline()` has no barrier, so the index an agent receives
 depends on when earlier stages finished, and only a content key is stable under that. The price is
 determinism: `Date.now()`, argless `new Date()` and `Math.random()` throw inside a script (a script
-that truly needs them sets `deterministic: false` in its meta and gives up resume). Claude Code
-bans the same three for the same reason.
+that truly needs them sets `deterministic: false` in its meta and gives up resume).
 
 **Agents can be forked context.** `agent(prompt, { context: { parent: 6, files: [...], text: ... } })`
 seeds that agent's session with recent turns of the conversation, whole files, or literal
@@ -474,7 +484,7 @@ instruction holds for later workflows until you change it.
 ```jsonc
 {
   "ultracode": {
-    "keywordTrigger": true,   // optional; Claude Code: workflowKeywordTriggerEnabled
+    "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
     "model": "gpt-5.4-mini",  // optional default for agents no request routes (a resolved reference)
     "limits": {               // all optional; anything absent keeps its default
       "maxConcurrency": 8,    // default min(16, cores − 2)
@@ -493,28 +503,26 @@ instruction holds for later workflows until you change it.
 Saved workflows live in `~/.pi/agent/workflows/<name>.js` and run by `name`; any file on disk runs
 by `scriptPath`.
 
-**Where this diverges from Claude Code, and why.** Reminders arrive as hidden custom messages
-(pi's plan-mode pattern) rather than attachments — same text, same position, invisible in the
-transcript UI. Workflow runs have no worktree isolation (pi has no such primitive), so a fleet that
-edits files in parallel can still conflict. The keyword has no alt+w dismiss and no live composer
-highlight — pi extensions see
-input only on submit — and a prompt steered into a *running* turn cannot carry the keyword
-reminder (steered input never reaches `before_agent_start`). `budget` is a stub (`total: null`)
-since pi has no "+500k" directive; budget-guarded scripts written for Claude Code fall through
-cleanly rather than crash. Two pi-native behaviours to know about: pi persists every thinking
-change to `defaultThinkingLevel` in settings.json (ultracode's xhigh is no exception — the
-pre-ultracode level is stored in the session and restored on `/ultracode off`, even after a
-resume), and on models without an xhigh mapping pi clamps upward, so Claude models get `max` —
-reported honestly in the confirmation. Models that can't reach xhigh at all are refused, as in
-Claude Code. One caveat inherited from running scripts in-process: a workflow script that
-busy-waits synchronously would freeze the session, so the tool description instructs the model to
-always await.
+**Rough edges worth knowing.** Reminders arrive as hidden custom messages (pi's plan-mode pattern)
+rather than attachments — invisible in the transcript UI. Workflow runs have no worktree isolation
+(pi has no such primitive), so a fleet that edits files in parallel can still conflict. The keyword
+has no dismiss shortcut and no live composer highlight — pi extensions see input only on submit —
+and a prompt steered into a *running* turn cannot carry the keyword reminder (steered input never
+reaches `before_agent_start`). `budget` is a stub (`total: null`) since pi has no token-budget
+directive, so budget-guarded scripts fall through cleanly rather than crash. Two pi-native
+behaviours to know about: pi persists every thinking change to `defaultThinkingLevel` in
+settings.json (ultracode's xhigh is no exception — the pre-ultracode level is stored in the session
+and restored on `/ultracode off`, even after a resume), and on models without an xhigh mapping pi
+clamps upward, so some models get `max` — reported honestly in the confirmation. Models that can't
+reach xhigh at all are refused. One caveat inherited from running scripts in-process: a workflow
+script that busy-waits synchronously would freeze the session, so the tool description instructs
+the model to always await.
 
 | File | Role |
 | --- | --- |
 | `index.ts` | Triggers, `/ultracode`, `/workflows`, panel wiring, resume restore |
-| `keyword.ts` | **The keyword detector, transcribed from Claude Code** (pure) |
-| `reminders.ts` | **Claude Code's reminder texts, verbatim** |
+| `keyword.ts` | The keyword detector (pure) |
+| `reminders.ts` | The reminder texts |
 | `mode.ts` | The session-mode reminder cadence (pure) |
 | `engine.ts` | The workflow script engine — meta, agent/parallel/pipeline, replay, pause, caps (pure) |
 | `store.ts` | The on-disk run store: run.json, journal, script, agent sessions |
@@ -528,26 +536,25 @@ always await.
 | `routing.ts` | Spotting model names in the triggering request (pure) |
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |
-| `description.ts` | The tool's LLM-facing contract, adapted from Claude Code |
-| `config.ts` | Claude Code's constants and pi-side limits |
+| `description.ts` | The tool's LLM-facing contract |
+| `config.ts` | Constants and pi-side limits |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
 
 **`agent/extensions/elapsed/`** — how long the agent has been working, and how long it took.
 
 pi's working row says only `⠋ Working...`, which tells you nothing about whether that has been true
 for two seconds or two minutes, and nothing records the cost of a turn once it finishes. Both are
-filled in, modelled on Claude Code:
+filled in:
 
 ```
 ⠋ Working... 1m 4s          while the agent runs, updated once a second
 ✻ Cooked for 1m 4s          when the turn settles, dimmed, in the transcript
 ```
 
-The duration format is transcribed from Claude Code's `formatDuration`, so the two read alike: a
-hard cut at one minute, seconds **floored** below it (a ticking counter never shows a second that
-has not fully passed) and **rounded with carry** above it, and days never showing seconds. The
-end-of-turn verb is drawn from Claude Code's own pool — Baked, Brewed, Churned, Cogitated, Cooked,
-Crunched, Sautéed, Worked.
+The duration format has a hard cut at one minute, seconds **floored** below it (a ticking counter
+never shows a second that has not fully passed) and **rounded with carry** above it, and days never
+showing seconds. The end-of-turn verb is drawn from a pool — Baked, Brewed, Churned, Cogitated,
+Cooked, Crunched, Sautéed, Worked.
 
 That line is a display-only custom entry, so it stays in your scrollback and never enters the
 model's context: how long a turn took is information for you, not for it. Timing runs from the
@@ -573,7 +580,7 @@ without sleeping.
 {
   "elapsed": {
     "workingTimer": true,      // optional; the live counter
-    "showTurnDuration": true,  // optional; Claude Code's key name for the end-of-turn line
+    "showTurnDuration": true,  // optional; the end-of-turn line
     "minTurnMs": 0             // optional; skip the line for turns shorter than this
   }
 }
@@ -582,10 +589,10 @@ without sleeping.
 | File | Role |
 | --- | --- |
 | `index.ts` | Turn timing, the tick, and the settings block |
-| `duration.ts` | **Claude Code's `formatDuration`, transcribed** (pure) |
+| `duration.ts` | Duration formatting (pure) |
 | `waiting.ts` | Time spent stopped on a question, excluded from the turn (pure) |
 | `render.ts` | The end-of-turn line and its verb pool (pure) |
-| `config.ts` | Tick period and Claude Code's constants |
+| `config.ts` | Tick period and constants |
 | `elapsed.test.ts` | Unit and wiring coverage |
 
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
@@ -632,8 +639,8 @@ bridge sends `stop`.
 | `config.ts` | The cmux protocol constants and env-var names |
 | `cmux-notify.test.ts` | Unit and wiring coverage |
 
-**`agent/extensions/advisor/`** — Claude Code's Advisor Tool, ported. A zero-parameter `advisor`
-tool that lets the agent pause and consult a **stronger reviewer model** on the whole session so far,
+**`agent/extensions/advisor/`** — an advisor tool. A zero-parameter `advisor` tool that lets the
+agent pause and consult a **stronger reviewer model** on the whole session so far,
 at the moments that matter — before committing to an approach, when stuck, and before declaring done.
 
 ```
@@ -642,30 +649,27 @@ Result of advisor:
   Biggest issue: don't use yaml.load on a user upload — use safe_load. …
 ```
 
-In Claude Code the advisor is a server-side beta tool: the API request carries a
-`{type:"advisor_20260301", name:"advisor", model}` schema and Anthropic's API forwards the whole
-conversation to that model. pi has no such server tool, so the forwarding is done in the client — the
-tool flattens the session branch (task, every tool call, every result) and runs the reviewer as a
+The natural way to build this is a server-side tool, where the API forwards the whole conversation
+to the reviewer model. pi has no such server tool, so the forwarding is done in the client — the tool
+flattens the session branch (task, every tool call, every result) and runs the reviewer as a
 **tool-less headless `pi` call** (`--no-tools`, so it advises and cannot act). What the agent sees is
-identical: call `advisor()`, wait, get advice back.
+the same either way: call `advisor()`, wait, get advice back.
 
 The reviewer model is **configurable and required** — that is the whole feature. With none set the
-tool is not offered, mirroring Claude Code (its `Lyo()` returns nothing when `advisorModel` is unset,
-and no tool is attached). Set it three ways, in priority order:
+tool is not offered at all. Set it three ways, in priority order:
 
 - `/advisor <model>` — a session override (also `/advisor off` / `on` / `status`)
-- `--advisor <model>` — a CLI flag for one run (Claude Code's own flag name)
+- `--advisor <model>` — a CLI flag for one run
 - `advisor.model` — the durable default in `agent/settings.json`
 
 Model names resolve with pi's own `--model` rules (`opus`, `sonnet`, `openai-codex/gpt-5.6-sol`),
-against the live registry. Claude Code's validation is ported as far as it ports, with one deliberate
-divergence: Claude Code's `Czg` rule — an advisor **cannot be the very model it advises** — is **not**
-enforced here. What the advisor actually buys is a clean-context read of the whole session, and that
-holds even when the reviewer is the same model: it sees the transcript without the anchoring of having
-produced it, and refusing would leave a single-model setup with no advisor at all. `/advisor status`
-says when the reviewer equals the session model, but it runs. The "advisor must be at least as
-capable" rank check reduces to *allow*, because pi's registry carries no `advisor_rank` for arbitrary
-providers and Claude Code itself allows when a rank is unknown.
+against the live registry. One rule you might expect is deliberately **not** enforced: that an
+advisor cannot be the very model it advises. What the advisor actually buys is a clean-context read
+of the whole session, and that holds even when the reviewer is the same model — it sees the
+transcript without the anchoring of having produced it, and refusing would leave a single-model
+setup with no advisor at all. `/advisor status` says when the reviewer equals the session model, but
+it runs. An "advisor must be at least as capable" rank check reduces to *allow*, because pi's
+registry carries no capability rank for arbitrary providers.
 
 **A consult says what it is doing while it does it.** It can run for minutes — the transcript is
 large, reviewer models are slow, and a reasoning model spends most of that time thinking before it
@@ -673,10 +677,10 @@ writes a word — and a single static line for five minutes is indistinguishable
 subprocess. The headless child streams pi's own session events, so the wait is not actually opaque:
 
 ```
-Consulting anthropic/claude-opus-5… 8s
-anthropic/claude-opus-5 is thinking… 1m 12s · 3.1k chars of reasoning
-anthropic/claude-opus-5 is writing advice… 1m 40s · 840 chars
-anthropic/claude-opus-5 is writing advice… 4m 2s · 2.4k chars · gives up at 5m 0s
+Consulting openai-codex/gpt-5.6-sol… 8s
+openai-codex/gpt-5.6-sol is thinking… 1m 12s · 3.1k chars of reasoning
+openai-codex/gpt-5.6-sol is writing advice… 1m 40s · 840 chars
+openai-codex/gpt-5.6-sol is writing advice… 4m 2s · 2.4k chars · gives up at 5m 0s
 ```
 
 The line repaints on a one-second timer rather than per event, because the clock has to keep moving
@@ -685,16 +689,15 @@ number is the only thing that answers it. The deadline is named only in the back
 where the question stops being curiosity and starts being "should I kill this?". `progress.ts` is
 pure, and the stream parsing is tested against a fake `pi` child, so both are covered without a model.
 
-The main-agent guidance (when and how to call it) is Claude Code's text **verbatim**, placed in the
-tool description so it rides in the system prompt. The reviewer-side prompt is **authored, not
-transcribed** — Claude Code runs the reviewer server-side, so its instructions never ship in the
-client; this reconstructs them from the documented behavior.
+The main-agent guidance (when and how to call it) lives in the tool description so it rides in the
+system prompt. The reviewer-side prompt is authored here, reconstructed from the documented
+behaviour of server-side implementations, whose instructions never ship in a client.
 
 ```jsonc
 {
   "advisor": {
-    "model": "opus",     // required to enable; the reviewer model (Claude Code: advisorModel)
-    "enabled": true      // optional kill switch (Claude Code: CLAUDE_CODE_DISABLE_ADVISOR_TOOL)
+    "model": "opus",     // required to enable; the reviewer model
+    "enabled": true      // optional kill switch
   }
 }
 ```
@@ -704,16 +707,16 @@ client; this reconstructs them from the documented behavior.
 | `index.ts` | Settings, `--advisor` flag, `/advisor` command, active-tool sync, status chip |
 | `tool.ts` | The `advisor` tool: resolve the reviewer, forward the session, return advice + usage |
 | `transcript.ts` | Session branch → budgeted transcript, with tool results, oldest dropped first (pure) |
-| `guidance.ts` | **Claude Code's tool guidance, verbatim** + the authored reviewer prompt |
+| `guidance.ts` | The tool guidance and the reviewer prompt |
 | `models.ts` | Model reference resolution; `sameModel` labels a self-advising setup (pure) |
 | `progress.ts` | Reading thinking/writing out of the child's stream, and the status line (pure) |
 | `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
 | `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
 
-**`agent/extensions/subagents/`** — Claude Code's subagents, made configurable. You define a set of
-named subagents, each pinned to a model, a reasoning (thinking) level, a purpose, and optionally a
-tool allowlist and a role prompt; the main agent delegates a scoped task to one by name through the
-`task` tool (Claude Code's `subagent_type`), and it runs in its own context and reports back.
+**`agent/extensions/subagents/`** — configurable subagents. You define a set of named subagents,
+each pinned to a model, a reasoning (thinking) level, a purpose, and optionally a tool allowlist and
+a role prompt; the main agent delegates a scoped task to one by name through the `task` tool, and it
+runs in its own context and reports back.
 
 `/subagents` shows the table:
 
@@ -842,23 +845,23 @@ which is expected here.
 | `config.ts` | Settings and the tool list (write/edit excluded) |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
 
-**`agent/extensions/memory/`** — gives pi memory by reading Claude Code's.
+**`agent/extensions/memory/`** — gives pi memory by reading another agent's store on this machine.
 
-Claude Code keeps per-project memory in `~/.claude/projects/<slug>/memory/`: a `MEMORY.md` index it
-loads into context each session, plus per-fact markdown files with YAML frontmatter
-(`name` / `description` / `type`, body with **Why:** / **How to apply:**). This finds the store that
-matches pi's current project — by the same `cwd → slug` encoding Claude Code uses (every
-non-alphanumeric char becomes `-`, so `/Users/me/.pi` → `-Users-me--pi`, with an underscore-preserving
-fallback) — reads the index and facts, and **appends them to pi's system prompt** each turn (via
-`before_agent_start`, so it's cached, not resent as a message). A global `~/.claude/CLAUDE.md` is
-folded in when present. pi already loads project `CLAUDE.md`/`AGENTS.md` as context files, so those
-aren't touched — this adds the dedicated memory store on top.
+That store lives at `~/.claude/projects/<slug>/memory/`: a `MEMORY.md` index loaded into context
+each session, plus per-fact markdown files with YAML frontmatter (`name` / `description` / `type`,
+body with **Why:** / **How to apply:**). This finds the store that matches pi's current project — by
+the same `cwd → slug` encoding that store uses (every non-alphanumeric char becomes `-`, so
+`/Users/me/.pi` → `-Users-me--pi`, with an underscore-preserving fallback) — reads the index and
+facts, and **appends them to pi's system prompt** each turn (via `before_agent_start`, so it's
+cached, not resent as a message). A global `~/.claude/CLAUDE.md` is folded in when present. pi
+already loads project `CLAUDE.md`/`AGENTS.md` as context files, so those aren't touched — this adds
+the dedicated memory store on top.
 
 `/memory` shows what's loaded and from where; `/memory show` prints the block; `/memory reload`
 re-reads. Verified against a real store (an 8-fact project loaded cleanly at 10.5 KB).
 
-Reading Claude Code's memory is the "for a start" scope; writing pi's own memory can layer on later
-over the same format and location.
+Reading that store is the "for a start" scope; writing pi's own memory can layer on later over the
+same format and location.
 
 ```jsonc
 {
@@ -866,7 +869,7 @@ over the same format and location.
     "enabled": true,        // optional; master switch
     "includeFacts": true,   // optional; full fact bodies, not just the MEMORY.md index
     "maxChars": 24000,      // optional; budget for the injected block (oldest facts dropped past it)
-    "claudeHome": "~/.claude" // optional; where Claude Code's store lives
+    "claudeHome": "~/.claude" // optional; where the store lives
   }
 }
 ```
@@ -879,8 +882,8 @@ over the same format and location.
 | `config.ts` | Settings and the injected-block header |
 | `memory.test.ts` | Locating, parsing, assembly, settings, and wiring coverage |
 
-**`agent/extensions/ask-user/`** — Claude Code's AskUserQuestion tool, ported. Gives the main agent
-an `ask_user` tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
+**`agent/extensions/ask-user/`** — a structured question tool. Gives the main agent an `ask_user`
+tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
 only you can make, rather than guessing.
 
 The model calls `ask_user` with **1-4 questions at once** — the bound is `askUser`'s `maxQuestions`,
@@ -899,8 +902,8 @@ answer to a question the first answer erases. You answer them in a single pass:
   one option: the row is badged **★ Recommended** and starts focused, so accepting costs a single
   Enter and disagreeing costs an arrow key. Nothing is pre-selected on your behalf — the badge is
   advice, not a default. At most one option per question can carry it (advice naming two answers
-  isn't advice), and the reason belongs in that option's description. A model reaching for Claude
-  Code's convention of writing "(Recommended)" into the label gets the same rendered row: the
+  isn't advice), and the reason belongs in that option's description. A model reaching for the
+  common convention of writing "(Recommended)" into the label gets the same rendered row: the
   marker is lifted out of the label into the badge, so it never shows up as literal text,
 - **type your own answer** into the free-text row at the bottom — it shows *Type my own answer* until
   you start typing, so there is no "Other" to select first and no follow-up prompt. Enter finishes it,

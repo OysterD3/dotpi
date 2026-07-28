@@ -1,17 +1,15 @@
 /**
  * The recap prompt.
  *
- * Transcribed verbatim from the Claude Code binary (2.1.217). Both surfaces use
- * it — the manual `/recap` command and the automatic on-return summary run
- * through the same generator there (`Zin`), which is why there is one prompt, not
- * two. Only the framing around it (how the transcript is supplied) differs,
- * because Claude Code hands the model its live conversation and this port has to
- * flatten the branch into text.
+ * Both surfaces use it — the manual `/recap` command and the automatic on-return
+ * summary run through the same generator, which is why there is one prompt, not
+ * two. Only the framing around it differs: the transcript has to be flattened
+ * into text before it can be handed over.
  */
 
 /**
- * Claude Code's `Viy`, unchanged. It reads as an instruction, so it is used as
- * the system prompt with the flattened transcript as the user message.
+ * It reads as an instruction, so it is used as the system prompt, with the
+ * flattened transcript as the user message.
  */
 export const RECAP_SYSTEM =
 	"The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences, no markdown. Lead with the overall goal and current task, then the one next action. Skip root-cause narrative, fix internals, secondary to-dos, and em-dash tangents.";

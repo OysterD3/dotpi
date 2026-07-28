@@ -4,7 +4,7 @@
  * budgeted assembly, settings, and the wiring (session_start loads it,
  * before_agent_start appends it to the system prompt).
  *
- * Everything runs against temp directories laid out like Claude Code's store.
+ * Everything runs against temp directories laid out like the real store.
  *
  * Run: jiti agent/extensions/memory/memory.test.ts
  */
@@ -44,7 +44,7 @@ check("dotfile path (matches the real -Users--pi form)", projectSlugs("/Users/me
 check("hyphens survive", projectSlugs("/Users/me/acme/acme-api")[0], "-Users-me-acme-acme-api");
 check("underscore path yields two candidates", projectSlugs("/work/my_proj"), ["-work-my-proj", "-work-my_proj"]);
 
-// Lay out a fake Claude Code store.
+// Lay out a fake store.
 const mkMemory = (slug: string) => {
 	const dir = join(CLAUDE, "projects", slug, "memory");
 	mkdirSync(dir, { recursive: true });

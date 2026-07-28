@@ -1,38 +1,35 @@
 /**
- * advisor — Claude Code's Advisor Tool, ported to pi.
+ * advisor — consult a stronger reviewer model on the whole session so far.
  *
  * The advisor lets the main agent pause and consult a stronger reviewer model
  * on the whole session so far, at the moments that matter (before committing to
- * an approach, when stuck, before declaring done). In Claude Code this is a
- * server-side beta tool (`advisor_20260301`) that the API forwards to the
- * configured model; pi has no such server tool, so tool.ts does the forwarding
- * in the client — it flattens the session branch and runs the reviewer as a
- * tool-less headless pi call (spawn.ts).
+ * an approach, when stuck, before declaring done). The natural shape is a
+ * server-side tool that the API forwards to the configured model; pi has no such
+ * server tool, so tool.ts does the forwarding in the client — it flattens the
+ * session branch and runs the reviewer as a tool-less headless pi call
+ * (spawn.ts).
  *
  * The reviewer model is configurable and required — that is the whole feature.
- * With no model set the tool is not offered, mirroring Claude Code, where the
- * advisor tool is only attached when `advisorModel` is configured (Lyo()). It
- * can be set three ways, in priority order:
+ * With no model set the tool is not offered at all. It can be set three ways, in
+ * priority order:
  *   1. `/advisor <model>`      a session override (also `/advisor off` / `on`)
- *   2. `--advisor <model>`     a CLI flag for one run (Claude Code: --advisor)
+ *   2. `--advisor <model>`     a CLI flag for one run
  *   3. `advisor.model` setting the durable default in agent/settings.json
  *
- * Validation follows Claude Code as far as it ports (see models.ts), with one
- * deliberate divergence: Claude Code's Czg rule — an advisor cannot be the very
- * model it advises — is NOT enforced. A same-model advisor still reads the whole
- * session with a clean context, which is the useful part, and refusing it leaves
- * a single-model setup with no advisor at all. The "at least as capable" rank
- * check reduces to allow because pi's registry carries no advisor_rank.
+ * One rule you might expect is deliberately NOT enforced (see models.ts): that
+ * an advisor cannot be the very model it advises. A same-model advisor still
+ * reads the whole session with a clean context, which is the useful part, and
+ * refusing it leaves a single-model setup with no advisor at all. An "at least as
+ * capable" rank check reduces to allow, because pi's registry carries no
+ * capability rank for arbitrary providers.
  *
  * Settings (agent settings.json):
  *   advisor.model    string, a pi model reference for the reviewer (required to
- *                    enable the tool). Claude Code: advisorModel.
- *   advisor.enabled  boolean, default true. Kill switch; Claude Code:
- *                    CLAUDE_CODE_DISABLE_ADVISOR_TOOL / the rY() gate.
+ *                    enable the tool).
+ *   advisor.enabled  boolean, default true. Kill switch.
  *
- * The reviewer-side prompt is authored, not transcribed: Claude Code runs the
- * reviewer server-side so its instructions do not ship in the client. See
- * guidance.ts (REVIEWER_PROMPT). The main-agent guidance IS verbatim.
+ * See guidance.ts for both prompts: the main-agent guidance that rides in the
+ * tool description, and the authored reviewer-side prompt.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

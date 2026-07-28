@@ -1,7 +1,7 @@
 /**
- * Session-mode state machine, mirroring Claude Code's ultra_effort attachment
- * cadence. Claude Code derives this by scanning message history for the last
- * enter/exit attachment; here the same outcomes are tracked as a counter:
+ * Session-mode state machine. The obvious implementation scans message history
+ * for the last enter/exit marker; here the same outcomes are tracked as a
+ * counter:
  *
  *   - first user turn with the mode on        -> full "Ultracode is on" reminder
  *   - every 10th user turn after a reminder   -> sparse "still on" reminder
@@ -9,7 +9,7 @@
  *   - first user turn after switching off     -> exit reminder, once, and only
  *     if an enter reminder was actually delivered
  *   - re-enabling before the exit reminder was delivered restores the previous
- *     state (in Claude Code the attachment history simply never changed)
+ *     state (nothing was delivered, so nothing needs undoing)
  */
 import { CONFIG } from "./config.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT } from "./reminders.ts";

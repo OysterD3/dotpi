@@ -1,5 +1,5 @@
 /**
- * Tool permissions for pi, in Claude Code's `settings.json` shape.
+ * Tool permissions for pi, in the conventional `settings.json` shape.
  *
  * pi ships nothing like this. Its security documentation is explicit: "Pi does
  * not include a built-in sandbox. Built-in tools can read files, write files,
@@ -7,7 +7,7 @@
  * The only gate available to an extension is the `tool_call` event, which can
  * block a call before it runs — that is what this uses.
  *
- * Rules use Claude Code's syntax so a settings file can be carried across:
+ * Rules use the conventional syntax so a settings file can be carried across:
  *
  *   { "permissions": {
  *       "defaultMode": "askDestructive",
@@ -23,7 +23,7 @@
  *
  *   config.ts       modes and their ordering
  *   settings.ts     loading and layering the JSON files
- *   rules.ts        Claude Code rule syntax: parsing and matching
+ *   rules.ts        rule syntax: parsing and matching
  *   glob.ts         path and command pattern matching
  *   destructive.ts  what counts as destructive, and why
  *   decide.ts       precedence: deny > destructive > ask > allow > mode

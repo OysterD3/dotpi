@@ -1,8 +1,7 @@
 /**
- * Reminder texts, verbatim from Claude Code 2.1.217's attachment registry
- * (workflow_keyword_request, ultra_effort_enter full/sparse, ultra_effort_exit).
- * They are injected as <system-reminder> blocks, which is also how Claude Code
- * delivers them.
+ * The four reminder texts: the keyword request, the full and sparse
+ * session-mode reminders, and the exit notice. They are injected as
+ * <system-reminder> blocks.
  */
 
 export const KEYWORD_REMINDER =

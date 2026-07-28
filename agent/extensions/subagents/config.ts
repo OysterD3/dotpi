@@ -1,11 +1,10 @@
 /**
  * Shared constants and types for the subagents extension.
  *
- * This is Claude Code's subagents feature, made configurable for pi: a set of
- * NAMED subagents, each pinned to a model, a reasoning (thinking) level, a
- * purpose, and an optional tool allowlist and system prompt. The main agent
- * delegates a task to one by name through the `task` tool (Claude Code's
- * `subagent_type`), and `/subagents` shows the table.
+ * A set of NAMED subagents, each pinned to a model, a reasoning (thinking) level,
+ * a purpose, and an optional tool allowlist and system prompt. The main agent
+ * delegates a task to one by name through the `task` tool, and `/subagents` shows
+ * the table.
  *
  * Definitions live in agent/settings.json so they travel with the rest of this
  * config. Each subagent runs as a headless pi subprocess with its model,
@@ -23,7 +22,7 @@ export const SETTINGS_KEY = "subagents";
  */
 export const STORE_FILE = "subagents.json";
 
-/** The dispatch tool name (Claude Code's is `Task`; pi has no built-in `task`). */
+/** The dispatch tool name; pi has no built-in `task`, so the name is free. */
 export const TOOL_NAME = "task";
 
 /** pi thinking levels, the values a subagent's `reasoning` may take. */

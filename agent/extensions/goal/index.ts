@@ -1,49 +1,52 @@
 /**
  * /goal — set an objective pi keeps working toward before it is allowed to stop.
  *
- * A port of Claude Code's `/goal`, whose logic was read out of the shipped
- * binary (2.1.217) rather than inferred. There, `/goal` registers a session-scoped
- * **Stop hook**: when the agent tries to stop, a separate tool-less LLM call judges
- * the transcript against the condition and either lets it stop or blocks with a
- * reason that is fed back to the agent. The goal auto-clears when met.
+ * The natural shape for this is a session-scoped **stop hook**: when the agent
+ * tries to stop, a separate tool-less LLM call judges the transcript against the
+ * condition and either lets it stop or blocks with a reason fed back to the agent,
+ * and the goal auto-clears when met.
  *
- * pi has no Stop hook, and no event that can veto the end of a run — the closest
- * are `agent_end` and `agent_settled`, neither of which accepts a blocking result.
+ * pi has no stop hook, and no event that can veto the end of a run — the closest
+ * are `agent_end` and `agent_settled`, and neither handler's return value is read.
  * So the block is expressed the way pi's own shipped example does it: evaluate on
  * `agent_end`, and on "not met" deliver a follow-up message, which resumes the
  * agent. The observable behaviour is the same; the mechanism is pi-native.
  *
- *   prompts.ts     evaluator + instruction prompts, transcribed from Claude Code
- *   judge.ts       the evaluator LLM call and verdict parsing
+ *   prompts.ts     evaluator + instruction prompts
+ *   judge.ts       the evaluator LLM call, model selection and verdict parsing
  *   transcript.ts  session branch -> budgeted transcript text (pure)
  *   state.ts       active goal, iteration count, session persistence
- *   render.ts      TUI panels and status text (pure)
+ *   render.ts      TUI panels and summary text (pure)
+ *   settings.ts    the `goal` settings block
+ *   model.ts       resolving `goal.model` the way pi resolves `--model`
  *   config.ts      limits and timeouts
  *
  * Cost note: every stop attempt while a goal is active costs one extra LLM call
- * carrying up to half the context window. That is inherent to how Claude Code
- * works, not an artifact of this port.
+ * carrying up to half the context window. Set `goal.model` to a small, fast model
+ * to keep that cheap, or the session model judges its own work.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
-import { evaluate } from "./judge.ts";
+import { evaluate, selectModel } from "./judge.ts";
 import { goalSetInstruction, notMetInstruction } from "./prompts.ts";
 import {
 	type GoalMessageDetails,
 	type GoalResultDetails,
 	renderGoalMessage,
 	renderGoalResult,
-	statusText,
 	summaryLine,
 } from "./render.ts";
-import { GoalState, restoreGoal } from "./state.ts";
+import { DEFAULTS, type GoalSettings, loadSettings } from "./settings.ts";
+import { goalElapsed, GoalState, restoreGoal, tokensSpent } from "./state.ts";
 
 const GOAL_MESSAGE = "goal";
 const GOAL_RESULT = "goal_result";
 
 export default function (pi: ExtensionAPI) {
 	const state = new GoalState(pi);
+	const agentDir = getAgentDir();
+	let settings: GoalSettings = { ...DEFAULTS };
 
 	pi.registerMessageRenderer<GoalMessageDetails>(GOAL_MESSAGE, (message, _options, theme) =>
 		message.details ? renderGoalMessage(message.details, theme) : undefined,
@@ -53,11 +56,29 @@ export default function (pi: ExtensionAPI) {
 		entry.data ? renderGoalResult(entry.data, theme) : undefined,
 	);
 
+	/**
+	 * Warn now if `goal.model` names nothing resolvable.
+	 *
+	 * Left to evaluation time, a typo turns every stop attempt into a failed
+	 * check: the goal never blocks, never caps and never clears, and the only
+	 * signal is a warning that arrives once per stop, long after the file was
+	 * edited. Resolution is a synchronous registry lookup, so it costs nothing
+	 * to answer at load. (Credentials still can't be checked here — that needs
+	 * an async call — so an auth failure remains an evaluation-time error.)
+	 */
+	const checkModel = (ctx: ExtensionContext) => {
+		if (!settings.model) return;
+		const selected = selectModel(ctx, settings.model);
+		if ("error" in selected) ctx.ui.notify(`goal.model is unusable: ${selected.error}`, "warning");
+	};
+
 	// A goal outlives the process: /resume must not silently drop it.
 	pi.on("session_start", (_event, ctx) => {
-		const restored = restoreGoal(ctx.sessionManager.getBranch());
-		state.adopt(restored);
-		ctx.ui.setStatus("goal", statusText(restored));
+		const { settings: loaded, warnings } = loadSettings(agentDir, ctx.cwd, ctx.isProjectTrusted());
+		settings = loaded;
+		for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		checkModel(ctx);
+		state.adopt(restoreGoal(ctx.sessionManager.getBranch()));
 	});
 
 	pi.registerCommand("goal", {
@@ -78,7 +99,6 @@ export default function (pi: ExtensionAPI) {
 
 			if (CONFIG.clearWords.has(condition.toLowerCase())) {
 				const previous = state.clear();
-				ctx.ui.setStatus("goal", undefined);
 				ctx.ui.notify(previous ? `Goal cleared: ${previous.condition}` : "No goal set", "info");
 				return;
 			}
@@ -91,8 +111,9 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const goal = state.set(condition);
-			ctx.ui.setStatus("goal", statusText(goal));
+			// Say so before the goal is set, not after the first stop attempt fails.
+			checkModel(ctx);
+			state.set(condition, ctx.getContextUsage()?.tokens ?? undefined);
 
 			// The content is what the model reads; the renderer is what the user sees.
 			pi.sendMessage<GoalMessageDetails>(
@@ -115,41 +136,49 @@ export default function (pi: ExtensionAPI) {
 		if (!state.beginEvaluation()) return;
 
 		try {
-			const verdict = await evaluate(ctx, goal.condition, ctx.signal);
-			const finish = (kind: GoalResultDetails["kind"], reason: string, iterations: number) => {
-				state.clear();
-				ctx.ui.setStatus("goal", undefined);
-				pi.appendEntry<GoalResultDetails>(GOAL_RESULT, {
-					kind,
-					condition: goal.condition,
-					reason,
-					iterations,
-					durationMs: Date.now() - goal.setAt,
-				});
-			};
+			const verdict = await evaluate(ctx, goal.condition, ctx.signal, settings.model);
 
-			if (verdict.kind === "met") {
-				finish("met", verdict.reason, goal.iterations);
-				return;
-			}
+			// The judge call takes tens of seconds, and the user can type through it.
+			// If they cleared this goal or set a different one meanwhile, the verdict
+			// answers a question nobody is asking any more — acting on it would let
+			// `/goal clear` fail to stop the loop, or feed the old goal's reason back
+			// under the new goal's name.
+			if (state.get() !== goal) return;
 
-			if (verdict.kind === "impossible") {
-				finish("impossible", verdict.reason, goal.iterations);
-				return;
-			}
+			// An interrupt is not a failed check. Say nothing and leave the goal
+			// standing: the next stop attempt evaluates it again.
+			if (verdict.kind === "aborted") return;
 
 			// An evaluator we cannot reach or parse must not trap the agent in a loop,
-			// and must not silently pass the goal either. Claude Code also treats this
-			// as a non-blocking error: the agent is allowed to stop.
+			// and must not silently pass the goal either, so it is a non-blocking
+			// error: the agent is allowed to stop, and the goal stays unresolved.
 			if (verdict.kind === "error") {
 				ctx.ui.notify(`Goal check failed, not blocking: ${verdict.reason}`, "warning");
 				return;
 			}
 
-			const iterations = state.recordMiss(verdict.reason);
-			ctx.ui.setStatus("goal", statusText(state.get()));
+			// The check that ends the goal counts as a turn, so a goal met on the first
+			// try reports "1 turn" rather than "0 turns".
+			const finish = (kind: GoalResultDetails["kind"], reason: string, iterations: number) => {
+				state.clear();
+				pi.appendEntry<GoalResultDetails>(GOAL_RESULT, {
+					kind,
+					condition: goal.condition,
+					reason,
+					iterations,
+					durationMs: goalElapsed(goal, Date.now()),
+					tokens: tokensSpent(goal, ctx),
+				});
+			};
 
-			if (CONFIG.maxIterations > 0 && iterations >= CONFIG.maxIterations) {
+			if (verdict.kind === "met" || verdict.kind === "impossible") {
+				finish(verdict.kind, verdict.reason, goal.iterations + 1);
+				return;
+			}
+
+			const iterations = state.recordMiss(verdict.reason);
+
+			if (settings.maxIterations > 0 && iterations >= settings.maxIterations) {
 				finish("capped", verdict.reason, iterations);
 				return;
 			}

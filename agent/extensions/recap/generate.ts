@@ -2,9 +2,9 @@
  * The recap generation call.
  *
  * A tool-less LLM call over a flattened transcript, mirroring how the goal
- * evaluator is built. Claude Code's recap generator (`Zin`) returns one of a
- * small set of outcomes; the same set is reproduced here so callers can phrase
- * Claude Code's exact messages ("Nothing to recap yet…", "Recap cancelled.").
+ * evaluator is built. It returns one of a small set of outcomes, so callers can
+ * phrase each precisely ("Nothing to recap yet…", "Recap cancelled.") rather
+ * than collapsing them all into one failure message.
  */
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
@@ -68,7 +68,7 @@ export async function generateRecap(ctx: ExtensionContext, options: GenerateOpti
 				env: auth.env,
 				signal: options.signal,
 				timeoutMs: options.timeoutMs ?? CONFIG.timeoutMs,
-				// Claude Code disables thinking for this call; "minimal" is the cheapest pi exposes.
+				// One short summary earns nothing from thinking; "minimal" is the cheapest pi exposes.
 				reasoning: "minimal",
 			},
 		);

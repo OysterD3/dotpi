@@ -1,7 +1,6 @@
 /**
- * The end-of-turn line. Claude Code renders "✻ Cooked for 1m 4s" — a past-tense
- * verb drawn per turn, dimmed, under a marker glyph. Same here, using the same
- * verb pool and the same duration format.
+ * The end-of-turn line: "✻ Cooked for 1m 4s" — a past-tense verb drawn per turn,
+ * dimmed, under a marker glyph.
  *
  * The line is display-only: a custom entry, which never enters the model's
  * context. How long a turn took is information for the person reading the
