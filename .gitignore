@@ -53,6 +53,12 @@ agent/extensions/cmux-session.ts
 agent/lsp/node_modules/
 agent/lsp/bin/
 
+# Nothing at the repo root is an npm package, but test harnesses and `dlx` tools
+# drop a node_modules/ here (a jiti cache, a temporary dependency farm). It is
+# never content — and this repo is public, so an accidental `git add -A` must
+# not sweep a dependency tree into it.
+node_modules/
+
 # Skills are symlinks into ~/.agents/skills (shared with other agents), not part of this config
 agent/skills/
 

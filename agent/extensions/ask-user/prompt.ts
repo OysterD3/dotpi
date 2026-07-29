@@ -63,6 +63,62 @@ export function isPrintable(data: string): boolean {
 	return true;
 }
 
+/**
+ * Bracketed-paste markers. The terminal wraps pasted text in these so an
+ * application can tell "the user pasted this" from "the user typed this", and
+ * pi's TUI re-wraps its own paste events the same way before handing them on.
+ */
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
+
+/**
+ * The text of a paste, or undefined if this input is not one.
+ *
+ * The wrapper begins with ESC, so a paste fails `isPrintable` — which is why
+ * pasting into an answer or a note used to do nothing at all. (pi-tui's
+ * `matchesKey` is precise enough not to read it as the Escape key, so the text
+ * was dropped rather than taken as "cancel"; this is checked by a test, because
+ * the difference between those two outcomes is the difference between a
+ * frustrating paste and a lost answer.)
+ *
+ * It is still matched before any key handling: the ordering is what guarantees
+ * a paste is never re-examined as a key sequence, and it costs one prefix
+ * check.
+ *
+ * The end marker is optional: a paste larger than the terminal's read buffer
+ * arrives in several chunks, and only the last carries it. Taking what is there
+ * means a long paste lands in pieces rather than being discarded.
+ */
+export function extractPaste(data: string): string | undefined {
+	if (!data.startsWith(PASTE_START)) return undefined;
+	const body = data.slice(PASTE_START.length);
+	const end = body.indexOf(PASTE_END);
+	return end === -1 ? body : body.slice(0, end);
+}
+
+/**
+ * Flatten pasted text into something a single-line field can hold.
+ *
+ * Answers and notes are one line each, so newlines and tabs become spaces
+ * rather than being dropped — losing the whitespace entirely would run the last
+ * word of one line into the first of the next. Other control characters are
+ * removed outright: they cannot be displayed and would corrupt the rendering.
+ */
+export function flattenPaste(text: string): string {
+	let out = "";
+	for (const char of text) {
+		const code = char.codePointAt(0) ?? 0;
+		if (code === 0x0a || code === 0x0d || code === 0x09) {
+			// Collapse a run of line breaks into the single space they separate with.
+			if (!out.endsWith(" ")) out += " ";
+			continue;
+		}
+		if (code < 0x20 || code === 0x7f) continue;
+		out += char;
+	}
+	return out;
+}
+
 export interface Window {
 	lines: string[];
 	/** Rows scrolled off the top / bottom, for the "… n more" markers. */
@@ -144,6 +200,23 @@ export class AskPrompt {
 		// While editing, almost everything is text: only Esc, Enter and Backspace
 		// are control. Arrow keys deliberately do NOT navigate mid-note, or a
 		// stray cursor key would abandon what was being typed.
+		// Matched before any key handling, so pasted bytes are never re-examined
+		// as a key sequence.
+		const pasted = extractPaste(data);
+		if (pasted !== undefined) {
+			const text = flattenPaste(pasted);
+			if (text.length > 0) {
+				// Pasting onto the free-text row starts the answer, exactly as typing
+				// on it does — otherwise a paste would need a keystroke first.
+				if (!session.editing && session.phase === "answering" && session.focusedRow.kind === "custom") {
+					session.editing = { target: "custom" };
+				}
+				if (session.editing) session.type(text);
+			}
+			this.requestRender();
+			return;
+		}
+
 		if (session.editing) {
 			if (matchesKey(data, "escape")) session.cancelEdit();
 			else if (matchesKey(data, "return") || matchesKey(data, "enter")) session.commitEdit();

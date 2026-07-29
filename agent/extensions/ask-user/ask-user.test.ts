@@ -27,7 +27,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { AskSession, CUSTOM_KEY, renderOutcomeText } = await import("./interaction.ts");
-const { AskPrompt, isPrintable, showAsk, windowBlocks, wrap } = await import("./prompt.ts");
+const { AskPrompt, extractPaste, flattenPaste, isPrintable, showAsk, windowBlocks, wrap } = await import("./prompt.ts");
 const { normalizeOptions, normalizeQuestions, registerAskUserTool } = await import("./tool.ts");
 const { ASK_CHANNEL, CONFIG } = await import("./config.ts");
 const { loadSettings } = await import("./index.ts");
@@ -383,6 +383,64 @@ checkTrue("printable text is printable", isPrintable("a"));
 checkTrue("escape sequences are not", !isPrintable("\x1b[A"));
 checkTrue("control bytes are not", !isPrintable("\r"));
 checkTrue("tab is not printable", !isPrintable("\t"));
+
+console.log("\n--- pasting into an answer or a note ---");
+// The terminal wraps a paste in bracketed-paste markers. Because that wrapper
+// starts with ESC, the input handler used to read a paste as an escape
+// sequence: isPrintable said no and nothing was inserted at all.
+const PASTE = (text: string) => `\x1b[200~${text}\x1b[201~`;
+checkTrue("a paste is not printable input", !isPrintable(PASTE("hello")));
+check("but its text is recovered", extractPaste(PASTE("hello world")), "hello world");
+check("ordinary typing is not a paste", extractPaste("a"), undefined);
+check("nor is an arrow key", extractPaste("\x1b[A"), undefined);
+// A paste bigger than the read buffer arrives in chunks; only the last carries
+// the end marker, so an unterminated chunk must still yield its text.
+check("an unterminated chunk still yields text", extractPaste("\x1b[200~partial"), "partial");
+check("text after the end marker is ignored", extractPaste(`\x1b[200~body\x1b[201~trailing`), "body");
+
+// Answers and notes are single-line, so a multi-line paste is flattened rather
+// than dropped — and the whitespace is kept as a space so words don't merge.
+check("newlines become spaces", flattenPaste("line one\nline two"), "line one line two");
+check("CRLF does not double the space", flattenPaste("a\r\nb"), "a b");
+check("a run of blank lines collapses", flattenPaste("a\n\n\nb"), "a b");
+check("tabs become spaces", flattenPaste("a\tb"), "a b");
+check("other control bytes are dropped", flattenPaste("a\x07b"), "ab");
+check("ordinary text is untouched", flattenPaste("hello world"), "hello world");
+check("unicode survives", flattenPaste("café — 日本語"), "café — 日本語");
+
+console.log("\n--- a paste reaches the answer and the note ---");
+{
+	// The reported bug end to end: paste did nothing on the free-text row.
+	const q = [{ question: "Which?", header: "H", options: OPTS, multiSelect: false }];
+	const d = drive(q);
+	d.send(KEY.down, KEY.down); // onto the free-text row
+	check("free-text row is focused", d.session.focusedRow.kind, "custom");
+	d.prompt.handleInput(PASTE("pasted answer"));
+	check("the paste lands in the answer", d.session.states[0]!.custom, "pasted answer");
+	// ...and starts the edit, exactly as typing on that row does.
+	check("and it is now being edited", d.session.editing?.target, "custom");
+	d.prompt.handleInput(PASTE(" plus more"));
+	check("a second paste appends", d.session.states[0]!.custom, "pasted answer plus more");
+}
+{
+	const q = [{ question: "Which?", header: "H", options: OPTS, multiSelect: false }];
+	const d = drive(q);
+	d.send(KEY.tab); // Tab opens a note on the focused option
+	check("a note is open", d.session.editing?.target, "note");
+	d.prompt.handleInput(PASTE("see line one\nand two"));
+	check("the paste lands in the note, flattened", Object.values(d.session.states[0]!.notes)[0], "see line one and two");
+}
+{
+	// The wrapper starts with ESC, and losing a half-written note to a paste is
+	// far worse than a paste that does nothing — so pin the behaviour rather
+	// than trusting that key matching stays precise.
+	const q = [{ question: "Which?", header: "H", options: OPTS, multiSelect: false }];
+	const d = drive(q);
+	d.send(KEY.tab);
+	d.prompt.handleInput(PASTE("kept"));
+	check("pasting does not cancel the edit", d.session.editing?.target, "note");
+	check("nor dismiss the prompt", d.result(), undefined);
+}
 
 console.log("\n--- windowBlocks ---");
 {

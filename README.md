@@ -956,6 +956,11 @@ answer to a question the first answer erases. You answer them in a single pass:
   isn't advice), and the reason belongs in that option's description. A model reaching for the
   common convention of writing "(Recommended)" into the label gets the same rendered row: the
   marker is lifted out of the label into the badge, so it never shows up as literal text,
+- **paste into either.** A terminal wraps pasted text in bracketed-paste markers, which begin with
+  ESC — so the free-text row and the note both used to ignore a paste entirely, since anything
+  starting with ESC reads as an escape sequence rather than typing. Pastes are now matched before
+  any key handling and flattened to one line, with newlines and tabs becoming spaces so words
+  don't run together,
 - **type your own answer** into the free-text row at the bottom — it shows *Type my own answer* until
   you start typing, so there is no "Other" to select first and no follow-up prompt. Enter finishes it,
   and on a single-select question that moves on too: finishing the text *is* answering,
