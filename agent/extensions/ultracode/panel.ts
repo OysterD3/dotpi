@@ -121,7 +121,10 @@ export function runLine(run: WorkflowRun, now: number): string {
 export function panelLines(active: WorkflowRun[], now: number): string[] | undefined {
 	if (active.length === 0) return undefined;
 	const lines = active.map((run) => runLine(run, now));
-	lines.push("  /workflows to inspect, pause, resume or cancel");
+	// Gesture first: the statusline truncates this line and does not wrap, so the
+	// key that needs no typing has to survive the clip. /workflows stays at the
+	// tail — it is still the discoverable and scriptable way in.
+	lines.push("  shift+↓ or /workflows to inspect, pause, resume or cancel");
 	return lines;
 }
 

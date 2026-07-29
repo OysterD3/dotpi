@@ -31,14 +31,16 @@
  *
  * The footer draws nothing at all while ask_user has a question up (announced the
  * same way, on ASK_CHANNEL): that question stands in for the editor, and this
- * gets out of its way for the duration.
+ * gets out of its way for the duration. Same for ultracode's /workflows control
+ * panel (WORKFLOW_PANEL_CHANNEL), which stands in for the editor too — and is
+ * showing those run lines in full while it is up.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
-import { ASK_CHANNEL, CONFIG, WORKFLOW_CHANNEL } from "./config.ts";
+import { ASK_CHANNEL, CONFIG, WORKFLOW_CHANNEL, WORKFLOW_PANEL_CHANNEL } from "./config.ts";
 import { makeGitDiffCounter } from "./git.ts";
 import {
 	formatCwd,
@@ -91,16 +93,26 @@ export default function (pi: ExtensionAPI) {
 				tui.requestRender();
 			});
 
+			// The /workflows panel takes the editor's place the way a question
+			// does, so this stands down for it too — including the run lines
+			// below, which the panel is showing in full anyway.
+			let panelOpen = false;
+			const unsubPanel = pi.events.on(WORKFLOW_PANEL_CHANNEL, (data) => {
+				panelOpen = (data as { active?: boolean } | undefined)?.active === true;
+				tui.requestRender();
+			});
+
 			return {
 				dispose() {
 					unsub();
 					unsubWorkflows();
 					unsubAsk();
+					unsubPanel();
 					usage?.dispose();
 				},
 				invalidate() {},
 				render(width: number): string[] {
-					if (asking) return [];
+					if (asking || panelOpen) return [];
 
 					// --- token totals from all assistant messages ---
 					let input = 0;

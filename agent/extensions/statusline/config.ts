@@ -31,6 +31,18 @@ export const WORKFLOW_CHANNEL = "ultracode:panel";
  */
 export const ASK_CHANNEL = "ask-user:asking";
 
+/**
+ * pi.events channel the ultracode extension announces its /workflows control
+ * panel on. Payload: `{ active: boolean }`.
+ *
+ * The panel takes the editor's place the way a question does, so this footer —
+ * including the run lines it appends from WORKFLOW_CHANNEL — stands down for
+ * it. Its own channel rather than ASK_CHANNEL: nothing is waiting on a human,
+ * so the subscribers that act on that must not fire. Declared here rather than
+ * imported, as above.
+ */
+export const WORKFLOW_PANEL_CHANNEL = "ultracode:panel-open";
+
 /** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
 export const BAR_FILL = "█";
 export const BAR_TRACK = "·";

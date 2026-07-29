@@ -11,12 +11,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { findKeyword, hasUltracodeKeyword } from "./keyword.ts";
 import { parseAgentTypes } from "./agents.ts";
 import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, type AgentOptions } from "./engine.ts";
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
-import { DEFAULT_LIMITS, resolveLimits } from "./config.ts";
+import { CONFIG, DEFAULT_LIMITS, resolveLimits } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
@@ -36,7 +37,7 @@ import {
 	type RunMeta,
 } from "./store.ts";
 import { resolveScript, safeStringify } from "./tool.ts";
-import { WorkflowsOverlay } from "./tui.ts";
+import { packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
@@ -644,7 +645,17 @@ console.log("\n--- panel ---");
 	const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 	const lines = panelLines([run], 65_000)!;
 	check("panel line carries id, phases, cost, elapsed", lines[0], "◆ wf-1 review  Find 1/2  1 running  $0.1234  1m05s");
-	check("panel hint line", lines.at(-1)?.includes("/workflows"), true);
+	// The hint sits directly under the prompt, where the gesture applies, so the
+	// gesture leads and the command follows. `includes("/workflows")` alone
+	// passed on any string that mentioned the command anywhere.
+	const hint = lines.at(-1)!;
+	check("panel hint leads with the gesture", hint.startsWith("  shift+↓ "), true);
+	check("panel hint still names the command", hint.includes("/workflows"), true);
+	// The statusline clips this line with truncateToWidth and never wraps it, so
+	// the gesture has to survive a narrow terminal. Growing the hint past this
+	// bound should be a deliberate act, not a side effect of a reworded verb.
+	check("hint stays inside a narrow footer", visibleWidth(hint) <= 60, true);
+	check("the gesture survives a clip", truncateToWidth(hint, 40).includes("shift+↓"), true);
 
 	// A replayed agent counts as done in every summary.
 	const resumed = newProgress("wf-2", "review");
@@ -679,6 +690,20 @@ console.log("\n--- panel ---");
 }
 
 // ------------------------------------------------------------------ new: store
+
+console.log("\n--- the panel-opening gesture is not the bare arrow ---");
+{
+	// index.ts registers shift+down, and pi's dispatcher consumes a matched key
+	// unconditionally — it never consults the handler's return value. So if
+	// shift+down ever matched a plain ↓, the editor would lose cursor-down and
+	// history-forward outright, which no other test here would notice.
+	check("plain ↓ (CSI) is not the gesture", matchesKey("\x1b[B", "shift+down"), false);
+	check("plain ↓ (SS3) is not the gesture", matchesKey("\x1bOB", "shift+down"), false);
+	// The two encodings a terminal actually sends for shift+↓; if neither
+	// matched, the key would be inert and the footer hint would be a lie.
+	check("CSI modifier form is the gesture", matchesKey("\x1b[1;2B", "shift+down"), true);
+	check("legacy shift form is the gesture", matchesKey("\x1b[b", "shift+down"), true);
+}
 
 console.log("\n--- store: ids ---");
 {
@@ -1089,7 +1114,7 @@ console.log("\n--- tool: where a script comes from ---");
 
 // -------------------------------------------------------------------- new: TUI
 
-console.log("\n--- tui: the control overlay ---");
+console.log("\n--- tui: the control panel ---");
 {
 	const dir = mkdtempSync(join(tmpdir(), "wf-tui-"));
 	try {
@@ -1111,75 +1136,290 @@ console.log("\n--- tui: the control overlay ---");
 			endedAt: 2000,
 			sessionFile: "/tmp/agent.jsonl",
 		});
+		appendJournalLine(dir, "wf-1", { kind: "phase", seq: 3, t: 0, title: "Check" });
+		appendJournalLine(dir, "wf-1", {
+			kind: "agent",
+			seq: 4,
+			t: 0,
+			index: 2,
+			key: "k2",
+			label: "checker",
+			phase: "Check",
+			model: "openai/gpt-5-mini",
+			status: "done",
+			startedAt: 0,
+			endedAt: 3000,
+			sessionFile: "/tmp/agent2.jsonl",
+		});
 
 		const notices: string[] = [];
-		const editor: string[] = [];
-		let closed = false;
+		// "open" distinguishes "never closed" from "closed with nothing to hand back".
+		let handed: PanelResult | undefined | "open" = "open";
 		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
-		const overlay = new WorkflowsOverlay(
+		const panel = new WorkflowsPanel(
 			{
 				agentDir: dir,
 				registry: new RunRegistry(),
 				notify: (message) => void notices.push(message),
-				setEditorText: (text) => void editor.push(text),
 				requestRender: () => {},
 				rows: () => 40,
 			},
 			theme,
-			() => void (closed = true),
+			(value) => void (handed = value),
 		);
 
-		const text = () => overlay.render(80).join("\n");
+		const text = () => panel.render(80).join("\n");
+
+		// --- framing: a rule above and below, hints where the footer would be.
+		{
+			const lines = panel.render(60);
+			const rule = "─".repeat(60);
+			check("the panel opens with a full-width rule", lines[0], rule);
+			const lower = lines.lastIndexOf(rule);
+			check("a second rule closes the body", lower > 1 && lower < lines.length - 1, true);
+			check("the hints sit under the lower rule", lines.slice(lower + 1).join("").includes("q close"), true);
+			check("nothing draws a box any more", lines.join("").includes("╭"), false);
+		}
+
 		check("the run list opens first", text().includes("✦ Workflows"), true);
 		check("both runs are listed, newest first", /wf-2 audit[\s\S]*wf-1 review/.test(text()), true);
 		check("the newest is selected", text().includes("▸ ✗ wf-2"), true);
 
-		overlay.handleInput("j");
-		check("j moves down", text().includes("▸ ✓ wf-1"), true);
+		panel.handleInput("\x1b[B");
+		check("↓ moves down", text().includes("▸ ✓ wf-1"), true);
 
-		overlay.handleInput("l");
+		panel.handleInput("\x1b[C");
 		check("→ opens the run", text().includes("Find  1/1"), true);
 		check("its agents are listed", text().includes("finder"), true);
 
-		overlay.handleInput("g");
+		panel.handleInput("g");
 		check("g shows the log pane", text().includes("no log lines"), true);
-		overlay.handleInput("g");
+		panel.handleInput("g");
 
-		overlay.handleInput("l");
-		check("→ opens the agent", text().includes("openai/gpt-5"), true);
+		panel.handleInput("\r");
+		check("enter opens the agent", text().includes("openai/gpt-5"), true);
 		check("agent detail shows elapsed", text().includes("2s"), true);
 		check("agent detail shows its transcript", text().includes("/tmp/agent.jsonl"), true);
 
-		overlay.handleInput("h");
+		// ↑↓ walks the agent list with the detail still open.
+		panel.handleInput("\x1b[B");
+		check("↓ in the detail view steps to the next agent", text().includes("/tmp/agent2.jsonl"), true);
+		panel.handleInput("\x1b[A");
+		check("↑ steps back", text().includes("/tmp/agent.jsonl"), true);
+
+		panel.handleInput("\x1b[D");
 		check("← goes back to the run", text().includes("Find  1/1"), true);
 
 		// A run this process is not driving cannot be paused or cancelled, and
 		// says so rather than pretending.
-		overlay.handleInput("p");
+		panel.handleInput("p");
 		check("pausing a foreign run is refused", text().includes("not running in this session"), true);
+		panel.handleInput("\x1b[B");
+		check("the next keystroke clears the status", text().includes("not running in this session"), false);
 
-		overlay.handleInput("R");
-		check("R writes a resume instruction", editor[0]?.includes('resumeFromRunId: "wf-1"'), true);
-		check("R explains itself", notices[0]?.includes("press enter to send it"), true);
-		check("R closes the overlay", closed, true);
+		panel.handleInput("R");
+		check("R hands out a resume instruction", (handed as PanelResult)?.editorText?.includes('resumeFromRunId: "wf-1"'), true);
+		check("R explains itself", (handed as PanelResult)?.notice?.includes("press enter to send it"), true);
+		check("R says nothing from inside the panel", notices, []);
 
-		overlay.dispose();
+		panel.dispose();
 
 		// An empty store still renders rather than throwing.
 		const empty = mkdtempSync(join(tmpdir(), "wf-tui-empty-"));
-		const blank = new WorkflowsOverlay(
-			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, setEditorText: () => {}, requestRender: () => {}, rows: () => 40 },
+		const blank = new WorkflowsPanel(
+			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
 			theme,
 			() => {},
 		);
 		check("an empty store renders", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
-		blank.handleInput("l");
+		blank.handleInput("\x1b[C");
 		check("drilling into nothing is a no-op", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
+		let escaped = false;
+		const trapped = new WorkflowsPanel(
+			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => void (escaped = true),
+		);
+		trapped.handleInput("\x03");
+		check("ctrl+c closes the panel", escaped, true);
+		trapped.dispose();
 		blank.dispose();
 		rmSync(empty, { recursive: true, force: true });
+
+		// --- width: a line wider than the terminal tears the TUI down, so this is
+		// checked at every width and in every view, with content that does not fit.
+		const wide = mkdtempSync(join(tmpdir(), "wf-tui-wide-"));
+		createRun(
+			wide,
+			{ runId: "wf-w", name: "レビュー🚀".repeat(6), status: "running", cwd: "/p", pid: process.pid, startedAt: 0, agentCount: 1, usage },
+			"s",
+		);
+		appendJournalLine(wide, "wf-w", { kind: "phase", seq: 1, t: 0, title: "レビュー".repeat(10) });
+		appendJournalLine(wide, "wf-w", {
+			kind: "agent",
+			seq: 2,
+			t: 0,
+			index: 1,
+			key: "k",
+			label: "a".repeat(300),
+			phase: "レビュー".repeat(10),
+			model: "openai/gpt-5",
+			status: "done",
+			startedAt: 0,
+			endedAt: 2000,
+			sessionFile: `/tmp/${"deep/".repeat(40)}agent.jsonl`,
+		});
+		{
+			const stops = [
+				{ label: "runs", keys: [] as string[] },
+				{ label: "run", keys: ["\x1b[C"] },
+				{ label: "run+logs", keys: ["g"] },
+				{ label: "agent", keys: ["g", "\x1b[C"] },
+			];
+			const wp = new WorkflowsPanel(
+				{ agentDir: wide, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+				theme,
+				() => {},
+			);
+			const tooWide: string[] = [];
+			for (const stop of stops) {
+				for (const key of stop.keys) wp.handleInput(key);
+				for (const width of [20, 30, 40, 80, 200]) {
+					for (const line of wp.render(width)) {
+						if (visibleWidth(line) > width) tooWide.push(`${stop.label}@${width}: ${visibleWidth(line)}`);
+					}
+				}
+			}
+			check("no rendered line ever exceeds the width it was given", tooWide, []);
+			wp.dispose();
+		}
+		rmSync(wide, { recursive: true, force: true });
+
+		// --- height, scroll markers and a caret that stays on screen.
+		const many = mkdtempSync(join(tmpdir(), "wf-tui-many-"));
+		for (let i = 0; i < 60; i++) {
+			createRun(
+				many,
+				{ runId: `wf-${i}`, name: `run ${i}`, status: "done", cwd: "/p", pid: process.pid, startedAt: i, endedAt: i + 5000, agentCount: 1, usage },
+				"s",
+			);
+		}
+		// The newest run has three phases: a heading per phase is exactly what the
+		// agent-list budget has to pay for.
+		let seq = 0;
+		for (const phase of ["Plan", "Implement", "Review"]) {
+			appendJournalLine(many, "wf-59", { kind: "phase", seq: ++seq, t: 0, title: phase });
+			for (let i = 0; i < 6; i++) {
+				appendJournalLine(many, "wf-59", {
+					kind: "agent",
+					seq: ++seq,
+					t: 0,
+					index: seq,
+					key: `k${seq}`,
+					label: `${phase} agent ${i}`,
+					phase,
+					model: "openai/gpt-5",
+					status: "done",
+					startedAt: 0,
+					endedAt: 1000,
+				});
+			}
+		}
+		{
+			const stops = [
+				{ label: "runs", keys: [] as string[] },
+				{ label: "run", keys: ["\x1b[C"] },
+				{ label: "run+logs", keys: ["g"] },
+				{ label: "agent", keys: ["g", "\x1b[C"] },
+			];
+			const over: string[] = [];
+			for (const rows of [24, 40]) {
+				const p = new WorkflowsPanel(
+					{ agentDir: many, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+					theme,
+					() => {},
+				);
+				for (const stop of stops) {
+					for (const key of stop.keys) p.handleInput(key);
+					const height = p.render(80).length;
+					if (height > rows - CONFIG.screenReserve) over.push(`${stop.label}@${rows}: ${height}`);
+				}
+				p.dispose();
+			}
+			check("the panel leaves the reserved transcript rows alone", over, []);
+		}
+		{
+			const p = new WorkflowsPanel(
+				{ agentDir: many, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+				theme,
+				() => {},
+			);
+			const shown = () => p.render(80);
+			const counted = () => {
+				const lines = shown();
+				return {
+					rows: lines.filter((line) => /wf-\d+ run/.test(line)).length,
+					before: Number(/↑ (\d+) more/.exec(lines.join("\n"))?.[1] ?? 0),
+					after: Number(/↓ (\d+) more/.exec(lines.join("\n"))?.[1] ?? 0),
+				};
+			};
+			const top = counted();
+			check("at the top only the downward marker shows", [top.before > 0, top.after > 0], [false, true]);
+			check("every run is either drawn or counted", top.rows + top.before + top.after, 60);
+
+			for (let i = 0; i < 30; i++) p.handleInput("\x1b[B");
+			const mid = counted();
+			check("mid-list both markers show", [mid.before > 0, mid.after > 0], [true, true]);
+			check("the window still accounts for every run", mid.rows + mid.before + mid.after, 60);
+
+			// The caret must survive every step of a long walk, not just the ends.
+			let lost = 0;
+			for (let i = 30; i < 59; i++) {
+				p.handleInput("\x1b[B");
+				if (!shown().join("").includes("▸")) lost++;
+			}
+			check("the caret stays on screen all the way down", lost, 0);
+			check("and lands on the oldest run", shown().join("\n").includes("▸ ✓ wf-0 "), true);
+			const bottom = counted();
+			check("at the bottom only the upward marker shows", [bottom.before > 0, bottom.after > 0], [true, false]);
+			p.dispose();
+		}
+		rmSync(many, { recursive: true, force: true });
+
+		// --- the caret follows its run, not its row: a new run pushes every row
+		// down, and `c` cancels whatever the caret is on.
+		{
+			const shifting = mkdtempSync(join(tmpdir(), "wf-tui-shift-"));
+			createRun(shifting, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
+			createRun(shifting, { runId: "wf-2", name: "two", status: "done", cwd: "/p", pid: process.pid, startedAt: 100, endedAt: 101, agentCount: 0, usage }, "s");
+			const p = new WorkflowsPanel(
+				{ agentDir: shifting, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+				theme,
+				() => {},
+			);
+			p.handleInput("\x1b[B");
+			check("the caret starts on wf-1", p.render(80).join("\n").includes("▸ ✓ wf-1"), true);
+			createRun(shifting, { runId: "wf-3", name: "three", status: "done", cwd: "/p", pid: process.pid, startedAt: 200, endedAt: 201, agentCount: 0, usage }, "s");
+			// The panel polls once a second; this is that tick, without the wait.
+			(p as unknown as { refresh(): void }).refresh();
+			check("a newer run does not steal the selection", p.render(80).join("\n").includes("▸ ✓ wf-1"), true);
+			p.dispose();
+			rmSync(shifting, { recursive: true, force: true });
+		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+}
+
+console.log("\n--- tui: hint packing ---");
+{
+	const parts = ["↑↓ select", "→ open", "p pause/resume", "c cancel", "R resume run", "q close"];
+	check("a wide terminal keeps them on one line", packHints(parts, 120).length, 1);
+	const narrow = packHints(parts, 30);
+	check("a narrow one wraps rather than cutting", narrow.length > 1, true);
+	check("and every line fits", narrow.every((line) => visibleWidth(line) <= 30), true);
+	check("no hint is dropped", parts.every((part) => narrow.join(" ").includes(part)), true);
+	check("nothing to say is one empty line", packHints([], 40), [""]);
 }
 
 // ------------------------------------------------------------- mode cadence
@@ -1238,6 +1478,67 @@ console.log("\n--- mode: reminder cadence ---");
 	const mode = new UltracodeMode();
 	mode.restore({ on: true, announced: true, turnsSinceReminder: 0, exitPending: true });
 	check("exitPending ignored while on", mode.reminderForTurn(), null);
+}
+
+// ------------------------------------- panel budget: headings vs agent rows
+
+console.log("\n--- a many-phase run still shows its agents ---");
+{
+	// The regression this guards: listBudget pre-paid one line for EVERY phase in
+	// the run, not just the phases the window draws. A 10-phase run on a 24-row
+	// terminal reserved 10 lines for headings, leaving room for a single agent
+	// with "↓ 39 more" under ten blank rows.
+	const dir = mkdtempSync(join(tmpdir(), "wf-budget-"));
+	createRun(dir, { runId: "wf-b", name: "many-phase", status: "running", cwd: "/p", pid: process.pid, startedAt: 0, agentCount: 40 } as never, "s");
+	for (let phase = 0; phase < 10; phase++) {
+		appendJournalLine(dir, "wf-b", { kind: "phase", seq: phase * 5, t: 0, title: `Phase ${phase}` });
+		for (let n = 0; n < 4; n++) {
+			appendJournalLine(dir, "wf-b", {
+				kind: "agent", seq: phase * 5 + n + 1, t: 0, index: phase * 4 + n,
+				key: `k${phase}-${n}`, label: `agent-${phase}-${n}`, phase: `Phase ${phase}`,
+				model: "m", status: "running", startedAt: 0,
+			});
+		}
+	}
+
+	const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+	const panel = new WorkflowsPanel(
+		{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+		theme,
+		() => {},
+	);
+	panel.handleInput("\r"); // open the run detail
+
+	const lines = panel.render(80);
+	const agentRows = lines.filter((line) => /agent-\d+-\d+/.test(line)).length;
+	// Before the fix this was 1. The exact number depends on how many headings the
+	// window spans, so assert the property that matters rather than a magic count.
+	check("more than one agent is visible", agentRows > 1, true);
+	check("and the panel is not mostly blank", lines.filter((l) => l.trim() === "").length < agentRows, true);
+	check("still within its height budget", lines.length <= 24, true);
+	check("and nothing overflows the width", lines.filter((l) => visibleWidth(l) > 80).length, 0);
+
+	rmSync(dir, { recursive: true, force: true });
+}
+
+console.log("\n--- a rendered line never contains a newline ---");
+{
+	// pi-tui appends each element to its buffer without clearing extra rows, so an
+	// embedded newline desynchronises the display — and the width clamp cannot see
+	// it. Agent errors carry Error.message verbatim, which is often multi-line.
+	const dir = mkdtempSync(join(tmpdir(), "wf-nl-"));
+	createRun(dir, { runId: "wf-n", name: "boom", status: "error", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 1, error: "spawn failed\n  at boot\n  at run" } as never, "s");
+	const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+	const panel = new WorkflowsPanel(
+		{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+		theme,
+		() => {},
+	);
+	panel.handleInput("\r");
+	const lines = panel.render(80);
+	check("no element carries a newline", lines.filter((l) => l.includes("\n")).length, 0);
+	check("nor overflows the width", lines.filter((l) => visibleWidth(l) > 80).length, 0);
+	rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

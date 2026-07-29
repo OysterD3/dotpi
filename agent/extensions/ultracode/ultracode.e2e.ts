@@ -29,7 +29,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
-const { PANEL_CHANNEL } = await import("./config.ts");
+const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL } = await import("./config.ts");
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -43,6 +43,7 @@ function check(label: string, got: unknown, want: unknown) {
 
 const events = new Map<string, Function>();
 const commands = new Map<string, { description?: string; handler: Function }>();
+const shortcuts = new Map<string, { description?: string; handler: Function }>();
 const tools = new Map<string, any>();
 const entryRenderers: string[] = [];
 const messageRenderers: string[] = [];
@@ -73,6 +74,7 @@ const pi = {
 		},
 	},
 	registerCommand: (name: string, options: any) => commands.set(name, options),
+	registerShortcut: (key: string, options: any) => shortcuts.set(key, options),
 	registerTool: (tool: any) => tools.set(tool.name, tool),
 	registerEntryRenderer: (type: string, _renderer: Function) => entryRenderers.push(type),
 	registerMessageRenderer: (type: string, _renderer: Function) => messageRenderers.push(type),
@@ -91,7 +93,18 @@ ultracode(pi as any);
 const theme = { fg: (_key: string, text: string) => text, bold: (text: string) => text };
 
 function makeCtx(
-	options: { model?: any; branch?: any[]; trusted?: boolean; registryModels?: any[]; idle?: boolean; dead?: () => boolean } = {},
+	options: {
+		model?: any;
+		branch?: any[];
+		trusted?: boolean;
+		registryModels?: any[];
+		idle?: boolean;
+		dead?: () => boolean;
+		/** Make ui.custom reject, to check the panel hands the footer back anyway. */
+		customRejects?: boolean;
+		/** Resolve the panel with a PanelResult, as `R` (resume) does. */
+		customResult?: { editorText: string; notice: string };
+	} = {},
 ) {
 	const notices: Array<{ message: string; type: string }> = [];
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
@@ -131,10 +144,11 @@ function makeCtx(
 			setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
 			setWidget: (key: string, lines: string[] | undefined) => widgets.push({ key, lines }),
 			setEditorText: (text: string) => editorText.push(text),
-			// The overlay is recorded and closed at once: this harness checks that
+			// The panel is recorded and closed at once: this harness checks that
 			// /workflows reaches for it, not how it draws.
-			custom: async (factory: any, options: any) => {
-				customs.push({ options });
+			custom: async (factory: any, mountOptions: any) => {
+				customs.push({ options: mountOptions });
+				if (options.customRejects) throw new Error("the component blew up");
 				const component = factory(
 					{ requestRender: () => {}, terminal: { rows: 40, columns: 120 } },
 					theme,
@@ -142,12 +156,20 @@ function makeCtx(
 					() => {},
 				);
 				component.dispose?.();
-				return undefined;
+				if (!options.customResult) return undefined;
+				// pi restores the editor's saved text before resolving this promise.
+				// Reproducing that here is the only way to prove a caller writes the
+				// panel's resume instruction *after* the await and not before.
+				editorText.push(RESTORED_PROMPT);
+				return options.customResult;
 			},
 		},
 	};
 	return { ctx, notices, statuses, widgets, customs, editorText };
 }
+
+/** What pi puts back in the prompt on the way out of an overlay:false component. */
+const RESTORED_PROMPT = "«pi restored what was typed»";
 
 const MODEL = { provider: "openai-codex", id: "gpt-5.4-mini", name: "mini", reasoning: true, contextWindow: 200_000 };
 const NO_REASONING = { provider: "x", id: "plain-model", name: "plain", reasoning: false, contextWindow: 32_000 };
@@ -179,6 +201,9 @@ check(
 );
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
+check("shift+down registered", shortcuts.has("shift+down"), true);
+// /hotkeys prints this string; an empty one would list the key with no meaning.
+check("the gesture describes itself", (shortcuts.get("shift+down")?.description?.length ?? 0) > 0, true);
 check("entry renderer", entryRenderers, ["ultracode"]);
 check("result message renderer", messageRenderers.includes("workflow-result"), true);
 for (const name of ["session_start", "input", "before_agent_start", "thinking_level_select", "session_shutdown"]) {
@@ -552,10 +577,29 @@ console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 	const immediate = await tool.execute("t7", { script }, undefined, undefined, ctx);
 	const runId = /id: (wf-[a-z0-9]+-\d+)/.exec(immediate.content[0].text)![1]!;
 
-	// Bare /workflows opens the control TUI as a centred overlay.
+	// Bare /workflows takes the editor's place, the way an ask_user question does.
+	busEmitted.length = 0;
 	await commands.get("workflows")!.handler("", ctx);
-	check("/workflows opens an overlay", customs.at(-1)?.options?.overlay, true);
-	check("overlay is centred and bounded", customs.at(-1)?.options?.overlayOptions?.anchor, "center");
+	check("/workflows takes the editor's place", customs.at(-1)?.options?.overlay, false);
+	check("and does not position itself as an overlay", customs.at(-1)?.options?.overlayOptions, undefined);
+	/** Both edges of the "the panel owns the bottom of the screen" announcement. */
+	const panelOpenEdges = () =>
+		busEmitted.filter((e) => e.channel === PANEL_OPEN_CHANNEL).map((e) => (e.data as { active: boolean }).active);
+	check("it announces itself so the footer stands down", panelOpenEdges(), [true, false]);
+
+	// A component that throws must still hand the footer back, or the statusline
+	// stays blank for the rest of the session.
+	{
+		const { ctx: broken } = makeCtx({ model: MODEL, customRejects: true });
+		busEmitted.length = 0;
+		const outcome = await commands
+			.get("workflows")!
+			.handler("", broken)
+			.then(() => "resolved")
+			.catch((error: Error) => error.message);
+		check("a panel that blows up propagates", outcome, "the component blew up");
+		check("and still hands the footer back", panelOpenEdges(), [true, false]);
+	}
 
 	await commands.get("workflows")!.handler("list", ctx);
 	check("/workflows list names the run", notices.at(-1)?.message.includes(`${runId} sleeper`), true);
@@ -585,6 +629,65 @@ console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 	check("show unknown", notices.at(-1)?.message, "No run wf-99. /workflows list shows every run.");
 	await commands.get("workflows")!.handler("bogus", ctx);
 	check("invalid /workflows argument", notices.at(-1)?.message, "Invalid argument: bogus. Usage: /workflows [list|show|pause|resume|cancel [id]]");
+}
+
+console.log("\n--- shift+down opens the same panel /workflows does ---");
+{
+	const gesture = shortcuts.get("shift+down")!.handler;
+
+	// The whole point of two doors: they must reach the identical code path.
+	const runDoor = async (open: (ctx: any) => Promise<unknown>) => {
+		const { ctx, customs, editorText } = makeCtx({ model: MODEL });
+		events.get("session_start")!({}, ctx);
+		busEmitted.length = 0;
+		await open(ctx);
+		return { customs, editorText, bus: busEmitted.map((entry) => entry.channel) };
+	};
+
+	const viaKey = await runDoor((ctx) => gesture(ctx));
+	check("the gesture mounts one panel", viaKey.customs.length, 1);
+	check("in the editor's slot, not as an overlay", viaKey.customs[0]?.options, { overlay: false });
+	check(
+		"and announces both edges so the footer stands down",
+		busEmitted.filter((e) => e.channel === PANEL_OPEN_CHANNEL).map((e) => (e.data as { active: boolean }).active),
+		[true, false],
+	);
+
+	const viaCommand = await runDoor((ctx) => commands.get("workflows")!.handler("", ctx));
+	check("both doors mount the same thing", viaKey.customs, viaCommand.customs);
+	check("and emit the same events in the same order", viaKey.bus, viaCommand.bus);
+
+	// `R` hands a resume instruction back as the result rather than writing it
+	// from inside the panel, because pi overwrites the prompt on the way out.
+	const resumed = { editorText: "resume wf-1", notice: "Resume instruction ready" };
+	for (const [label, open] of [
+		["the gesture", (ctx: any) => gesture(ctx)],
+		["/workflows", (ctx: any) => commands.get("workflows")!.handler("", ctx)],
+	] as const) {
+		const { ctx, editorText, notices } = makeCtx({ model: MODEL, customResult: resumed });
+		events.get("session_start")!({}, ctx);
+		await open(ctx);
+		check(`${label}: the resume instruction outlives pi's restore`, editorText, [RESTORED_PROMPT, resumed.editorText]);
+		check(`${label}: and says so`, notices.at(-1)?.message, resumed.notice);
+	}
+
+	// The shortcut's ctx is rebuilt per keypress and has none of the assertActive
+	// getters, so storing it as the panel's drawing context would silently retire
+	// the panel. Drawing must still go through the session's own context.
+	{
+		const { ctx: live } = makeCtx({ model: MODEL });
+		events.get("session_start")!({}, live);
+		let gone = false;
+		const { ctx: transient } = makeCtx({ model: MODEL, dead: () => gone });
+		await gesture(transient);
+		// The keypress context is now the kind pi throws from. Opening again draws
+		// the panel — through the session's context if the gesture kept its hands
+		// off uiCtx, through nothing at all if it did not.
+		gone = true;
+		busEmitted.length = 0;
+		await gesture(transient);
+		check("the gesture's context never becomes the drawing context", busEmitted.some((e) => e.channel === PANEL_CHANNEL), true);
+	}
 }
 
 console.log("\n--- workflow tool: the run store ---");
@@ -760,4 +863,77 @@ console.log("\n--- resumed session is told about interrupted runs ---");
 }
 
 rmSync(ROOT, { recursive: true, force: true });
+// ---------------------------------------------------------------- orphaning
+
+console.log("\n--- a question raised over the panel does not orphan it ---");
+{
+	// pi's non-overlay mount just clears the editor container and adds the new
+	// component, so an ask_user question drawn over the panel would leave it
+	// running with its footer stood down for the rest of the session.
+	const handlers = new Map<string, (data: unknown) => void>();
+	const emitted: { channel: string; data: unknown }[] = [];
+	let resolveCustom: ((v: unknown) => void) | undefined;
+	let disposed = false;
+
+	const pi = {
+		events: {
+			emit: (channel: string, data: unknown) => {
+				emitted.push({ channel, data });
+				handlers.get(channel)?.(data);
+			},
+			on: (channel: string, handler: (data: unknown) => void) => {
+				handlers.set(channel, handler);
+				return () => handlers.delete(channel);
+			},
+		},
+	} as never;
+
+	const ctx = {
+		ui: {
+			custom: (factory: (t: unknown, th: unknown, k: unknown, done: (v: unknown) => void) => { dispose(): void }) =>
+				new Promise((resolve) => {
+					resolveCustom = resolve;
+					const component = factory(
+						{ requestRender: () => {}, terminal: { rows: 40 } },
+						{ fg: (_k: string, t: string) => t, bold: (t: string) => t },
+						{},
+						(value: unknown) => { component.dispose(); resolve(value); },
+					);
+				}),
+		},
+	} as never;
+
+	const { showWorkflows } = await import("./tui.ts");
+	const { RunRegistry } = await import("./runs.ts");
+	const dir = mkdtempSync(join(tmpdir(), "wf-orphan-"));
+
+	const open = showWorkflows(pi, ctx, { agentDir: dir, registry: new RunRegistry(), notify: () => {} } as never);
+	check("the footer is told to stand down", emitted.at(-1), { channel: "ultracode:panel-open", data: { active: true } });
+
+	// The agent asks a question, drawing over the panel.
+	handlers.get("ask-user:asking")?.({ active: true, blocking: true });
+
+	// Race a timer: without the fix this promise never settles, and a test that
+	// hangs reports nothing at all. Fail fast and say what happened instead.
+	const HUNG = Symbol("hung");
+	// Deliberately NOT unref'd: an unref'd timer lets node exit before it fires,
+	// so a hung panel would end the suite silently instead of failing it. Cleared
+	// as soon as the race settles so it cannot hold the process open either.
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const result = await Promise.race([open, new Promise((r) => { timer = setTimeout(() => r(HUNG), 2000); })]);
+	if (timer) clearTimeout(timer);
+
+	check("the panel resolves rather than hanging", result === HUNG ? "HUNG — the panel was orphaned" : result, undefined);
+	if (result === HUNG) {
+		rmSync(dir, { recursive: true, force: true });
+	} else {
+	check("and hands the footer back", emitted.at(-1), { channel: "ultracode:panel-open", data: { active: false } });
+	// A closing announcement must NOT close it — only an opening one.
+	check("exactly one open and one close", emitted.filter((e) => e.channel === "ultracode:panel-open").length, 2);
+		rmSync(dir, { recursive: true, force: true });
+	}
+	void resolveCustom;
+	void disposed;
+}
+
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

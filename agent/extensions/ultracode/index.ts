@@ -7,7 +7,8 @@
  *      orchestrates headless pi subagents with agent()/parallel()/pipeline().
  *      Runs are background by default (runs.ts), durable on disk (store.ts +
  *      journal.ts), resumable by replaying a journal, pausable while in
- *      flight, and driven from a control TUI (tui.ts) that /workflows opens.
+ *      flight, and driven from a control TUI (tui.ts) that shift+↓ at the
+ *      prompt, or /workflows, opens.
  *      Agents can be forked a slice of this conversation (context.ts) and can
  *      borrow a standing subagent definition (agents.ts). Subagent models are
  *      routed in the triggering request itself ("ultracode, use sonnet for
@@ -53,7 +54,7 @@ import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
 import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir } from "./store.ts";
 import { registerWorkflowTool } from "./tool.ts";
-import { WorkflowsOverlay } from "./tui.ts";
+import { showWorkflows } from "./tui.ts";
 
 const BADGE = "✦ ultracode";
 
@@ -167,6 +168,29 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			uiCtx = undefined;
 			stopPanelTimer();
+		}
+	};
+
+	/**
+	 * The one way into the control panel. Two doors reach it — the /workflows
+	 * command and the shift+↓ gesture registered below — and the post-await
+	 * setEditorText is load-bearing, so neither may inline its own copy.
+	 */
+	const openPanel = async (ctx: ExtensionContext) => {
+		const result = await showWorkflows(pi, ctx, {
+			agentDir,
+			registry,
+			notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
+		});
+		drawPanel();
+		// The panel holds the editor's slot, and pi restores the editor's saved
+		// text before it resolves this promise — so a resume instruction written
+		// from inside the panel would be overwritten by whatever was in the
+		// prompt when it opened. It is handed back as the result and written
+		// here instead, after that restore.
+		if (result) {
+			ctx.ui.setEditorText(result.editorText);
+			ctx.ui.notify(result.notice, "info");
 		}
 	};
 
@@ -342,23 +366,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(statusReport(listRuns(agentDir), liveRuns(), Date.now()), "info");
 					return;
 				}
-				await ctx.ui.custom<undefined>(
-					(tui, theme, _keybindings, done) =>
-						new WorkflowsOverlay(
-							{
-								agentDir,
-								registry,
-								notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
-								setEditorText: (text) => ctx.ui.setEditorText(text),
-								requestRender: () => tui.requestRender(),
-								rows: () => tui.terminal.rows,
-							},
-							theme,
-							done,
-						),
-					{ overlay: true, overlayOptions: { anchor: "center", width: "80%", minWidth: 48, maxHeight: "80%" } },
-				);
-				drawPanel();
+				await openPanel(ctx);
 				return;
 			}
 
@@ -422,6 +430,25 @@ export default function (pi: ExtensionAPI) {
 
 			ctx.ui.notify(`Invalid argument: ${verb}. Usage: /workflows [list|show|pause|resume|cancel [id]]`, "error");
 		},
+	});
+
+	// The panel is advertised in the footer line directly under the prompt, so
+	// reaching it should not need a typed command. shift+↓ keeps the "go to the
+	// thing below" arrow while staying provably distinct from the bare ↓ the
+	// editor uses for cursor and history (\x1b[B / \x1bOB decode as "down";
+	// \x1b[1;2B / \x1b[b decode as "shift+down"), and nothing in pi binds it.
+	//
+	// The ctx is used and dropped, never stored as uiCtx: pi rebuilds it as a
+	// plain object literal on every keypress, with none of the assertActive
+	// getters that make a stale context throw — storing one would defeat the
+	// catch in drawPanel that retires a dead context.
+	//
+	// No open-panel guard is needed. The gesture hangs off the editor, and while
+	// the panel (or any other overlay:false component) holds the editor's slot
+	// the editor is not the focused component, so the key never arrives.
+	pi.registerShortcut("shift+down", {
+		description: "Open the workflow control panel",
+		handler: (ctx) => openPanel(ctx),
 	});
 
 	pi.registerCommand("ultracode", {

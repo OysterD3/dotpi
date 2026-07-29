@@ -23,12 +23,15 @@ cmux's own generated bridge rather than one of ours — see `agent/extensions/cm
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
 provider reports any. Below those, one line per active workflow run, while any is in flight —
 ultracode announces them on a `pi.events` channel and the footer appends them, so background
-fleets stay visible without opening `/workflows`. Nothing renders when nothing is running.
+fleets stay visible without opening the control panel. Nothing renders when nothing is running.
 
 The footer draws nothing at all while `ask_user` has a question up (announced the same way, on
 `ask-user:asking`): the question takes the editor's place, and the statusline stands down so it
 has the bottom of the screen to itself. ask-user cannot do that from its side — restoring a footer
 means restoring pi's *built-in* one, which would retire this statusline for the rest of the session.
+The workflow control panel takes the editor's place too and announces itself the same way, on
+`ultracode:panel-open`, so the run lines above stand down with the rest of the footer — the panel
+is showing them in full while it is up.
 
 | File | Role |
 | --- | --- |
@@ -503,13 +506,21 @@ before doing anything else; only those attach their spend to the tool result as 
 background run's tool result is long gone by the time money is spent, so its cost is reported in
 the result message and `/workflows` instead).
 
-**`/workflows` is a control panel, not a list.** It opens a centred overlay: runs on the left
-(every run the store knows about, including ones from previous sessions), then one run's phases and
-agents, then one agent. `↑↓` selects, `→`/`←` moves between levels, `p` pauses or resumes, `c`
-cancels, `g` toggles the log pane, `x` exports the selected agent's transcript to HTML, and `R`
-puts a resume instruction in the editor for you to send. Pausing is live: in-flight agents finish
-and new ones park at a gate, so a run can be held mid-fleet and let go again. The subcommands
-remain for scripting: `/workflows list|show <id>|pause <id>|resume <id>|cancel [id]`.
+**The workflow control panel is a panel, not a list.** `shift+↓` at the prompt opens it, and
+`/workflows` still does — the footer line advertising it sits directly under where you type, so
+reaching it should not need a typed command. It takes the editor's
+place at the bottom of the screen — framed by a rule above and below, key hints under the lower one — the same slot pi's own
+selector and an `ask_user` question use, and the statusline stands down for it, so the panel owns
+the prompt and the footer between them. Three levels: every run the store knows about (including
+ones from previous sessions), then one run's phases and agents, then one agent. `↑↓` selects,
+`→`/`←` moves between levels, `p` pauses or resumes, `c` cancels, `g` toggles the log pane, `x`
+exports the selected agent's transcript to HTML, `e` shows where its stderr was written, and `R`
+puts a resume instruction in the editor for you to send. The trade is ask_user's: while the panel
+is up there is no prompt to type into, so `q`, `ctrl+c` and Esc all close it (Esc a level at a
+time) — and Esc-to-interrupt is unavailable until you do, which a one-key gesture makes that bit
+easier to trip into. Pausing is live: in-flight agents finish and new ones park at a gate, so a run can be held
+mid-fleet and let go again. The subcommands remain for scripting:
+`/workflows list|show <id>|pause <id>|resume <id>|cancel [id]`.
 
 Runs still do not survive a session switch — shutdown cancels the fleet — but that is no longer
 silent. A run whose owning process is gone is reconciled to `interrupted` on next start, and the
@@ -571,7 +582,7 @@ the model to always await.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Triggers, `/ultracode`, `/workflows`, panel wiring, resume restore |
+| `index.ts` | Triggers, `/ultracode`, `/workflows`, the `shift+↓` gesture, panel wiring, resume restore |
 | `keyword.ts` | The keyword detector (pure) |
 | `reminders.ts` | The reminder texts |
 | `mode.ts` | The session-mode reminder cadence (pure) |

@@ -29,6 +29,24 @@ export const RUN_STORE_DIR = "workflow-runs";
  */
 export const PANEL_CHANNEL = "ultracode:panel";
 
+/**
+ * pi.events channel saying whether the /workflows panel is holding the editor's
+ * slot. Payload: `{ active: boolean }`.
+ *
+ * Separate from PANEL_CHANNEL, which carries the run lines a footer draws: this
+ * one says "the panel has taken the editor's place, stand down" — a different
+ * fact with a different lifetime. ultracode cannot blank the footer itself,
+ * because `ui.setFooter(undefined)` restores pi's *built-in* footer and would
+ * retire the statusline's for the rest of the session (the same trap written
+ * out in statusline/config.ts).
+ *
+ * Not ASK_CHANNEL either, though the presentation is the same: that channel's
+ * documented meaning is "a human decision is pending", so `elapsed` would stop
+ * the turn clock and cmux-notify would ring the pane bell — for a panel the
+ * user opened themselves, with the agent still working.
+ */
+export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
+
 export const CONFIG = {
 	/** Sparse "still on" reminder cadence, in user turns. */
 	turnsBetweenMaintenance: 10,
@@ -50,6 +68,14 @@ export const CONFIG = {
 	fileBudgetChars: 20_000,
 	/** Log lines kept in memory per run (the journal on disk keeps them all). */
 	memoryLogLines: 200,
+	/**
+	 * Rows of transcript kept above the /workflows panel while it holds the
+	 * editor slot. Six rather than ask-user's eight: a panel is opened on
+	 * purpose and may claim a little more of the screen than an interruption.
+	 */
+	screenReserve: 6,
+	/** Row count assumed when the host cannot report one (tests, odd terminals). */
+	assumedRows: 24,
 } as const;
 
 /** The subset of CONFIG a workflow run reads, after settings are applied. */
