@@ -130,6 +130,57 @@ money unattended; set it to `0` to let a goal run until you interrupt it.
 | `model.ts` | Resolving `goal.model` the way pi resolves `--model` |
 | `config.ts` | Limits and timeouts |
 
+**`agent/extensions/review/`** — adds `/simplify` and `/code-review`: structured review of the
+current diff, at a depth you choose.
+
+```
+/simplify                     # 4 cleanup angles, then apply the fixes
+/code-review                  # correctness bugs at medium effort
+/code-review max --fix        # widest coverage, then fix what survives
+/code-review high src/parser.ts
+```
+
+They are separate commands rather than one with a flag, because a reviewer asked for both trades
+them against each other and a style nit should never displace a real defect. `/simplify` judges
+quality only — reuse, simplification, efficiency, altitude. `/code-review` hunts for bugs.
+
+Neither does the reviewing itself: each assembles a prompt and injects it as a turn, and the agent
+works it with the tools it has. That is what lets one command scale from a single inline pass to a
+verified fleet. **Fan-out is detected, not assumed** — `workflow` (from `ultracode`) orchestrates a
+fleet with a real verify stage and is preferred; `task` (from `subagents`) spawns them a call at a
+time; with neither active the review still runs inline. The inline variants are told to *say* they
+ran inline, so a single pass is never written up as though the fleet had run.
+
+Effort scales four things. Angles: `low` gets a line-by-line scan, `max` adds the removed-behavior
+audit, cross-file tracing, language pitfalls and wrapper correctness, plus the cleanup and
+conventions angles. Findings cap: 5 at `low` up to 15 at `max`, which forces ranking rather than a
+dump. Uncertainty: `low`/`medium` report only what they can confirm, `high` and above may surface
+uncertain findings and must label them — a missed bug costs more up there than a false positive.
+And `max` alone adds a **sweep**: a final pass looking only for what none of the angles would have
+named, since a checklist finds what it lists.
+
+From `high` on, the finder fleet is sized to the diff (one per 150 changed lines, 2–8) — counting
+committed work, the working tree, *and untracked files*, which appear in no diff at all and would
+otherwise make a branch of all-new files measure as empty. However many finders there are, every
+angle is assigned to one: a fleet smaller than the angle list splits it rather than dropping the
+remainder.
+
+The verify pass is what separates this from a list of guesses: each candidate goes to a reviewer
+told to *refute* it, under a rubric that treats realistic-but-untriggered states (races, cold
+caches, falsy-zero, boundary off-by-ones) as **plausible** rather than speculative. Without that
+bias verifiers refute nearly everything and the review returns a clean bill of health it hasn't
+earned.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | The two commands, fan-out detection, prompt injection |
+| `angles.ts` | **The review lenses** — cleanup and correctness (pure) |
+| `phases.ts` | Diff gathering, verdict rubric, output contract (pure) |
+| `prompt.ts` | Assembling a prompt per command / level / fan-out (pure) |
+| `args.ts` | Parsing `[level] [--fix] [<target>]` (pure) |
+| `diff.ts` | Sizing the diff so the fleet matches the work |
+| `config.ts` | Levels, caps, finder bounds |
+
 **`agent/extensions/rewind/`** — adds `/rewind` (aliases `/checkpoint`, `/undo`). Pick an earlier
 prompt, then choose what to restore:
 
