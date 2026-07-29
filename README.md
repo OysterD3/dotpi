@@ -1034,6 +1034,15 @@ Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions
 so tracking it would churn and fight `git pull`. The tracked `agent/settings.example.json` is the
 template; copy it per machine. The shared permissions policy lives in that template.
 
+**Composing prompts in nvim.** pi already ships this — press **Ctrl+X** in the prompt and it hands
+the current text to an external editor in a temp `prompt.md`, suspends its own TUI while the editor
+owns the terminal, and reads the file back when the editor exits. It picks the editor from
+`externalEditor` in settings.json, falling back to `$VISUAL`, then `$EDITOR`, then `nano`. The
+template sets it to `nvim` explicitly rather than leaning on `$EDITOR`, which on this machine points
+at plain `vim` — and changing `$EDITOR` to suit pi would change it for git, crontab and everything
+else too. Keep it as strict JSON: pi parses settings with `JSON.parse`, so a `//` comment silently
+breaks the whole file.
+
 ## Install on a new machine
 
 ```sh
