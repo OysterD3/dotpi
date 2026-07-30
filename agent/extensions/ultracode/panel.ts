@@ -76,6 +76,23 @@ export function startedLabel(startedAt: number, now: number): string {
 	return `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
 }
 
+/**
+ * The runs `/workflows` will show: this session's, newest first.
+ *
+ * Everything the store holds is still on disk and still resumable by id — the
+ * model is told about interrupted ones by name, and `show <id>` reads any of
+ * them. This is a browsing filter, so the list is about the work in front of
+ * you rather than fifty runs deep in history.
+ *
+ * `isLive` keeps a run this process is driving whatever its recorded session
+ * id says. A session with no id (ephemeral, `--no-session`) would otherwise
+ * watch its own fleet vanish from the panel the moment it started, since a run
+ * with no sessionId can never match one.
+ */
+export function sessionRuns(metas: RunMeta[], sessionId: string | undefined, isLive: (runId: string) => boolean): RunMeta[] {
+	return metas.filter((meta) => isLive(meta.runId) || (sessionId !== undefined && meta.sessionId === sessionId));
+}
+
 export function formatElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
@@ -163,7 +180,7 @@ export function panelLines(active: WorkflowRun[], now: number): string[] | undef
  * name. The name still leads, which is the part you read.
  */
 export function statusReport(metas: RunMeta[], live: Map<string, WorkflowRun>, now: number): string {
-	if (metas.length === 0) return "No workflow runs recorded.";
+	if (metas.length === 0) return "No workflow runs in this session.";
 	return metas
 		.map((meta) => {
 			const run = live.get(meta.runId);

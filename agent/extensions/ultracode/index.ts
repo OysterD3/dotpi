@@ -48,7 +48,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
-import { interruptedNotice, panelLines, progressFromJournal, startedLabel, statusReport } from "./panel.ts";
+import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
@@ -132,6 +132,12 @@ export default function (pi: ExtensionAPI) {
 	let interruptedNote: string | undefined;
 	/** The level ultracode actually applied ("xhigh", or "max" when clamped up). */
 	let appliedLevel: string | undefined;
+	/**
+	 * The current pi session, so /workflows can list this session's runs and not
+	 * fifty of history. Kept in a closure because getArgumentCompletions is
+	 * handed only a prefix — there is no ctx to read it from at that point.
+	 */
+	let sessionId: string | undefined;
 
 	// ------------------------------------------------------------ status panel
 
@@ -180,6 +186,7 @@ export default function (pi: ExtensionAPI) {
 		const result = await showWorkflows(pi, ctx, {
 			agentDir,
 			registry,
+			sessionId,
 			notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
 		});
 		drawPanel();
@@ -213,6 +220,11 @@ export default function (pi: ExtensionAPI) {
 		settings = loadSettings(agentDir);
 		uiCtx = ctx;
 		keywordThisTurn = false;
+		try {
+			sessionId = ctx.sessionManager.getSessionId() ?? undefined;
+		} catch {
+			sessionId = undefined;
+		}
 		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
 		previousLevel = restoreFromBranch(mode, branch);
 		appliedLevel = mode.isOn() ? pi.getThinkingLevel() : undefined;
@@ -359,6 +371,9 @@ export default function (pi: ExtensionAPI) {
 	/** Live runs keyed by id, so the report can mix memory with the store. */
 	const liveRuns = () => new Map(registry.all().map((run) => [run.progress.runId, run]));
 
+	/** The runs the browsing surfaces show: this session's, newest first. */
+	const listedRuns = () => sessionRuns(listRuns(agentDir), sessionId, (runId) => registry.get(runId) !== undefined);
+
 	pi.registerCommand("workflows", {
 		description: "Open the workflow control panel, or act on a run (/workflows pause|resume|cancel|show <id>)",
 		// The completion shows the run's NAME and inserts its id: the subcommands
@@ -367,7 +382,7 @@ export default function (pi: ExtensionAPI) {
 		// completes to something the handler can resolve.
 		getArgumentCompletions: (prefix: string) => {
 			const verbs = ["list", "show", "pause", "resume", "cancel"];
-			const runs = listRuns(agentDir);
+			const runs = listedRuns();
 			// Labelled with the start time as well as the name, for the same reason
 			// the panel rows carry it: five runs called `code-review` otherwise
 			// produce five identical entries that each insert a different id, and
@@ -392,7 +407,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (!verb) {
 				if (!ctx.hasUI) {
-					ctx.ui.notify(statusReport(listRuns(agentDir), liveRuns(), Date.now()), "info");
+					ctx.ui.notify(statusReport(listedRuns(), liveRuns(), Date.now()), "info");
 					return;
 				}
 				await openPanel(ctx);
@@ -400,7 +415,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (verb === "list") {
-				ctx.ui.notify(statusReport(listRuns(agentDir), liveRuns(), Date.now()), "info");
+				ctx.ui.notify(statusReport(listedRuns(), liveRuns(), Date.now()), "info");
 				return;
 			}
 
@@ -438,11 +453,16 @@ export default function (pi: ExtensionAPI) {
 				}
 				const meta = readMeta(agentDir, target);
 				if (!meta) {
-					ctx.ui.notify(`No run ${target}. /workflows list shows every run.`, "error");
+					ctx.ui.notify(`No run ${target}. /workflows list shows this session's runs.`, "error");
 					return;
 				}
 				const live = registry.get(target);
 				const progress = live?.progress ?? progressFromJournal(meta, readJournalLines(agentDir, target));
+				// `show` reads any id, including a run from another session that the
+				// list no longer offers — you had to type the id to get here, and it
+				// is how an interrupted run is inspected before being resumed. Said
+				// out loud, because the run will not be in the list you just read.
+				const foreign = !live && sessionId !== undefined && meta.sessionId !== sessionId;
 				const lines = [
 					// Name first — you already know the id, you typed it — with the id
 					// kept at the end because this report is where you copy it from.
@@ -450,6 +470,7 @@ export default function (pi: ExtensionAPI) {
 					// No cost, here or anywhere else under /workflows. The per-run
 					// figure lives in /usage, which reports one row per run.
 					`${meta.agentCount} agent(s), ${progress.replayedCount} replayed, ${meta.usage.turns} turns`,
+					...(foreign ? ["(from another session — /workflows lists only this one)"] : []),
 					`store: ${runDir(agentDir, target)}`,
 					"",
 					...allAgents(progress).map(

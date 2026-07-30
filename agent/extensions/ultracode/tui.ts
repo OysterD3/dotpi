@@ -33,7 +33,7 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
 import type { AgentRow, RunProgress, RunRegistry } from "./runs.ts";
-import { formatElapsed, progressFromJournal, startedLabel, statusMark } from "./panel.ts";
+import { formatElapsed, progressFromJournal, sessionRuns, startedLabel, statusMark } from "./panel.ts";
 import { agentErrorPath, listRuns, readJournalLines, runDir, type RunMeta } from "./store.ts";
 import { piInvocation } from "./spawn.ts";
 
@@ -43,6 +43,8 @@ export interface TuiHost {
 	notify: (message: string, level?: "info" | "warning" | "error") => void;
 	requestRender: () => void;
 	rows: () => number;
+	/** The pi session id, so the list can be scoped to this session's runs. */
+	sessionId?: string;
 	/**
 	 * Called when the panel works out it no longer holds the editor slot.
 	 *
@@ -254,7 +256,7 @@ export class WorkflowsPanel {
 	 * whatever the caret is on.
 	 */
 	private refresh(): void {
-		this.metas = listRuns(this.host.agentDir);
+		this.metas = sessionRuns(listRuns(this.host.agentDir), this.host.sessionId, (runId) => this.host.registry.get(runId) !== undefined);
 		const found = this.selectedRunId ? this.metas.findIndex((meta) => meta.runId === this.selectedRunId) : -1;
 		this.runIndex = found >= 0 ? found : Math.min(this.runIndex, Math.max(0, this.metas.length - 1));
 		this.selectedRunId = this.metas[this.runIndex]?.runId;
@@ -555,7 +557,7 @@ export class WorkflowsPanel {
 
 	private runsBody(budget: number): string[] {
 		const theme = this.theme;
-		if (this.metas.length === 0) return [theme.fg("muted", "No workflow runs recorded yet.")];
+		if (this.metas.length === 0) return [theme.fg("muted", "No workflow runs in this session yet.")];
 		const window = this.windowFor(this.runIndex, this.metas.length, budget);
 		const lines: string[] = [];
 		if (window.before > 0) lines.push(theme.fg("muted", `  ↑ ${window.before} more`));

@@ -274,6 +274,7 @@ interface RunEnv {
 	modelId?: string;
 	branch: BranchEntry[];
 	parentSession?: string;
+	sessionId?: string;
 }
 
 function snapshotEnv(ctx: ExtensionContext, settings: UltracodeSettings): RunEnv {
@@ -288,9 +289,11 @@ function snapshotEnv(ctx: ExtensionContext, settings: UltracodeSettings): RunEnv
 	// so an ephemeral or already-replaced session degrades instead of throwing.
 	let branch: BranchEntry[] = [];
 	let parentSession: string | undefined;
+	let sessionId: string | undefined;
 	try {
 		branch = (ctx.sessionManager.getBranch() ?? []) as BranchEntry[];
 		parentSession = ctx.sessionManager.getSessionFile() ?? undefined;
+		sessionId = ctx.sessionManager.getSessionId() ?? undefined;
 	} catch {
 		/* no session to fork from */
 	}
@@ -302,6 +305,7 @@ function snapshotEnv(ctx: ExtensionContext, settings: UltracodeSettings): RunEnv
 		modelId: ctx.model?.id,
 		branch,
 		parentSession,
+		sessionId,
 	};
 }
 
@@ -335,6 +339,7 @@ function startRun(
 		status: "running",
 		cwd: env.cwd,
 		pid: process.pid,
+		sessionId: env.sessionId,
 		startedAt: Date.now(),
 		agentCount: 0,
 		usage: progress.usage,

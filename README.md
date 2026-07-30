@@ -565,8 +565,8 @@ time money is spent, so its spend arrives on the `usage:spend` channel instead).
 reaching it should not need a typed command. It takes the editor's
 place at the bottom of the screen — framed by a rule above and below, key hints under the lower one — the same slot pi's own
 selector and an `ask_user` question use, and the statusline stands down for it, so the panel owns
-the prompt and the footer between them. Three levels: every run the store knows about (including
-ones from previous sessions), then one run's phases and agents, then one agent. `↑↓` selects,
+the prompt and the footer between them. Three levels: this session's runs, then one run's phases
+and agents, then one agent. `↑↓` selects,
 `→`/`←` moves between levels, `p` pauses or resumes, `c` cancels, `g` toggles the log pane, `x`
 exports the selected agent's transcript to HTML, `e` shows where its stderr was written, and `R`
 puts a resume instruction in the editor for you to send. The trade is ask_user's: while the panel
@@ -619,6 +619,14 @@ would bill every synchronous workflow twice. The exception is a run that fails o
 run announces its total on the way out. The two doors stay exclusive; which one opens depends on
 how the run ended. Announcements also stop the moment a run is aborted, so children still dying
 after `/new` cannot bill the next session for tokens it never spent.
+
+**The list is scoped to this session.** `/workflows` and its `list` show the runs this session
+started, not fifty deep of history — the store keeps `retainRuns` of them and every one is still on
+disk. Runs from another session stay reachable where you name them explicitly: `show <id>` reads
+any of them and says which session it came from, and the interrupted-run notice below still hands
+the model the ids it needs to resume. A run is matched by the session id recorded in its
+`run.json`; a run this process is *driving* is always listed whatever that says, so an ephemeral
+session (`--no-session`, which has no id to match) still sees its own fleet.
 
 Runs still do not survive a session switch — shutdown cancels the fleet — but that is no longer
 silent. A run whose owning process is gone is reconciled to `interrupted` on next start, and the

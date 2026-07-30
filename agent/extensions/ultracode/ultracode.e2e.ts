@@ -30,6 +30,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
 const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL } = await import("./config.ts");
+const { createRun } = await import("./store.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
 type SpendEvent = { source: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
@@ -107,6 +108,8 @@ function makeCtx(
 		customRejects?: boolean;
 		/** Resolve the panel with a PanelResult, as `R` (resume) does. */
 		customResult?: { editorText: string; notice: string };
+		/** Pretend to be a different pi session. */
+		sessionId?: string;
 	} = {},
 ) {
 	const notices: Array<{ message: string; type: string }> = [];
@@ -140,7 +143,14 @@ function makeCtx(
 			live();
 			return options.trusted ?? true;
 		},
-		sessionManager: { getBranch: () => options.branch ?? [], getSessionFile: () => join(CWD, "session.jsonl") },
+		sessionManager: {
+			getBranch: () => options.branch ?? [],
+			getSessionFile: () => join(CWD, "session.jsonl"),
+			// Real: /workflows scopes its list to this, so a fake without it made
+			// the filter fall through to its ephemeral-session branch and the
+			// scoping assertions pass without exercising the comparison.
+			getSessionId: () => options.sessionId ?? E2E_SESSION,
+		},
 		modelRegistry: { getAll: () => options.registryModels ?? [] },
 		ui: {
 			notify: (message: string, type = "info") => notices.push({ message, type }),
@@ -172,6 +182,9 @@ function makeCtx(
 }
 
 /** What pi puts back in the prompt on the way out of an overlay:false component. */
+/** The session id every makeCtx() reports unless told otherwise. */
+const E2E_SESSION = "e2e-session";
+
 const RESTORED_PROMPT = "«pi restored what was typed»";
 
 const MODEL = { provider: "openai-codex", id: "gpt-5.4-mini", name: "mini", reasoning: true, contextWindow: 200_000 };
@@ -713,6 +726,25 @@ console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 		check("and still hands the footer back", panelOpenEdges(), [true, false]);
 	}
 
+	// The run this session started is listed; one from another session is not,
+	// even though it is in the same store. `show <id>` still reads it, because
+	// you had to type the id and that is how an interrupted run gets inspected
+	// before being resumed.
+	{
+		const foreign = "wf-fromelsewhere-1";
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
+		createRun(
+			AGENT,
+			{ runId: foreign, name: "someone-elses", status: "done", cwd: CWD, pid: 1, startedAt: 0, endedAt: 1, agentCount: 0, usage, sessionId: "another" },
+			"s",
+		);
+		await commands.get("workflows")!.handler("list", ctx);
+		check("another session's run is not listed", notices.at(-1)?.message.includes("someone-elses"), false);
+		await commands.get("workflows")!.handler(`show ${foreign}`, ctx);
+		check("but show still reads it", notices.at(-1)?.message.includes("someone-elses"), true);
+		check("and says where it came from", notices.at(-1)?.message.includes("from another session"), true);
+	}
+
 	await commands.get("workflows")!.handler("list", ctx);
 	// Name first — it is the readable part — with the id kept at the end, since
 	// this report is where you copy the id the subcommands below want.
@@ -761,7 +793,7 @@ console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 	await commands.get("workflows")!.handler("cancel wf-99", ctx);
 	check("cancel unknown", notices.at(-1)?.message, "wf-99 is not running in this session. /workflows list shows every run.");
 	await commands.get("workflows")!.handler("show wf-99", ctx);
-	check("show unknown", notices.at(-1)?.message, "No run wf-99. /workflows list shows every run.");
+	check("show unknown", notices.at(-1)?.message, "No run wf-99. /workflows list shows this session's runs.");
 	await commands.get("workflows")!.handler("bogus", ctx);
 	check("invalid /workflows argument", notices.at(-1)?.message, "Invalid argument: bogus. Usage: /workflows [list|show|pause|resume|cancel [id]]");
 }

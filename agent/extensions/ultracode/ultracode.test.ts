@@ -20,7 +20,7 @@ import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_LIMITS, resolveLimits } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
-import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, startedLabel, statusReport } from "./panel.ts";
+import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
 import { newProgress, PauseGate, RunRegistry, type AgentRow, type WorkflowRun } from "./runs.ts";
 import { addUsage, applyTurn, buildArgs, emptyUsage, stderrDetail, type ReportedUsage } from "./spawn.ts";
 import {
@@ -40,6 +40,9 @@ import { resolveScript, safeStringify } from "./tool.ts";
 import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
+
+/** The session the panel fixtures below belong to. */
+const SESSION = "sess-under-test";
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -692,7 +695,7 @@ console.log("\n--- panel ---");
 	check("and quotes no price", settled.includes("$"), false);
 	check("and keeps the id at the end, where it is addressable", settled.endsWith("[wf-1]"), true);
 	check("the id is nowhere else in the line", settled.split("wf-1").length - 1, 1);
-	check("status report empty message", statusReport([], new Map(), 0), "No workflow runs recorded.");
+	check("status report empty message", statusReport([], new Map(), 0), "No workflow runs in this session.");
 
 	// Built from local-time components on both sides, so the assertion holds in
 	// any timezone — the thing under test is the same-day/other-day split.
@@ -1164,8 +1167,8 @@ console.log("\n--- tui: the control panel ---");
 	const dir = mkdtempSync(join(tmpdir(), "wf-tui-"));
 	try {
 		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.25, totalTokens: 0, turns: 2 };
-		createRun(dir, { runId: "wf-1", name: "review", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 5000, agentCount: 2, usage }, "s");
-		createRun(dir, { runId: "wf-2", name: "audit", status: "error", cwd: "/p", pid: process.pid, startedAt: 100, endedAt: 200, agentCount: 1, usage, error: "boom" }, "s");
+		createRun(dir, { runId: "wf-1", name: "review", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 5000, agentCount: 2, usage }, "s");
+		createRun(dir, { runId: "wf-2", name: "audit", status: "error", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 100, endedAt: 200, agentCount: 1, usage, error: "boom" }, "s");
 		appendJournalLine(dir, "wf-1", { kind: "phase", seq: 1, t: 0, title: "Find" });
 		appendJournalLine(dir, "wf-1", {
 			kind: "agent",
@@ -1205,6 +1208,7 @@ console.log("\n--- tui: the control panel ---");
 			{
 				agentDir: dir,
 				registry: new RunRegistry(),
+				sessionId: SESSION,
 				notify: (message) => void notices.push(message),
 				requestRender: () => {},
 				rows: () => 40,
@@ -1288,7 +1292,7 @@ console.log("\n--- tui: the control panel ---");
 			} as WorkflowRun);
 
 			const watching = new WorkflowsPanel(
-				{ agentDir: dir, registry: live, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+				{ agentDir: dir, registry: live, sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
 				theme,
 				() => {},
 			);
@@ -1312,16 +1316,16 @@ console.log("\n--- tui: the control panel ---");
 		// An empty store still renders rather than throwing.
 		const empty = mkdtempSync(join(tmpdir(), "wf-tui-empty-"));
 		const blank = new WorkflowsPanel(
-			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			{ agentDir: empty, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
 			theme,
 			() => {},
 		);
-		check("an empty store renders", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
+		check("an empty store renders", blank.render(80).join("\n").includes("No workflow runs in this session yet."), true);
 		blank.handleInput("\x1b[C");
-		check("drilling into nothing is a no-op", blank.render(80).join("\n").includes("No workflow runs recorded yet."), true);
+		check("drilling into nothing is a no-op", blank.render(80).join("\n").includes("No workflow runs in this session yet."), true);
 		let escaped = false;
 		const trapped = new WorkflowsPanel(
-			{ agentDir: empty, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			{ agentDir: empty, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
 			theme,
 			() => void (escaped = true),
 		);
@@ -1336,7 +1340,7 @@ console.log("\n--- tui: the control panel ---");
 		const wide = mkdtempSync(join(tmpdir(), "wf-tui-wide-"));
 		createRun(
 			wide,
-			{ runId: "wf-w", name: "レビュー🚀".repeat(6), status: "running", cwd: "/p", pid: process.pid, startedAt: 0, agentCount: 1, usage },
+			{ runId: "wf-w", name: "レビュー🚀".repeat(6), status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 1, usage },
 			"s",
 		);
 		appendJournalLine(wide, "wf-w", { kind: "phase", seq: 1, t: 0, title: "レビュー".repeat(10) });
@@ -1362,7 +1366,7 @@ console.log("\n--- tui: the control panel ---");
 				{ label: "agent", keys: ["g", "\x1b[C"] },
 			];
 			const wp = new WorkflowsPanel(
-				{ agentDir: wide, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+				{ agentDir: wide, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 24 },
 				theme,
 				() => {},
 			);
@@ -1385,7 +1389,7 @@ console.log("\n--- tui: the control panel ---");
 		for (let i = 0; i < 60; i++) {
 			createRun(
 				many,
-				{ runId: `wf-${i}`, name: `run ${i}`, status: "done", cwd: "/p", pid: process.pid, startedAt: i, endedAt: i + 5000, agentCount: 1, usage },
+				{ runId: `wf-${i}`, name: `run ${i}`, status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: i, endedAt: i + 5000, agentCount: 1, usage },
 				"s",
 			);
 		}
@@ -1420,7 +1424,7 @@ console.log("\n--- tui: the control panel ---");
 			const over: string[] = [];
 			for (const rows of [24, 40]) {
 				const p = new WorkflowsPanel(
-					{ agentDir: many, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+					{ agentDir: many, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => rows },
 					theme,
 					() => {},
 				);
@@ -1435,7 +1439,7 @@ console.log("\n--- tui: the control panel ---");
 		}
 		{
 			const p = new WorkflowsPanel(
-				{ agentDir: many, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+				{ agentDir: many, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 24 },
 				theme,
 				() => {},
 			);
@@ -1475,16 +1479,16 @@ console.log("\n--- tui: the control panel ---");
 		// down, and `c` cancels whatever the caret is on.
 		{
 			const shifting = mkdtempSync(join(tmpdir(), "wf-tui-shift-"));
-			createRun(shifting, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
-			createRun(shifting, { runId: "wf-2", name: "two", status: "done", cwd: "/p", pid: process.pid, startedAt: 100, endedAt: 101, agentCount: 0, usage }, "s");
+			createRun(shifting, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
+			createRun(shifting, { runId: "wf-2", name: "two", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 100, endedAt: 101, agentCount: 0, usage }, "s");
 			const p = new WorkflowsPanel(
-				{ agentDir: shifting, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+				{ agentDir: shifting, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
 				theme,
 				() => {},
 			);
 			p.handleInput("\x1b[B");
 			check("the caret starts on the older run", p.render(80).join("\n").includes("▸ ✓ one"), true);
-			createRun(shifting, { runId: "wf-3", name: "three", status: "done", cwd: "/p", pid: process.pid, startedAt: 200, endedAt: 201, agentCount: 0, usage }, "s");
+			createRun(shifting, { runId: "wf-3", name: "three", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 200, endedAt: 201, agentCount: 0, usage }, "s");
 			// The panel polls once a second; this is that tick, without the wait.
 			(p as unknown as { refresh(): void }).refresh();
 			check("a newer run does not steal the selection", p.render(80).join("\n").includes("▸ ✓ one"), true);
@@ -1494,6 +1498,37 @@ console.log("\n--- tui: the control panel ---");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+}
+
+console.log("\n--- panel: /workflows lists this session's runs ---");
+{
+	const meta = (runId: string, sessionId?: string): RunMeta => ({
+		runId,
+		name: runId,
+		status: "done",
+		cwd: "/p",
+		pid: 1,
+		startedAt: 0,
+		endedAt: 1,
+		agentCount: 0,
+		sessionId,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 },
+	});
+	const none = () => false;
+	const all = [meta("mine", "s1"), meta("theirs", "s2"), meta("ancient")];
+
+	check("this session's runs are listed", sessionRuns(all, "s1", none).map((m) => m.runId), ["mine"]);
+	check("another session's are not", sessionRuns(all, "s2", none).map((m) => m.runId), ["theirs"]);
+	// A run recorded before the session id was written has no way to match, and
+	// reads as history rather than as this session's.
+	check("nor runs from before ids were recorded", sessionRuns(all, "s1", none).some((m) => m.runId === "ancient"), false);
+
+	// The escape hatch: an ephemeral session (`--no-session`) has no id, so
+	// nothing could ever match it. Without this a running fleet would vanish
+	// from the panel of the very session driving it.
+	check("a session with no id sees nothing stored", sessionRuns(all, undefined, none), []);
+	check("but still sees what it is driving", sessionRuns(all, undefined, (id) => id === "ancient").map((m) => m.runId), ["ancient"]);
+	check("and a live run outranks a foreign id", sessionRuns(all, "s1", (id) => id === "theirs").map((m) => m.runId), ["mine", "theirs"]);
 }
 
 console.log("\n--- tui: clipping keeps the tail ---");
@@ -1521,7 +1556,7 @@ console.log("\n--- tui: a failed run's error survives the height budget ---");
 		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
 		createRun(
 			dir,
-			{ runId: "wf-1", name: "big", status: "error", cwd: "/p", pid: 1, startedAt: 0, endedAt: 1, agentCount: 20, usage, error: "BOOM-SENTINEL" },
+			{ runId: "wf-1", name: "big", status: "error", cwd: "/p", pid: 1, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 20, usage, error: "BOOM-SENTINEL" },
 			"s",
 		);
 		// 20 agents over 10 phases: enough headings and rows that the list alone
@@ -1548,7 +1583,7 @@ console.log("\n--- tui: a failed run's error survives the height budget ---");
 		const missing: number[] = [];
 		for (const rows of [16, 18, 20, 24]) {
 			const p = new WorkflowsPanel(
-				{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+				{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => rows },
 				theme,
 				() => {},
 			);
@@ -1566,7 +1601,7 @@ console.log("\n--- tui: a failed run's error survives the height budget ---");
 		const caretless: number[] = [];
 		for (const rows of [12, 13, 14, 15, 16, 18, 20, 24]) {
 			const p = new WorkflowsPanel(
-				{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+				{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => rows },
 				theme,
 				() => {},
 			);
@@ -1587,11 +1622,11 @@ console.log("\n--- tui: the way out survives a short terminal ---");
 	const dir = mkdtempSync(join(tmpdir(), "wf-tui-short-"));
 	try {
 		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
-		createRun(dir, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
+		createRun(dir, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
 		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
 		// 12 rows: the panel is over its share and every budget below hits a floor.
 		const p = new WorkflowsPanel(
-			{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 12 },
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 12 },
 			theme,
 			() => {},
 		);
@@ -1617,7 +1652,7 @@ console.log("\n--- tui: the way out survives a short terminal ---");
 
 		// With room for both, the status is not sacrificed.
 		const roomy = new WorkflowsPanel(
-			{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
 			theme,
 			() => {},
 		);
@@ -1649,6 +1684,7 @@ console.log("\n--- tui: a panel that lost the editor slot closes itself ---");
 				notify: () => {},
 				requestRender: () => {},
 				rows: () => 40,
+				sessionId: SESSION,
 				onDetached: () => detached++,
 			},
 			theme,
@@ -1766,7 +1802,7 @@ console.log("\n--- a many-phase run still shows its agents ---");
 	// terminal reserved 10 lines for headings, leaving room for a single agent
 	// with "↓ 39 more" under ten blank rows.
 	const dir = mkdtempSync(join(tmpdir(), "wf-budget-"));
-	createRun(dir, { runId: "wf-b", name: "many-phase", status: "running", cwd: "/p", pid: process.pid, startedAt: 0, agentCount: 40 } as never, "s");
+	createRun(dir, { runId: "wf-b", name: "many-phase", status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 40 } as never, "s");
 	for (let phase = 0; phase < 10; phase++) {
 		appendJournalLine(dir, "wf-b", { kind: "phase", seq: phase * 5, t: 0, title: `Phase ${phase}` });
 		for (let n = 0; n < 4; n++) {
@@ -1780,7 +1816,7 @@ console.log("\n--- a many-phase run still shows its agents ---");
 
 	const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
 	const panel = new WorkflowsPanel(
-		{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+		{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 24 },
 		theme,
 		() => {},
 	);
@@ -1804,10 +1840,10 @@ console.log("\n--- a rendered line never contains a newline ---");
 	// embedded newline desynchronises the display — and the width clamp cannot see
 	// it. Agent errors carry Error.message verbatim, which is often multi-line.
 	const dir = mkdtempSync(join(tmpdir(), "wf-nl-"));
-	createRun(dir, { runId: "wf-n", name: "boom", status: "error", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 1, error: "spawn failed\n  at boot\n  at run" } as never, "s");
+	createRun(dir, { runId: "wf-n", name: "boom", status: "error", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 1, error: "spawn failed\n  at boot\n  at run" } as never, "s");
 	const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
 	const panel = new WorkflowsPanel(
-		{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 24 },
+		{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 24 },
 		theme,
 		() => {},
 	);

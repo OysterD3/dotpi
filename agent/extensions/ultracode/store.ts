@@ -41,6 +41,14 @@ export interface RunMeta {
 	cwd: string;
 	/** Process that owns the run; used to spot runs a crash left behind. */
 	pid: number;
+	/**
+	 * The pi session that started it. `/workflows` lists only the current
+	 * session's runs, so this is what separates them. Absent on runs written
+	 * before it was recorded, and on ephemeral sessions that have no id — both
+	 * read as "not this session" (see sessionRuns in panel.ts, which keeps live
+	 * runs regardless so an ephemeral session still sees its own fleet).
+	 */
+	sessionId?: string;
 	startedAt: number;
 	endedAt?: number;
 	agentCount: number;
