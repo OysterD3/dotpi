@@ -23,10 +23,12 @@
  * are the ones the user used — they land on real models or fail that agent
  * loudly, never silently on the wrong model.
  *
- * Honest accounting caveat: a background run's spend cannot ride a tool
- * result (the tool already returned), so it is reported in the result message
- * text and /workflows instead of pi's session usage totals; wait: true runs
- * attach usage properly.
+ * Accounting: a `wait: true` run attaches its spend to the tool result as
+ * `usage`, which is how pi records it. A background run cannot — the tool
+ * returned long before the money was spent — so it announces each subagent
+ * turn on SPEND_CHANNEL instead, and a reader adds the two up. The two paths
+ * are exclusive on purpose: announcing a `wait: true` run as well would bill
+ * the same tokens twice.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,13 +37,13 @@ import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { loadAgentTypes, type AgentTypeDef } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
-import { CONFIG, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
+import { CONFIG, SPEND_CHANNEL, SPEND_SOURCE, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import { runWorkflowScript, validateScript, type AgentOptions, type EngineHooks } from "./engine.ts";
 import { ReplayIndex, type JournalInput } from "./journal.ts";
 import { resolveModelReference } from "./models.ts";
 import { newProgress, PauseGate, RunRegistry, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
-import { addUsage, runSubagent, SubagentError, type SpawnUsage } from "./spawn.ts";
+import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
 import {
 	agentErrorPath,
 	agentsDir,
@@ -191,6 +193,14 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 				}
 				const outcome = run.outcome!;
 				if (outcome.isError) {
+					// Announce before throwing. A `wait: true` run is normally accounted
+					// for by the `usage` on the result below, and announces nothing so
+					// the two cannot double up — but pi builds the tool result itself
+					// when execute throws, and that one carries no usage at all. Four
+					// minutes of agents that then failed would otherwise vanish from
+					// every total. Announced once, as the run's whole spend, because
+					// the per-turn door was shut for this run.
+					announceRunSpend(pi, run.progress.usage);
 					throw new Error(run.progress.status === "aborted" ? "Workflow aborted" : outcome.text);
 				}
 				return {
@@ -236,8 +246,11 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 		renderResult(result, { expanded, isPartial }, theme: Theme) {
 			const details = result.details as (RunProgress & { background?: boolean }) | { runId: string; name: string; background: true } | undefined;
 			if (details && "background" in details && details.background) {
+				// The name, not the run id: this row is read, never typed at. The id
+				// stays in the tool's text result, which is what the model reads and
+				// what it needs to resume the run.
 				return new Text(
-					`${theme.fg("success", "▶")} ${theme.fg("text", `started ${details.runId}`)}  ${theme.fg("muted", "progress in the panel · /workflows")}`,
+					`${theme.fg("success", "▶")} ${theme.fg("text", `started ${details.name}`)}  ${theme.fg("muted", "progress in the panel · /workflows")}`,
 					0,
 					0,
 				);
@@ -330,15 +343,62 @@ function startRun(
 	createRun(agentDir, meta, params.script);
 
 	const journal = (record: JournalInput) => appendJournalLine(agentDir, runId, { ...record, seq: ++seq, t: Date.now() });
+	let lastPersist = 0;
 	const persist = () => {
 		meta.status = progress.status;
 		meta.agentCount = progress.agentCount;
 		meta.usage = progress.usage;
 		meta.error = progress.error;
 		meta.replayedCount = progress.replayedCount;
+		lastPersist = Date.now();
 		writeMeta(agentDir, meta);
 	};
+	/**
+	 * Persist, but not on every streamed turn.
+	 *
+	 * run.json is how ANOTHER pi session sees this run — its own registry has
+	 * nothing, so its panel reads the file. Live spend has to reach the file for
+	 * that to be true, but a fleet of sixteen agents reporting a turn each would
+	 * otherwise rewrite it dozens of times a minute. Every settled agent still
+	 * persists unconditionally, so the throttle only ever delays the tail.
+	 */
+	const persistThrottled = () => {
+		if (Date.now() - lastPersist >= USAGE_PERSIST_MS) persist();
+	};
 	const changed = () => options.onRunEvent?.();
+
+	/**
+	 * Announce one subagent turn's spend for whoever is keeping a session total.
+	 *
+	 * Silent for `wait: true` runs: pi attaches their usage to the tool result
+	 * (see `toPiUsage` at the end of execute), so a reader that walks the
+	 * transcript already has these tokens. Announcing them as well billed every
+	 * synchronous workflow twice — once as a `workflow (tool)` row and once in
+	 * the announced total. Only background runs, whose tool result was resolved
+	 * long before the money was spent, need this door.
+	 */
+	const announceSpend = (delta: SpawnUsage) => {
+		if (wait) return;
+		// Nothing after the run is cancelled. `session_shutdown` aborts every
+		// controller but the children only die on SIGTERM-then-SIGKILL, so their
+		// last `message_end` events can arrive seconds later — after pi has
+		// started the next session and the subscriber has reset its tally. Those
+		// tokens would land in a session that never spent them. The abort is the
+		// boundary; the run's own totals still take them (run.json is right).
+		if (controller.signal.aborted) return;
+		pi.events.emit(SPEND_CHANNEL, {
+			source: SPEND_SOURCE,
+			calls: delta.turns,
+			usage: {
+				input: delta.input,
+				output: delta.output,
+				cacheRead: delta.cacheRead,
+				cacheWrite: delta.cacheWrite,
+				reasoning: delta.reasoning,
+				cost: delta.cost,
+			},
+		});
+	};
 
 	// A resume reads the previous journal; a fresh run gets an empty index.
 	const replayIndex = params.resumeFromRunId ? new ReplayIndex(readJournalLines(agentDir, params.resumeFromRunId)) : undefined;
@@ -475,6 +535,19 @@ function startRun(
 				row.sessionFile = sessionFile ?? agentSessionPath(agentDir, runId, index, attempt) ?? row.sessionFile;
 			};
 
+			// Spend is applied per turn as the child reports it, not in one lump
+			// when it exits: a ten-minute agent used to read $0.0000 for ten
+			// minutes, which is precisely when someone is deciding whether to let
+			// the fleet keep running. The deltas already cover a dead agent's spend
+			// too, so neither branch below adds the total a second time.
+			const onUsage = (delta: SpawnUsage) => {
+				addUsage(progress.usage, delta);
+				if (row) row.usage = addedUsage(row.usage, delta);
+				announceSpend(delta);
+				persistThrottled();
+				changed();
+			};
+
 			try {
 				const result = await runSubagent({
 					prompt: SUBAGENT_PREAMBLE + prompt,
@@ -489,17 +562,11 @@ function startRun(
 					approved: env.approved,
 					signal: spawnSignal,
 					timeoutMs: limits.agentTimeoutMs,
+					onUsage,
 				});
-				addUsage(progress.usage, result.usage);
-				if (row) row.usage = addedUsage(row.usage, result.usage);
 				recordTranscript();
 				return result.text;
 			} catch (error) {
-				// A dead agent's spend still counts.
-				if (error instanceof SubagentError) {
-					addUsage(progress.usage, error.usage);
-					if (row) row.usage = addedUsage(row.usage, error.usage);
-				}
 				recordTranscript();
 				throw error;
 			}
@@ -532,7 +599,11 @@ function startRun(
 		(result) => {
 			progress.status = "done";
 			const replayed = result.replayedCount > 0 ? `, ${result.replayedCount} replayed` : "";
-			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}, ${progress.usage.turns} turns, $${progress.usage.cost.toFixed(4)}.`;
+			// No cost in what the model is told either: a summary carrying a dollar
+			// figure is a summary the model repeats back, which would put the number
+			// in the transcript by another door. Spend still reaches run.json and
+			// `/usage`.
+			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}, ${progress.usage.turns} turns.`;
 			run.outcome = { text: `${summary}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
 		},
 		(error) => {
@@ -542,7 +613,7 @@ function startRun(
 			const verb = progress.status === "aborted" ? "was cancelled" : "failed";
 			run.outcome = {
 				text: [
-					`Workflow "${name}" (${runId}) ${verb} after ${progress.agentCount} agent${progress.agentCount === 1 ? "" : "s"} ($${progress.usage.cost.toFixed(4)}): ${message}`,
+					`Workflow "${name}" (${runId}) ${verb} after ${progress.agentCount} agent${progress.agentCount === 1 ? "" : "s"}: ${message}`,
 					`Its journal is kept: pass resumeFromRunId: "${runId}" to continue without re-running the agents that already succeeded.`,
 				].join("\n"),
 				isError: true,
@@ -564,7 +635,7 @@ function startRun(
 }
 
 function addedUsage(current: SpawnUsage | undefined, part: SpawnUsage): SpawnUsage {
-	const total: SpawnUsage = current ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 };
+	const total: SpawnUsage = current ?? emptyUsage();
 	addUsage(total, part);
 	return total;
 }
@@ -630,7 +701,7 @@ function renderProgress(progress: RunProgress, theme: Theme, expanded: boolean, 
 			: progress.status === "running" || progress.status === "paused"
 				? theme.fg("warning", progress.status === "paused" ? "⏸" : "◆")
 				: theme.fg("error", "✗");
-	lines.push(`${mark} ${theme.fg("accent", `${progress.runId} ${progress.name}`)}`);
+	lines.push(`${mark} ${theme.fg("accent", progress.name)}`);
 	for (const phase of progress.phases) {
 		const done = phase.agents.filter((a) => a.status === "done").length;
 		const replayed = phase.agents.filter((a) => a.status === "replayed").length;
@@ -663,7 +734,7 @@ function renderProgress(progress: RunProgress, theme: Theme, expanded: boolean, 
 		lines.push(
 			theme.fg(
 				"muted",
-				`  ${progress.agentCount} agent${progress.agentCount === 1 ? "" : "s"} · ${progress.usage.turns} turns · $${progress.usage.cost.toFixed(4)}`,
+				`  ${progress.agentCount} agent${progress.agentCount === 1 ? "" : "s"} · ${progress.usage.turns} turns`,
 			),
 		);
 	}
@@ -676,7 +747,32 @@ function toPiUsage(usage: SpawnUsage) {
 		output: usage.output,
 		cacheRead: usage.cacheRead,
 		cacheWrite: usage.cacheWrite,
+		// Carried, not dropped: this is the only mapper onto pi's Usage, so
+		// omitting it made a `wait: true` fleet report zero thinking tokens while
+		// an identical background run (which announces) reported them in full.
+		reasoning: usage.reasoning,
 		totalTokens: usage.totalTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage.cost },
 	};
+}
+
+/**
+ * Announce a whole run's spend in one go, for the paths that never announced
+ * per turn. Same payload shape as the per-turn announcement in startRun; see
+ * SPEND_CHANNEL for why `cost` is flat.
+ */
+function announceRunSpend(pi: ExtensionAPI, usage: SpawnUsage): void {
+	if (usage.turns === 0) return;
+	pi.events.emit(SPEND_CHANNEL, {
+		source: SPEND_SOURCE,
+		calls: usage.turns,
+		usage: {
+			input: usage.input,
+			output: usage.output,
+			cacheRead: usage.cacheRead,
+			cacheWrite: usage.cacheWrite,
+			reasoning: usage.reasoning,
+			cost: usage.cost,
+		},
+	});
 }

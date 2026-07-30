@@ -20,9 +20,9 @@ import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_LIMITS, resolveLimits } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
-import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
+import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, startedLabel, statusReport } from "./panel.ts";
 import { newProgress, PauseGate, RunRegistry, type AgentRow, type WorkflowRun } from "./runs.ts";
-import { buildArgs, stderrDetail } from "./spawn.ts";
+import { addUsage, applyTurn, buildArgs, emptyUsage, stderrDetail, type ReportedUsage } from "./spawn.ts";
 import {
 	agentSessionId,
 	createRun,
@@ -37,7 +37,7 @@ import {
 	type RunMeta,
 } from "./store.ts";
 import { resolveScript, safeStringify } from "./tool.ts";
-import { packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
+import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
@@ -593,7 +593,7 @@ console.log("\n--- runs: interrupted runs from the store ---");
 		pid: 1,
 		startedAt: 0,
 		agentCount: 2,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 },
 	});
 	check("no interrupted runs -> no notice", interruptedNotice([]), undefined);
 	const one = interruptedNotice([meta("wf-1")])!;
@@ -644,7 +644,9 @@ console.log("\n--- panel ---");
 	progress.usage.cost = 0.1234;
 	const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 	const lines = panelLines([run], 65_000)!;
-	check("panel line carries id, phases, cost, elapsed", lines[0], "◆ wf-1 review  Find 1/2  1 running  $0.1234  1m05s");
+	check("panel line carries name, phases, elapsed", lines[0], "◆ review  Find 1/2  1 running  1m05s");
+	// The footer sits under the prompt and is clipped; money lives in /usage.
+	check("and no running total", lines[0]!.includes("$"), false);
 	// The hint sits directly under the prompt, where the gesture applies, so the
 	// gesture leads and the command follows. `includes("/workflows")` alone
 	// passed on any string that mentioned the command anywhere.
@@ -677,16 +679,32 @@ console.log("\n--- panel ---");
 		pid: 1,
 		startedAt: 0,
 		agentCount: 2,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1234, totalTokens: 0, turns: 4 },
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.1234, totalTokens: 0, turns: 4 },
 	};
 	const live = new Map([["wf-1", run]]);
-	check("status report shows a live run's phases", statusReport([meta], live, 65_000).startsWith("◆ wf-1 review — Find 1/2"), true);
-	check(
-		"status report falls back to stored totals",
-		statusReport([{ ...meta, status: "done", endedAt: 65_000 }], new Map(), 65_000),
-		"✓ wf-1 review — done · 2 agents · $0.1234 · 1m05s",
-	);
+	check("status report shows a live run's phases", statusReport([meta], live, 65_000).startsWith("◆ review — Find 1/2"), true);
+
+	// The one surface that still prints an id, because it is the one you copy an
+	// id from. The clock label between them is local-time formatted, so this
+	// asserts the two ends rather than a string that would differ per machine.
+	const settled = statusReport([{ ...meta, status: "done", endedAt: 65_000 }], new Map(), 65_000);
+	check("status report leads with the name", settled.startsWith("✓ review — done · 2 agents · 1m05s · "), true);
+	check("and quotes no price", settled.includes("$"), false);
+	check("and keeps the id at the end, where it is addressable", settled.endsWith("[wf-1]"), true);
+	check("the id is nowhere else in the line", settled.split("wf-1").length - 1, 1);
 	check("status report empty message", statusReport([], new Map(), 0), "No workflow runs recorded.");
+
+	// Built from local-time components on both sides, so the assertion holds in
+	// any timezone — the thing under test is the same-day/other-day split.
+	const noon = new Date(2026, 6, 29, 12, 0).getTime();
+	check("a run from today reads as a clock time", startedLabel(new Date(2026, 6, 29, 9, 7).getTime(), noon), "09:07");
+	check("and pads both halves", startedLabel(new Date(2026, 6, 29, 0, 4).getTime(), noon), "00:04");
+	const older = startedLabel(new Date(2026, 6, 27, 9, 7).getTime(), noon);
+	check("an older run reads as a date instead", older.includes(":"), false);
+	check("naming the day it ran", older.includes("27"), true);
+	// Midnight is the boundary, not 24 hours: a run from 23:50 last night is
+	// yesterday's, however recent it feels.
+	check("just before midnight is a different day", startedLabel(new Date(2026, 6, 28, 23, 50).getTime(), noon).includes(":"), false);
 }
 
 // ------------------------------------------------------------------ new: store
@@ -733,7 +751,7 @@ console.log("\n--- store: round trip, listing, pruning, reconcile ---");
 			pid,
 			startedAt,
 			agentCount: 1,
-			usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5, totalTokens: 3, turns: 1 },
+			usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.5, totalTokens: 3, turns: 1 },
 		});
 
 		createRun(dir, make("wf-1", "done", 100), "export const meta = {}\n");
@@ -816,7 +834,7 @@ console.log("\n--- journal: rebuilding a run's view ---");
 		startedAt: 0,
 		endedAt: 10,
 		agentCount: 2,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.02, totalTokens: 0, turns: 2 },
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.02, totalTokens: 0, turns: 2 },
 	};
 	const progress = progressFromJournal(meta, [
 		{ kind: "phase", seq: 1, t: 0, title: "Find" },
@@ -1059,6 +1077,33 @@ console.log("\n--- spawn: argument building ---");
 	check("empty stderr", stderrDetail("   "), "");
 }
 
+console.log("\n--- spawn: a turn's usage delta ---");
+{
+	// The whole point of the delta is that a caller can add them up AS THEY
+	// ARRIVE instead of waiting for the child to exit, and be left holding
+	// exactly what the child's own totals say. If these two ever diverge, live
+	// cost quietly disagrees with the final number written to run.json.
+	const turns: ReportedUsage[] = [
+		{ input: 100, output: 20, cacheRead: 0, cacheWrite: 500, reasoning: 0, cost: { total: 0.01 }, totalTokens: 620 },
+		{ input: 50, output: 30, cacheRead: 600, cacheWrite: 0, reasoning: 0, cost: { total: 0.02 }, totalTokens: 1300 },
+		// A compaction inside the child: context shrinks, spend does not.
+		{ input: 40, output: 10, cacheRead: 200, cacheWrite: 0, reasoning: 0, cost: { total: 0.005 }, totalTokens: 400 },
+	];
+	const total = emptyUsage();
+	const summed = emptyUsage();
+	for (const turn of turns) addUsage(summed, applyTurn(total, turn));
+	check("deltas sum to the totals", summed, total);
+	check("cost is the sum of the turns", Number(total.cost.toFixed(4)), 0.035);
+	check("totalTokens follows the last turn, not the peak", total.totalTokens, 400);
+	check("every turn counted", total.turns, 3);
+
+	// A turn the provider reported nothing for still happened.
+	const bare = emptyUsage();
+	const bareDelta = applyTurn(bare, undefined);
+	check("an unmeasured turn still counts", bare.turns, 1);
+	check("and adds nothing else", [bareDelta.input, bareDelta.output, bareDelta.cost, bareDelta.totalTokens], [0, 0, 0, 0]);
+}
+
 console.log("\n--- tool: where a script comes from ---");
 {
 	check("inline script", resolveScript({ script: "s" }, "/agent").source, "inline");
@@ -1118,7 +1163,7 @@ console.log("\n--- tui: the control panel ---");
 {
 	const dir = mkdtempSync(join(tmpdir(), "wf-tui-"));
 	try {
-		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.25, totalTokens: 0, turns: 2 };
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.25, totalTokens: 0, turns: 2 };
 		createRun(dir, { runId: "wf-1", name: "review", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 5000, agentCount: 2, usage }, "s");
 		createRun(dir, { runId: "wf-2", name: "audit", status: "error", cwd: "/p", pid: process.pid, startedAt: 100, endedAt: 200, agentCount: 1, usage, error: "boom" }, "s");
 		appendJournalLine(dir, "wf-1", { kind: "phase", seq: 1, t: 0, title: "Find" });
@@ -1182,11 +1227,11 @@ console.log("\n--- tui: the control panel ---");
 		}
 
 		check("the run list opens first", text().includes("✦ Workflows"), true);
-		check("both runs are listed, newest first", /wf-2 audit[\s\S]*wf-1 review/.test(text()), true);
-		check("the newest is selected", text().includes("▸ ✗ wf-2"), true);
+		check("both runs are listed, newest first", /audit[\s\S]*review/.test(text()), true);
+		check("the newest is selected", text().includes("▸ ✗ audit"), true);
 
 		panel.handleInput("\x1b[B");
-		check("↓ moves down", text().includes("▸ ✓ wf-1"), true);
+		check("↓ moves down", text().includes("▸ ✓ review"), true);
 
 		panel.handleInput("\x1b[C");
 		check("→ opens the run", text().includes("Find  1/1"), true);
@@ -1223,6 +1268,46 @@ console.log("\n--- tui: the control panel ---");
 		check("R says nothing from inside the panel", notices, []);
 
 		panel.dispose();
+
+		// --- a run in flight reports where it has got to, not what it last wrote.
+		//
+		// run.json is written on a throttle while agents stream, so a panel that
+		// read only the file would show a live run several seconds behind — and
+		// this list is where the decision to cancel gets made.
+		{
+			const live = new RunRegistry();
+			const progress = newProgress("wf-1", "review");
+			progress.usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 3.5, totalTokens: 15, turns: 4 };
+			progress.agentCount = 7;
+			live.add({
+				progress,
+				controller: new AbortController(),
+				gate: new PauseGate(),
+				startedAt: 0,
+				settled: Promise.resolve(),
+			} as WorkflowRun);
+
+			const watching = new WorkflowsPanel(
+				{ agentDir: dir, registry: live, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+				theme,
+				() => {},
+			);
+			const listed = watching.render(120).join("\n");
+			check("a live run's agent count comes from the registry", listed.includes("7 agent(s)"), true);
+			// The other run has no registry entry, so the file is all there is.
+			check("a run this process does not own still reports", listed.includes("1 agent(s)"), true);
+
+			// The panel never shows money — not in the list, not on a run, not on an
+			// agent. Spend is still tracked (this run's progress carries $3.50 and
+			// the store's runs carry $0.25); it belongs to /usage, not here.
+			const everyView = [listed];
+			watching.handleInput("\x1b[C");
+			everyView.push(watching.render(120).join("\n"));
+			watching.handleInput("\r");
+			everyView.push(watching.render(120).join("\n"));
+			check("no view quotes a price", everyView.filter((view) => view.includes("$")), []);
+			watching.dispose();
+		}
 
 		// An empty store still renders rather than throwing.
 		const empty = mkdtempSync(join(tmpdir(), "wf-tui-empty-"));
@@ -1358,7 +1443,7 @@ console.log("\n--- tui: the control panel ---");
 			const counted = () => {
 				const lines = shown();
 				return {
-					rows: lines.filter((line) => /wf-\d+ run/.test(line)).length,
+					rows: lines.filter((line) => /run \d+ /.test(line)).length,
 					before: Number(/↑ (\d+) more/.exec(lines.join("\n"))?.[1] ?? 0),
 					after: Number(/↓ (\d+) more/.exec(lines.join("\n"))?.[1] ?? 0),
 				};
@@ -1379,7 +1464,7 @@ console.log("\n--- tui: the control panel ---");
 				if (!shown().join("").includes("▸")) lost++;
 			}
 			check("the caret stays on screen all the way down", lost, 0);
-			check("and lands on the oldest run", shown().join("\n").includes("▸ ✓ wf-0 "), true);
+			check("and lands on the oldest run", shown().join("\n").includes("▸ ✓ run 0 "), true);
 			const bottom = counted();
 			check("at the bottom only the upward marker shows", [bottom.before > 0, bottom.after > 0], [true, false]);
 			p.dispose();
@@ -1398,14 +1483,206 @@ console.log("\n--- tui: the control panel ---");
 				() => {},
 			);
 			p.handleInput("\x1b[B");
-			check("the caret starts on wf-1", p.render(80).join("\n").includes("▸ ✓ wf-1"), true);
+			check("the caret starts on the older run", p.render(80).join("\n").includes("▸ ✓ one"), true);
 			createRun(shifting, { runId: "wf-3", name: "three", status: "done", cwd: "/p", pid: process.pid, startedAt: 200, endedAt: 201, agentCount: 0, usage }, "s");
 			// The panel polls once a second; this is that tick, without the wait.
 			(p as unknown as { refresh(): void }).refresh();
-			check("a newer run does not steal the selection", p.render(80).join("\n").includes("▸ ✓ wf-1"), true);
+			check("a newer run does not steal the selection", p.render(80).join("\n").includes("▸ ✓ one"), true);
 			p.dispose();
 			rmSync(shifting, { recursive: true, force: true });
 		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: clipping keeps the tail ---");
+{
+	const marker = (hidden: number) => `[${hidden} hidden]`;
+	const lines = ["a", "b", "c", "d", "e", "f", "ERROR"];
+	check("nothing to clip", clipKeepingTail(lines, 7, marker), lines);
+	check("a bigger budget is left alone", clipKeepingTail(lines, 20, marker), lines);
+	// The error is the last line and the reason someone opened a failed run.
+	const clipped = clipKeepingTail(lines, 4, marker);
+	check("the clip fits the budget", clipped.length, 4);
+	check("the tail survives", clipped.at(-1), "ERROR");
+	check("and the cut is visible", clipped, ["a", "b", "[4 hidden]", "ERROR"]);
+	check("two rows keep both ends", clipKeepingTail(lines, 2, marker), ["a", "ERROR"]);
+	check("one row keeps the tail, not the head", clipKeepingTail(lines, 1, marker), ["ERROR"]);
+}
+
+console.log("\n--- tui: a failed run's error survives the height budget ---");
+{
+	// The reason someone opens a failed run is the error, and runBody appends it
+	// last — after the agent list and the log pane. Clipping from the tail drops
+	// exactly that line, on exactly the terminal where the clip happens.
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-err-"));
+	try {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
+		createRun(
+			dir,
+			{ runId: "wf-1", name: "big", status: "error", cwd: "/p", pid: 1, startedAt: 0, endedAt: 1, agentCount: 20, usage, error: "BOOM-SENTINEL" },
+			"s",
+		);
+		// 20 agents over 10 phases: enough headings and rows that the list alone
+		// outruns any budget a short terminal can offer.
+		let seq = 0;
+		for (let phase = 0; phase < 10; phase++) {
+			appendJournalLine(dir, "wf-1", { kind: "phase", seq: ++seq, t: 0, title: `Phase ${phase}` });
+			for (let i = 0; i < 2; i++) {
+				appendJournalLine(dir, "wf-1", {
+					kind: "agent",
+					seq: ++seq,
+					t: 0,
+					index: seq,
+					key: `k${seq}`,
+					label: `agent ${phase}.${i}`,
+					phase: `Phase ${phase}`,
+					status: "done",
+					startedAt: 0,
+					endedAt: 1000,
+				});
+			}
+		}
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const missing: number[] = [];
+		for (const rows of [16, 18, 20, 24]) {
+			const p = new WorkflowsPanel(
+				{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+				theme,
+				() => {},
+			);
+			p.handleInput("\x1b[C"); // into the run
+			p.handleInput("g"); // and open the log pane, which competes for the same rows
+			if (!p.render(80).join("\n").includes("BOOM-SENTINEL")) missing.push(rows);
+			p.dispose();
+		}
+		check("the error is on screen at every height", missing, []);
+
+		// ...and so is the caret. The clip keeps the tail, but the selected row is
+		// at the other end, and `x`/`e`/↑↓ all act on it — a hidden caret means
+		// keys operating on an agent the user cannot see. 12-15 is the band the
+		// first version of this clip broke; the original test started at 16.
+		const caretless: number[] = [];
+		for (const rows of [12, 13, 14, 15, 16, 18, 20, 24]) {
+			const p = new WorkflowsPanel(
+				{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => rows },
+				theme,
+				() => {},
+			);
+			p.handleInput("\x1b[C");
+			for (let i = 0; i < 5; i++) p.handleInput("\x1b[B");
+			const shown = p.render(80).join("\n");
+			if (!shown.includes("▸")) caretless.push(rows);
+			p.dispose();
+		}
+		check("the caret is visible at every height", caretless, []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: the way out survives a short terminal ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-short-"));
+	try {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
+		createRun(dir, { runId: "wf-1", name: "one", status: "done", cwd: "/p", pid: process.pid, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		// 12 rows: the panel is over its share and every budget below hits a floor.
+		const p = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 12 },
+			theme,
+			() => {},
+		);
+		check("a short terminal still shows the exit", p.render(80).join("\n").includes("q close"), true);
+		// `p` on a run this process does not own always sets a status line.
+		p.handleInput("p");
+		const withStatus = p.render(80).join("\n");
+		// On 12 rows only one footer line fits, and it has to be the one naming
+		// the way out: the panel holds the prompt's slot, so a screen with only a
+		// status on it leaves no documented exit. The status is answerable by
+		// pressing another key; a panel you cannot leave is not.
+		// BOTH survive: `p`, `c` and `e` write only to this.status and never
+		// notify, so losing the status line makes those keys look dead — `e`'s
+		// entire product is the path it prints. And losing the hint leaves a panel
+		// holding the prompt's slot with no visible way out. On one row they share.
+		check("the exit survives", withStatus.includes("q close"), true);
+		check("and so does the status it shares the row with", withStatus.includes("not running in this session"), true);
+		// Narrow as well as short: packHints wraps, and only the FIRST hint line
+		// survives the height clip, so the exit has to lead the list.
+		check("and survives a narrow one too", p.render(30).join("\n").includes("q close"), true);
+		check("every packed line still fits", packHints(["q close", "↑↓ select", "→ open"], 20).every((line) => visibleWidth(line) <= 20), true);
+		p.dispose();
+
+		// With room for both, the status is not sacrificed.
+		const roomy = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		roomy.handleInput("p");
+		const both = roomy.render(80).join("\n");
+		check("a normal terminal shows the status", both.includes("not running in this session"), true);
+		check("and the hints under it", both.includes("q close"), true);
+		roomy.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: a panel that lost the editor slot closes itself ---");
+{
+	// pi clears the editor container from its own selectors and dialogs without
+	// telling us, and never puts this panel back. Undetected, the promise never
+	// settles: the footer stays stood down for the rest of the session and the
+	// refresh timer reads the run store forever.
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-orphan-"));
+	try {
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		let closed = false;
+		let detached = 0;
+		const p = new WorkflowsPanel(
+			{
+				agentDir: dir,
+				registry: new RunRegistry(),
+				notify: () => {},
+				requestRender: () => {},
+				rows: () => 40,
+				onDetached: () => detached++,
+			},
+			theme,
+			() => void (closed = true),
+		);
+		const tick = () => (p as unknown as { timer: { _onTimeout?: () => void } }).timer?._onTimeout?.();
+
+		// Still mounted: something draws it after every tick.
+		for (let i = 0; i < 6; i++) {
+			tick();
+			p.render(80);
+		}
+		check("a panel that is being drawn stays quiet", [closed, detached], [false, 0]);
+
+		// Detached: ticks keep firing, nothing renders. One more than ORPHAN_TICKS,
+		// because the first tick after a detach still sees the render that came
+		// before it — the count only starts once a tick observes no progress.
+		for (let i = 0; i < ORPHAN_TICKS; i++) tick();
+		check("it does not react early", [closed, detached], [false, 0]);
+		tick();
+		check("a detached panel says so", detached, 1);
+
+		// And, crucially, does NOT resolve. done() is pi's close(), which restores
+		// the editor by clearing the container — evicting whatever component took
+		// the slot (a permission dialog, say) and hanging the turn waiting on it.
+		check("but never resolves, which would evict the new owner", closed, false);
+
+		// It stops its own timer on the way out — whoever took the slot is not
+		// going to call dispose() for it.
+		check("and stops reading the store", (p as unknown as { timer: unknown }).timer === undefined, true);
+		// Once only: a repeating announcement would fight the component that owns
+		// the footer now.
+		for (let i = 0; i < 5; i++) tick();
+		check("and says it once", detached, 1);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

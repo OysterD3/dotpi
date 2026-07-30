@@ -59,6 +59,23 @@ export function progressFromJournal(meta: RunMeta, records: unknown[]): RunProgr
 	return progress;
 }
 
+/**
+ * When a run started, in the shortest form that still tells two of them apart.
+ *
+ * Run ids are not displayed any more — `wf-mgk2j4l-1` is fourteen characters of
+ * base36 in a line that gets truncated, and it says nothing you can act on. The
+ * cost of dropping it is that five `code-review` runs all read `code-review`,
+ * so something has to separate them, and when a run happened is the answer a
+ * person actually wants. Clock time within the day, a date before that.
+ */
+export function startedLabel(startedAt: number, now: number): string {
+	const started = new Date(startedAt);
+	if (started.toDateString() !== new Date(now).toDateString()) {
+		return started.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+	}
+	return `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
+}
+
 export function formatElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
@@ -107,11 +124,18 @@ export function runLine(run: WorkflowRun, now: number): string {
 		0,
 	);
 	const parts = [
-		`${statusMark(progress.status)} ${progress.runId} ${progress.name}`,
+		// The run's name, not its id. This line sits directly under the prompt and
+		// is clipped to the terminal width, so every character it spends has to
+		// earn its place — and the id is not something you can do anything with
+		// from here.
+		`${statusMark(progress.status)} ${progress.name}`,
 		phaseSummary(progress),
 		running ? `${running} running` : undefined,
 		progress.replayedCount > 0 ? `${progress.replayedCount} replayed` : undefined,
-		`$${progress.usage.cost.toFixed(4)}`,
+		// No running total. A live dollar figure under the prompt is a thing to
+		// watch rather than read, and this line is clipped to the terminal width,
+		// so it is spent on progress instead. `/usage` is where money lives; the
+		// number itself is still accumulated and announced on `usage:spend`.
 		formatElapsed(now - run.startedAt),
 	];
 	return parts.filter(Boolean).join("  ");
@@ -131,6 +155,12 @@ export function panelLines(active: WorkflowRun[], now: number): string[] | undef
 /**
  * One line per run for `/workflows list`, newest first. Live runs report their
  * phase progress; stored ones report the totals run.json kept.
+ *
+ * The one surface that still prints run ids, and only at the end of the line.
+ * This is the addressing report — the whole reason to type `/workflows list`
+ * rather than open the panel is to find the id to pass to `show`, `pause` or
+ * `cancel` — so removing it here would leave those subcommands with nothing to
+ * name. The name still leads, which is the part you read.
  */
 export function statusReport(metas: RunMeta[], live: Map<string, WorkflowRun>, now: number): string {
 	if (metas.length === 0) return "No workflow runs recorded.";
@@ -139,9 +169,13 @@ export function statusReport(metas: RunMeta[], live: Map<string, WorkflowRun>, n
 			const run = live.get(meta.runId);
 			const tail = !isSettled(meta.status)
 				? `${run ? phaseSummary(run.progress) : "in flight"} · ${formatElapsed(now - meta.startedAt)}`
-				: `${meta.status} · ${meta.agentCount} agent${meta.agentCount === 1 ? "" : "s"} · $${meta.usage.cost.toFixed(4)} · ${formatElapsed((meta.endedAt ?? now) - meta.startedAt)}`;
+				: `${meta.status} · ${meta.agentCount} agent${meta.agentCount === 1 ? "" : "s"} · ${formatElapsed((meta.endedAt ?? now) - meta.startedAt)}`;
+			// Names the PARENT run, not this one. The hide-ids pass took the id out
+			// of every row, but this one identifies a relationship rather than the
+			// row itself — without it three rows all read "code-review (resumed)"
+			// and the chain can only be reconstructed by running `show` on each.
 			const resumed = meta.resumedFrom ? ` (resumed ${meta.resumedFrom})` : "";
-			return `${statusMark(meta.status)} ${meta.runId} ${meta.name}${resumed} — ${tail}`;
+			return `${statusMark(meta.status)} ${meta.name}${resumed} — ${tail} · ${startedLabel(meta.startedAt, now)}  [${meta.runId}]`;
 		})
 		.join("\n");
 }

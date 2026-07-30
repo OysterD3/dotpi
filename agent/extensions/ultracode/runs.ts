@@ -155,6 +155,22 @@ export class RunRegistry {
 		return count;
 	}
 
+	/**
+	 * Forget every run. Called when the session ends, because this registry means
+	 * "in flight in this process for THIS session" — after a shutdown nothing in
+	 * it is either. A run already settled has everything it knows on disk, so the
+	 * panel keeps listing it; a run just cancelled settles through callbacks that
+	 * hold their own references and persists itself on the way out.
+	 *
+	 * Without this a `/new` in the same process inherits the old session's runs,
+	 * and anything totting up what the registry holds — the footer's run lines,
+	 * the spend `/usage` reports — starts the fresh session already several
+	 * dollars in.
+	 */
+	clear(): void {
+		this.runs.clear();
+	}
+
 	// The GATE is the authority on whether a run is paused, not progress.status:
 	// a pause is requested at once but only observed when an agent next reaches
 	// the gate, so a run between agents (or with none at all) would otherwise

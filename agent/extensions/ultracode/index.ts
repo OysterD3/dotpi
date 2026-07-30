@@ -48,7 +48,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
-import { interruptedNotice, panelLines, progressFromJournal, statusReport } from "./panel.ts";
+import { interruptedNotice, panelLines, progressFromJournal, startedLabel, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
@@ -230,6 +230,16 @@ export default function (pi: ExtensionAPI) {
 	// is replaced, and cancelled runs settle after this point.
 	pi.on("session_shutdown", () => {
 		registry.cancelAll();
+		// Cancel, then forget: a `/new` in the same process must not inherit the
+		// previous session's runs, or its footer lines and its /usage total open
+		// already spent. The cancelled runs settle through their own callbacks and
+		// still write their final state to run.json.
+		registry.clear();
+		// One last announcement, so anything drawing the old session's runs (the
+		// footer) clears rather than freezing on the last lines it saw. Spend
+		// needs no such reset: it is announced as increments, and a subscriber
+		// starts its own tally over on session_start.
+		pi.events.emit(PANEL_CHANNEL, { lines: undefined });
 		stopPanelTimer();
 		uiCtx = undefined;
 	});
@@ -351,11 +361,30 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("workflows", {
 		description: "Open the workflow control panel, or act on a run (/workflows pause|resume|cancel|show <id>)",
+		// The completion shows the run's NAME and inserts its id: the subcommands
+		// address runs by id, but nobody knows a run by `wf-mgk2j4l-1`. Matching
+		// on either means `cancel code-rev` finds the run you mean and still
+		// completes to something the handler can resolve.
 		getArgumentCompletions: (prefix: string) => {
 			const verbs = ["list", "show", "pause", "resume", "cancel"];
-			const ids = listRuns(agentDir).map((meta) => meta.runId);
-			const options = [...verbs, ...verbs.flatMap((verb) => (verb === "list" ? [] : ids.map((id) => `${verb} ${id}`)))];
-			return options.filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value }));
+			const runs = listRuns(agentDir);
+			// Labelled with the start time as well as the name, for the same reason
+			// the panel rows carry it: five runs called `code-review` otherwise
+			// produce five identical entries that each insert a different id, and
+			// picking the wrong one cancels the wrong run.
+			const now = Date.now();
+			const options = [
+				...verbs.map((verb) => ({ value: verb, label: verb })),
+				...verbs.flatMap((verb) =>
+					verb === "list"
+						? []
+						: runs.map((meta) => ({
+								value: `${verb} ${meta.runId}`,
+								label: `${verb} ${meta.name} (${startedLabel(meta.startedAt, now)})`,
+							})),
+				),
+			];
+			return options.filter((option) => option.value.startsWith(prefix) || option.label.startsWith(prefix));
 		},
 		handler: async (args: string, ctx) => {
 			uiCtx = ctx;
@@ -415,7 +444,15 @@ export default function (pi: ExtensionAPI) {
 				const live = registry.get(target);
 				const progress = live?.progress ?? progressFromJournal(meta, readJournalLines(agentDir, target));
 				const lines = [
-					`${meta.runId} ${meta.name} — ${meta.status}${meta.resumedFrom ? ` (resumed ${meta.resumedFrom})` : ""}`,
+					// Name first — you already know the id, you typed it — with the id
+					// kept at the end because this report is where you copy it from.
+					`${meta.name} — ${meta.status}${meta.resumedFrom ? ` (resumed ${meta.resumedFrom})` : ""}  [${meta.runId}]`,
+					// The one place per-run cost survives. Cost is off every AMBIENT
+					// workflow surface — the panel, the footer, the transcript row —
+					// but `show <id>` is a report you type a run id into to ask about
+					// one run, and without it "which of these five cost $40" has no
+					// answer short of opening run.json by hand. /usage stays the
+					// session total; this is the per-run figure.
 					`${meta.agentCount} agent(s), ${progress.replayedCount} replayed, ${meta.usage.turns} turns, $${meta.usage.cost.toFixed(4)}`,
 					`store: ${runDir(agentDir, target)}`,
 					"",

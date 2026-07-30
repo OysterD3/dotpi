@@ -33,7 +33,7 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
 import type { AgentRow, RunProgress, RunRegistry } from "./runs.ts";
-import { formatElapsed, progressFromJournal, statusMark } from "./panel.ts";
+import { formatElapsed, progressFromJournal, startedLabel, statusMark } from "./panel.ts";
 import { agentErrorPath, listRuns, readJournalLines, runDir, type RunMeta } from "./store.ts";
 import { piInvocation } from "./spawn.ts";
 
@@ -43,6 +43,14 @@ export interface TuiHost {
 	notify: (message: string, level?: "info" | "warning" | "error") => void;
 	requestRender: () => void;
 	rows: () => number;
+	/**
+	 * Called when the panel works out it no longer holds the editor slot.
+	 *
+	 * Deliberately NOT `done()`. See the watchdog in the constructor: resolving
+	 * is how pi is told to restore the editor, and doing that while another
+	 * component owns the slot destroys it.
+	 */
+	onDetached?: () => void;
 }
 
 /** What the panel hands back when it closes; undefined means "just closed". */
@@ -59,11 +67,54 @@ export interface PanelResult {
 
 type View = "runs" | "run" | "agent";
 
+/**
+ * `q close` leads every list on purpose.
+ *
+ * The panel holds the editor's slot, so while it is up there is no prompt and
+ * no visible way out except this line — and the line is the first thing a short
+ * terminal or a narrow one clips. Putting the exit first means it survives both
+ * the width packing in packHints and the height clipping in render().
+ */
 const HINTS: Record<View, string[]> = {
-	runs: ["↑↓ select", "→ open", "p pause/resume", "c cancel", "R resume run", "q close"],
-	run: ["↑↓ select", "→ open", "← back", "p pause/resume", "c cancel", "g logs", "x export", "e stderr path", "q close"],
-	agent: ["↑↓ agent", "← back", "x export transcript", "e stderr path", "q close"],
+	runs: ["q close", "↑↓ select", "→ open", "p pause/resume", "c cancel", "R resume run"],
+	run: ["q close", "↑↓ select", "→ open", "← back", "p pause/resume", "c cancel", "g logs", "x export", "e stderr path"],
+	agent: ["q close", "↑↓ agent", "← back", "x export transcript", "e stderr path"],
 };
+
+/**
+ * Consecutive refresh ticks with no render before the panel concludes it has
+ * been detached. Three, so a slow frame cannot close a panel someone is
+ * reading; see the watchdog in the constructor for what this is detecting.
+ */
+export const ORPHAN_TICKS = 3;
+
+/**
+ * Clip to `budget` lines, keeping the last line and the caret.
+ *
+ * Two lines have to survive a squeeze, and they are at opposite ends. The run
+ * view appends the log pane and the run's error LAST, and the error is the
+ * reason someone opens a failed run — so a plain `slice(0, n)` drops exactly
+ * the line they came for. But keeping the head instead drops the selected row,
+ * and the caret is not decoration: `x`, `e` and `↑↓` all act on whatever it is
+ * on, so a hidden caret means keys operating on an agent the user cannot see.
+ *
+ * `keep` is the index that must remain visible. The window slides to hold it,
+ * the tail is always kept, and the marker says how much went missing so the
+ * clip is visible rather than merely survivable.
+ */
+export function clipKeepingTail(lines: string[], budget: number, marker: (hidden: number) => string, keep?: number): string[] {
+	if (lines.length <= budget) return lines;
+	const last = lines.length - 1;
+	const anchor = keep !== undefined && keep >= 0 && keep < last ? keep : 0;
+	if (budget <= 1) return [lines[last]!];
+	if (budget === 2) return [lines[anchor]!, lines[last]!];
+	// One row for the marker, one for the tail; the rest is a window over the
+	// body that contains the anchor.
+	const room = budget - 2;
+	const start = Math.max(0, Math.min(anchor - Math.floor(room / 2), last - room));
+	const window = lines.slice(start, start + room);
+	return [...window, marker(last - window.length), lines[last]!];
+}
 
 /**
  * Pack hint fragments into lines no wider than `width`.
@@ -125,6 +176,10 @@ export class WorkflowsPanel {
 	private timer: ReturnType<typeof setInterval> | undefined;
 	/** Cache of the reconstructed progress for the run being viewed. */
 	private viewed: { runId: string; progress: RunProgress } | undefined;
+	/** Renders served, and the count at the last tick — the orphan watchdog's input. */
+	private renders = 0;
+	private rendersAtLastTick = -1;
+	private idleTicks = 0;
 
 	constructor(
 		private readonly host: TuiHost,
@@ -133,6 +188,48 @@ export class WorkflowsPanel {
 	) {
 		this.refresh();
 		this.timer = setInterval(() => {
+			// Orphan watchdog.
+			//
+			// This component lives in pi's EDITOR container, and pi clears that
+			// container from a dozen places — its model selector, its dialogs, and
+			// `ctx.ui.select`, which the permissions extension calls from a
+			// tool_call handler while the agent works. None of them announce, and
+			// none of them put the panel back: they restore pi's editor. The panel
+			// is then off-screen but alive, its `done` never fires, so the promise
+			// in showWorkflows never settles, the footer it asked to stand down
+			// never comes back, and this very timer runs for the rest of the
+			// session re-reading every run.json.
+			//
+			// pi offers no "you lost the slot" signal, so infer it: a component in
+			// the tree is rendered on every frame, and every tick below asks for a
+			// frame. Ticks that produce no render mean nothing is drawing us.
+			const drew = this.renders !== this.rendersAtLastTick;
+			this.rendersAtLastTick = this.renders;
+			if (drew) {
+				this.idleTicks = 0;
+			} else if (++this.idleTicks >= ORPHAN_TICKS) {
+				// Stand down WITHOUT resolving.
+				//
+				// `done()` is pi's close(), and for an overlay:false component close()
+				// runs restoreEditor(): editorContainer.clear(), re-add pi's editor,
+				// setText(savedText), setFocus. Calling that here would clear away
+				// whatever component actually holds the slot now — a permission
+				// dialog, say — so its own promise would never resolve and the tool
+				// call waiting on it would hang the turn. It would also overwrite the
+				// prompt with whatever was typed when this panel opened.
+				//
+				// So: stop the timer, hand the footer back through the host, and
+				// leave the promise pending. One dangling promise is a far smaller
+				// price than evicting a live dialog, and pi restores the editor by
+				// itself when the component that displaced us closes.
+				//
+				// (The ask_user path below is different and stays as it is: it
+				// announces BEFORE mounting its prompt, so closing on that signal
+				// happens while this panel still owns the slot.)
+				this.dispose();
+				this.host.onDetached?.();
+				return;
+			}
 			this.refresh();
 			this.host.requestRender();
 		}, 1000);
@@ -257,14 +354,16 @@ export class WorkflowsPanel {
 		if (!meta) return;
 		const registry = this.host.registry;
 		const outcome = meta.status === "paused" ? registry.resume(meta.runId) : registry.pause(meta.runId);
+		// Named, not identified: these answer the key you just pressed on the row
+		// you are looking at, so the name is unambiguous in context.
 		this.status =
 			outcome === "paused"
-				? `${meta.runId} pausing — in-flight agents finish, new ones wait`
+				? `${meta.name} pausing — in-flight agents finish, new ones wait`
 				: outcome === "resumed"
-					? `${meta.runId} resumed`
+					? `${meta.name} resumed`
 					: outcome === "unknown"
-						? `${meta.runId} is not running in this session`
-						: `${meta.runId} is ${meta.status}`;
+						? `${meta.name} is not running in this session`
+						: `${meta.name} is ${meta.status}`;
 		this.refresh();
 	}
 
@@ -274,19 +373,22 @@ export class WorkflowsPanel {
 		const outcome = this.host.registry.cancel(meta.runId);
 		this.status =
 			outcome === "cancelled"
-				? `cancelling ${meta.runId}`
+				? `cancelling ${meta.name}`
 				: outcome === "unknown"
-					? `${meta.runId} is not running in this session`
-					: `${meta.runId} already finished`;
+					? `${meta.name} is not running in this session`
+					: `${meta.name} already finished`;
 		this.refresh();
 	}
 
 	private resumeRun(): void {
 		const meta = this.currentMeta();
 		if (!meta) return;
+		// The editor text keeps the id: it is an instruction for the model, and
+		// resumeFromRunId is the only handle that identifies a run to the tool.
+		// The notice is for you, so it uses the name.
 		this.done({
 			editorText: `Resume workflow run ${meta.runId} ("${meta.name}"): call the workflow tool with resumeFromRunId: "${meta.runId}" so the agents that already succeeded are replayed rather than re-run.`,
-			notice: `Resume instruction for ${meta.runId} put in the editor — press enter to send it.`,
+			notice: `Resume instruction for "${meta.name}" put in the editor — press enter to send it.`,
 		});
 	}
 
@@ -306,8 +408,17 @@ export class WorkflowsPanel {
 		this.status = "exporting…";
 		void exportSession(agent.sessionFile, out).then((result) => {
 			this.status = result.ok ? `exported to ${result.detail}` : `export failed: ${result.detail}`;
-			this.host.notify(this.status, result.ok ? "info" : "error");
-			this.host.requestRender();
+			// A big transcript can still be exporting after the panel closed and
+			// the session was replaced, and every getter on a replaced context
+			// throws. This is a floating promise, so an escape here is an
+			// unhandled rejection — which ends the process and loses the session.
+			// Same guard index.ts puts around drawPanel, for the same reason.
+			try {
+				this.host.notify(this.status, result.ok ? "info" : "error");
+				this.host.requestRender();
+			} catch {
+				/* the export still finished; there is just nobody left to tell */
+			}
 		});
 	}
 
@@ -326,6 +437,9 @@ export class WorkflowsPanel {
 	 * footer is standing down for us.
 	 */
 	render(width: number): string[] {
+		// The watchdog's heartbeat: being asked to draw is the only evidence this
+		// component still holds the editor slot. See the constructor.
+		this.renders++;
 		const theme = this.theme;
 		const inner = Math.max(1, width - 2);
 		const rule = theme.fg("border", "─".repeat(Math.max(1, width)));
@@ -340,15 +454,34 @@ export class WorkflowsPanel {
 		// scrolls instead. Three rows of panel still beat none, and pi-tui scrolls
 		// rather than throwing, so this is a squeeze and not a crash.
 		const available = this.host.rows() - CONFIG.screenReserve - 3;
-		// Hints go before the body does: a list with nothing in it is useless,
-		// whereas the keys are recoverable by pressing one.
-		const shown = available - footer.length >= 3 ? footer : footer.slice(0, Math.max(1, available - 3));
+		// When only one footer row fits, it has to carry BOTH.
+		//
+		// Dropping the hints leaves a panel that holds the prompt's slot with
+		// nothing saying how to get the prompt back. But dropping the status is
+		// no better: `p`, `c` and `e` write only to `this.status` and never
+		// notify, so the status line IS the entire output of those keys — losing
+		// it makes them look dead, and `e`'s whole product is the path it prints.
+		// So under pressure they share a line, exit hint last.
+		const room = Math.max(1, available - 3);
+		const shown =
+			footer.length <= room
+				? footer
+				: this.status
+					? // Exit FIRST on the shared line. `row()` truncates from the right,
+						// so whichever half is last is the half a narrow terminal eats —
+						// and a clipped stderr path is a nuisance where a clipped exit
+						// key is a trap.
+						[`${theme.fg("muted", HINTS[this.view][0]!)}  ·  ${theme.fg("warning", this.status)}`, ...hints].slice(0, room)
+					: hints.slice(0, room);
 		const budget = Math.max(3, available - shown.length);
 		// Each view keeps its own floor (a list never shrinks below three rows, an
 		// open log pane keeps its rule), and on a very short terminal those floors
 		// can outrun the budget; clipping here is what keeps the arithmetic above
-		// true rather than aspirational.
-		const body = this.body(budget).slice(0, budget);
+		// true rather than aspirational. From the middle, because the run view puts
+		// the log pane and the run's error LAST and the error is what someone
+		// opening a failed run came to read.
+		const rendered = this.body(budget);
+		const body = clipKeepingTail(rendered, budget, (hidden) => theme.fg("muted", `  ↕ ${hidden} more`), this.caretLine);
 
 		const lines = [rule, row(this.title()), ...body.map(row), rule, ...shown.map(row)];
 		// A line wider than the terminal is fatal in the editor slot: pi-tui tears
@@ -378,18 +511,43 @@ export class WorkflowsPanel {
 		const meta = this.currentMeta();
 		if (!meta) return theme.fg("accent", "✦ Workflows");
 		if (this.view === "run") {
-			return `${theme.fg("accent", theme.bold(`${statusMark(meta.status)} ${meta.runId}`))} ${theme.fg("text", meta.name)}  ${theme.fg("muted", this.runTail(meta))}`;
+			return `${theme.fg("accent", theme.bold(`${statusMark(meta.status)} ${meta.name}`))}  ${theme.fg("muted", this.runTail(meta))}`;
 		}
 		const agent = this.selectedAgent();
 		return `${theme.fg("accent", theme.bold("↩ agent"))} ${theme.fg("text", agent?.label ?? "")}`;
 	}
 
 	private runTail(meta: RunMeta): string {
-		const elapsed = formatElapsed((meta.endedAt ?? Date.now()) - meta.startedAt);
-		return `${meta.status} · ${meta.agentCount} agent(s) · $${meta.usage.cost.toFixed(4)} · ${elapsed}`;
+		const now = Date.now();
+		const elapsed = formatElapsed((meta.endedAt ?? now) - meta.startedAt);
+		// The registry first, the file second: run.json is written on a throttle
+		// while a run is in flight, so a run this process is driving reports its
+		// own agent count rather than the one it last managed to persist. A run
+		// from another session has no registry entry and falls back to the file,
+		// which is the best that exists.
+		const live = this.host.registry.get(meta.runId)?.progress;
+		const agents = live?.agentCount ?? meta.agentCount;
+		// No cost here. What a run spent is still recorded — run.json keeps it and
+		// ultracode announces it on `usage:spend` — but this panel is for
+		// watching work, and money has a place of its own in `/usage`.
+		//
+		// The start time stands in for the run id the row used to carry: with
+		// names alone, five `code-review` runs are indistinguishable, and `c`
+		// cancels whichever one the caret is on.
+		return `${meta.status} · ${agents} agent(s) · ${elapsed} · ${startedLabel(meta.startedAt, now)}`;
 	}
 
+	/**
+	 * Index of the caret line in the last body() result, for the height clip.
+	 *
+	 * Recorded rather than searched for: only the view that draws the caret knows
+	 * which of its lines carries it, and the clip has to keep that line whatever
+	 * else it drops.
+	 */
+	private caretLine: number | undefined;
+
 	private body(budget: number): string[] {
+		this.caretLine = undefined;
 		if (this.view === "runs") return this.runsBody(budget);
 		if (this.view === "run") return this.runBody(budget);
 		return this.agentBody(budget);
@@ -405,9 +563,14 @@ export class WorkflowsPanel {
 			const meta = this.metas[i]!;
 			const selected = i === this.runIndex;
 			const mark = this.colourMark(meta.status);
-			const name = theme.fg(selected ? "text" : "muted", meta.name);
+			// The name takes the accent the id used to hold: it is what the row is
+			// for, and nothing in this panel is addressed by id — you select with
+			// the arrows and act with a key. Selected rows keep the accent so the
+			// caret is not the only thing marking them.
+			const name = theme.fg(selected ? "accent" : "text", meta.name);
 			const tail = theme.fg("muted", this.runTail(meta));
-			lines.push(`${selected ? theme.fg("accent", "▸") : " "} ${mark} ${theme.fg("accent", meta.runId)} ${name}  ${tail}`);
+			if (selected) this.caretLine = lines.length;
+			lines.push(`${selected ? theme.fg("accent", "▸") : " "} ${mark} ${name}  ${tail}`);
 		}
 		if (window.after > 0) lines.push(theme.fg("muted", `  ↓ ${window.after} more`));
 		return lines;
@@ -465,6 +628,7 @@ export class WorkflowsPanel {
 				const selected = i === this.agentIndex;
 				const elapsed = agent.endedAt ? formatElapsed(agent.endedAt - agent.startedAt) : formatElapsed(Date.now() - agent.startedAt);
 				const detail = [agent.model?.split("/").at(-1), elapsed].filter(Boolean).join(" · ");
+				if (selected) this.caretLine = lines.length;
 				lines.push(
 					`${selected ? theme.fg("accent", "▸") : " "} ${this.agentMark(agent.status)} ${theme.fg(selected ? "text" : "muted", agent.label)}  ${theme.fg("muted", detail)}`,
 				);
@@ -497,13 +661,10 @@ export class WorkflowsPanel {
 		lines.push(
 			field("elapsed", agent.endedAt ? formatElapsed(agent.endedAt - agent.startedAt) : `${formatElapsed(Date.now() - agent.startedAt)} (running)`),
 		);
+		// Tokens, not money — this view says what an agent did, and `/usage` says
+		// what it cost. The cost is still on the row in the store either way.
 		if (agent.usage) {
-			lines.push(
-				field(
-					"tokens",
-					`${formatTokens(agent.usage.input)} in / ${formatTokens(agent.usage.output)} out · ${agent.usage.turns} turn(s) · $${agent.usage.cost.toFixed(4)}`,
-				),
-			);
+			lines.push(field("tokens", `${formatTokens(agent.usage.input)} in / ${formatTokens(agent.usage.output)} out · ${agent.usage.turns} turn(s)`));
 		}
 		lines.push(field("session", agent.sessionFile ?? theme.fg("muted", "none")));
 		if (agent.error) lines.push(theme.fg("error", field("error", agent.error)));
@@ -610,7 +771,16 @@ export async function showWorkflows(
 			(tui, theme, _keybindings, done) => {
 				close = done;
 				return new WorkflowsPanel(
-					{ ...host, requestRender: () => tui.requestRender(), rows: () => tui.terminal?.rows ?? CONFIG.assumedRows },
+					{
+						...host,
+						requestRender: () => tui.requestRender(),
+						rows: () => tui.terminal?.rows ?? CONFIG.assumedRows,
+						// Detached by something that took the slot without saying so.
+						// Hand the footer back here rather than resolving: resolving is
+						// what makes pi restore the editor, which would evict whatever
+						// is up now. This promise stays pending on purpose.
+						onDetached: () => pi.events.emit(PANEL_OPEN_CHANNEL, { active: false }),
+					},
 					theme,
 					done,
 				);

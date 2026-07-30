@@ -29,7 +29,10 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
-const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL } = await import("./config.ts");
+const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL } = await import("./config.ts");
+
+/** What ultracode puts on SPEND_CHANNEL. */
+type SpendEvent = { source: string; calls?: number; usage: { cost?: number; reasoning?: number } };
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -42,7 +45,7 @@ function check(label: string, got: unknown, want: unknown) {
 // ------------------------------------------------------------------- fake pi
 
 const events = new Map<string, Function>();
-const commands = new Map<string, { description?: string; handler: Function }>();
+const commands = new Map<string, { description?: string; handler: Function; getArgumentCompletions?: Function }>();
 const shortcuts = new Map<string, { description?: string; handler: Function }>();
 const tools = new Map<string, any>();
 const entryRenderers: string[] = [];
@@ -528,7 +531,7 @@ console.log("\n--- workflow tool: wait mode ---");
 console.log("\n--- workflow tool: background ---");
 {
 	const tool = tools.get("workflow")!;
-	const { ctx } = makeCtx({ model: MODEL });
+	const { ctx, notices } = makeCtx({ model: MODEL });
 	events.get("session_start")!({}, ctx); // panel announces through this ctx
 	sent.length = 0;
 	busEmitted.length = 0;
@@ -561,6 +564,111 @@ console.log("\n--- workflow tool: background ---");
 	// been announced at all.
 	check("panel announced at least once", announced().length > 0, true);
 	check("panel cleared when quiet", announced().at(-1), undefined);
+
+	// Spend is announced per subagent turn, for anyone totting up what the
+	// session cost — /usage is the subscriber, and it has no other way to learn
+	// about background agents, which are separate processes that never touch
+	// this transcript. These scripts spawn no agents, so the assertion here is
+	// the one that can be made without a live model: nothing is announced for a
+	// run that spent nothing, and in particular the settle path does not invent
+	// a summary event.
+	const spend = () => busEmitted.filter((e) => e.channel === SPEND_CHANNEL);
+	check("an agentless run announces no spend", spend().length, 0);
+
+	// A `/new` in the same process must start from zero. Without the registry
+	// being cleared on shutdown, the fresh session opens still holding the
+	// previous one's runs — its footer lines, and anything else that reads them.
+	// Observable through the registry: a run it still knows reports "already
+	// finished", one it has forgotten reports "not running in this session".
+	busEmitted.length = 0;
+	const backgroundId = /id: (wf-[a-z0-9]+-\d+)/.exec(startText)![1]!;
+	await commands.get("workflows")!.handler(`pause ${backgroundId}`, ctx);
+	check("before shutdown the run is still known", notices.at(-1)?.message.includes("has finished"), true);
+	events.get("session_shutdown")!({}, ctx);
+	await commands.get("workflows")!.handler(`pause ${backgroundId}`, ctx);
+	check("after shutdown it is forgotten", notices.at(-1)?.message.includes("not running in this session"), true);
+	check("shutdown announces no spend", spend().length, 0);
+	check("the footer's run lines are cleared too", announced().at(-1), undefined);
+}
+
+console.log("\n--- workflow tool: a background run announces what it spends ---");
+{
+	// The one assertion that actually exercises the spend path end to end:
+	// engine -> spawn -> JSONL parse -> applyTurn -> onUsage -> announceSpend ->
+	// the bus. Everything else stopped short of it — the unit test checks
+	// applyTurn in isolation, the other e2e scripts spawn no agents, and the live
+	// test reads run.json, which persist() writes regardless. Deleting the emit
+	// left all 18 suites green, so the central claim of the whole change was
+	// unguarded.
+	//
+	// A fake `pi` stands in for the real binary: piInvocation() runs
+	// process.argv[1] under node, so pointing that at a script which prints one
+	// message_end and exits gives a genuine subprocess without a model.
+	const fakePi = join(ROOT, "fake-pi.mjs");
+	writeFileSync(
+		fakePi,
+		[
+			"const usage = { input: 1000, output: 200, cacheRead: 5000, cacheWrite: 0, reasoning: 150, totalTokens: 6200, cost: { total: 0.25 } };",
+			'const message = { role: "assistant", content: [{ type: "text", text: "done" }], usage, stopReason: "stop" };',
+			'process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");',
+		].join("\n"),
+	);
+	const realArgv1 = process.argv[1];
+	process.argv[1] = fakePi;
+
+	const tool = tools.get("workflow")!;
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	busEmitted.length = 0;
+	const script = [
+		"export const meta = { name: 'spender', description: 'one agent' }",
+		"const text = await agent('say something')",
+		"return { text }",
+	].join("\n");
+
+	try {
+		const sync = await tool.execute("t-spend", { script, wait: true }, undefined, undefined, ctx);
+		const spend = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
+		// wait: true attaches usage to the tool result instead, so this path must
+		// stay silent or the same tokens get billed twice.
+		check("a wait:true run announces nothing", spend.length, 0);
+		// ...and the tool result it attaches has to carry every field, reasoning
+		// included. Dropping it made the same fleet report different thinking
+		// totals depending only on `wait`.
+		check("its tool result carries the spend", sync.usage?.cost?.total, 0.25);
+		check("including the reasoning tokens", sync.usage?.reasoning, 150);
+
+		busEmitted.length = 0;
+		const immediate = await tool.execute("t-spend-bg", { script }, undefined, undefined, ctx);
+		const runId = /id: (wf-[a-z0-9]+-\d+)/.exec(immediate.content[0].text)![1]!;
+		for (let i = 0; i < 200 && !busEmitted.some((e) => e.channel === SPEND_CHANNEL); i++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		const bg = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
+		check("a background run announces its spend", bg.length > 0, true);
+		check("under the shared source name", bg[0]?.source, "workflows");
+		check("carrying the flat cost", bg[0]?.usage.cost, 0.25);
+		check("and the reasoning tokens", bg[0]?.usage.reasoning, 150);
+		check("counted as a call", bg[0]?.calls, 1);
+		check("the run is real", runId.startsWith("wf-"), true);
+
+		// A wait:true run that FAILS attaches no usage — pi builds the error tool
+		// result itself and it carries none — so the spend has to come out the
+		// announcement door instead, or four minutes of agents vanish from every
+		// total. Exclusive with the success path, which announces nothing.
+		busEmitted.length = 0;
+		const failing = [
+			"export const meta = { name: 'doomed', description: 'spends then fails' }",
+			"await agent('say something')",
+			"throw new Error('deliberate')",
+		].join("\n");
+		await tool.execute("t-spend-fail", { script: failing, wait: true }, undefined, undefined, ctx).catch(() => undefined);
+		const failed = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
+		check("a failed wait:true run still reports its spend", failed.length, 1);
+		check("as the run's whole total", failed[0]?.usage.cost, 0.25);
+	} finally {
+		process.argv[1] = realArgv1;
+	}
 }
 
 console.log("\n--- workflow tool: /workflows, pause, cancel ---");
@@ -602,7 +710,30 @@ console.log("\n--- workflow tool: /workflows, pause, cancel ---");
 	}
 
 	await commands.get("workflows")!.handler("list", ctx);
-	check("/workflows list names the run", notices.at(-1)?.message.includes(`${runId} sleeper`), true);
+	// Name first — it is the readable part — with the id kept at the end, since
+	// this report is where you copy the id the subcommands below want.
+	check("/workflows list leads with the name", notices.at(-1)?.message.includes("◆ sleeper —"), true);
+	check("and still carries the id to address it by", notices.at(-1)?.message.includes(`[${runId}]`), true);
+
+	// Completing by NAME is the point: the subcommands address runs by id, but
+	// nobody knows a run as wf-<base36>. What you read is the name; what gets
+	// inserted is the id the handler can resolve.
+	{
+		const complete = (prefix: string) => commands.get("workflows")!.getArgumentCompletions!(prefix) as Array<{ value: string; label: string }>;
+		const byName = complete("cancel sleep");
+		check("typing the name finds the run", byName.length, 1);
+		// Name plus start time, the same disambiguator the panel rows carry: five
+		// runs called `code-review` must not offer five identical entries that
+		// each insert a different id.
+		check("the label reads as the name", byName[0]?.label.startsWith("cancel sleeper ("), true);
+		check("and carries a start time to tell duplicates apart", /\(\d\d:\d\d\)$/.test(byName[0]!.label), true);
+		check("but the id is what is inserted", byName[0]?.value, `cancel ${runId}`);
+		check("typing the id still works", complete(`cancel ${runId}`).length, 1);
+		// The bare verb leads, then one entry per run it could apply to.
+		const verbs = complete("pa");
+		check("the bare verb still completes first", verbs[0]?.value, "pause");
+		check("and every following option is that verb", verbs.every((option) => option.label.startsWith("pause")), true);
+	}
 
 	await commands.get("workflows")!.handler(`pause ${runId}`, ctx);
 	check("pause acknowledged", notices.at(-1)?.message.startsWith(`${runId} pausing`), true);

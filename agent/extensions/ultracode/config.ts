@@ -47,6 +47,38 @@ export const PANEL_CHANNEL = "ultracode:panel";
  */
 export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
 
+/**
+ * pi.events channel for announcing model spend — shared by every extension that
+ * bills money, not owned by this one, which is why it is not `ultracode:*`.
+ *
+ * Payload is an INCREMENT: `{ source: "workflows", usage: { …, cost: number },
+ * calls }`. Announced per subagent turn from the same hook that folds usage
+ * into the run, so a subscriber sees spend as it happens without ultracode
+ * keeping a second tally to hand out.
+ *
+ * Workflow agents are separate pi processes, so none of their spend appears in
+ * this session's own messages — an accounting that reads only the transcript is
+ * blind to the most expensive thing in it. Announcing rather than being read
+ * keeps that one-directional: ultracode does not know who subscribes (today,
+ * /usage), and with no subscriber the events go nowhere.
+ *
+ * `wait: true` runs are deliberately NOT announced. pi already attaches their
+ * spend to the tool result as `usage`, which a reader picks up from the
+ * transcript; announcing as well would bill the same tokens twice.
+ */
+export const SPEND_CHANNEL = "usage:spend";
+
+/** The `source` this extension announces under. */
+export const SPEND_SOURCE = "workflows";
+
+/**
+ * Floor on how often live spend is written to run.json, in ms.
+ *
+ * Only for the streamed per-turn updates; every settled agent persists
+ * regardless. See persistThrottled in tool.ts for what this is protecting.
+ */
+export const USAGE_PERSIST_MS = 5_000;
+
 export const CONFIG = {
 	/** Sparse "still on" reminder cadence, in user turns. */
 	turnsBetweenMaintenance: 10,

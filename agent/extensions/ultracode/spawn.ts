@@ -47,6 +47,17 @@ export interface SpawnRequest {
 	approved: boolean;
 	signal?: AbortSignal;
 	timeoutMs?: number;
+	/**
+	 * Called with the INCREMENT for each assistant turn, as the child reports it.
+	 *
+	 * Without this a run's spend only lands when the subprocess exits, so a fleet
+	 * of ten-minute agents reads $0.0000 for ten minutes — exactly the window in
+	 * which someone is watching to decide whether to cancel. The deltas sum to the
+	 * same totals the returned `usage` carries, `totalTokens` included (see the
+	 * note where it is computed), so a caller streams these INSTEAD of adding the
+	 * final total, never as well.
+	 */
+	onUsage?: (delta: SpawnUsage) => void;
 }
 
 export interface SpawnUsage {
@@ -54,6 +65,8 @@ export interface SpawnUsage {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	/** Thinking tokens, when the provider breaks them out. A subset of `output`. */
+	reasoning: number;
 	cost: number;
 	totalTokens: number;
 	turns: number;
@@ -75,7 +88,7 @@ export class SubagentError extends Error {
 }
 
 export function emptyUsage(): SpawnUsage {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 };
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
 }
 
 export function addUsage(total: SpawnUsage, part: SpawnUsage): void {
@@ -83,9 +96,61 @@ export function addUsage(total: SpawnUsage, part: SpawnUsage): void {
 	total.output += part.output;
 	total.cacheRead += part.cacheRead;
 	total.cacheWrite += part.cacheWrite;
+	total.reasoning += part.reasoning;
 	total.cost += part.cost;
 	total.totalTokens += part.totalTokens;
 	total.turns += part.turns;
+}
+
+/** The usage block pi puts on an assistant message in its JSONL event stream. */
+export interface ReportedUsage {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	/** Subset of `output`; only some providers report it, so it is optional here. */
+	reasoning?: number;
+	cost?: { total?: number };
+	totalTokens?: number;
+}
+
+/**
+ * Fold one assistant turn into `usage`, and return what that turn added.
+ *
+ * The returned delta is what makes live reporting possible, and its contract is
+ * that adding every delta with addUsage lands exactly where `usage` does. Two
+ * cases make that non-obvious:
+ *
+ *   - a turn counts even when the provider reported no usage at all, so `turns`
+ *     is 1 regardless;
+ *   - `totalTokens` is the child's CONTEXT SIZE, replaced each turn rather than
+ *     accumulated, so its delta is the difference. That goes negative when the
+ *     child compacts — correctly, since a caller adding deltas must come down
+ *     with it rather than holding the high-water mark.
+ */
+export function applyTurn(usage: SpawnUsage, reported: ReportedUsage | undefined): SpawnUsage {
+	const delta = emptyUsage();
+	delta.turns = 1;
+	usage.turns++;
+	if (!reported) return delta;
+
+	delta.input = reported.input ?? 0;
+	delta.output = reported.output ?? 0;
+	delta.cacheRead = reported.cacheRead ?? 0;
+	delta.cacheWrite = reported.cacheWrite ?? 0;
+	delta.reasoning = reported.reasoning ?? 0;
+	delta.cost = reported.cost?.total ?? 0;
+	usage.input += delta.input;
+	usage.output += delta.output;
+	usage.cacheRead += delta.cacheRead;
+	usage.cacheWrite += delta.cacheWrite;
+	usage.reasoning += delta.reasoning;
+	usage.cost += delta.cost;
+
+	const next = reported.totalTokens ?? usage.totalTokens;
+	delta.totalTokens = next - usage.totalTokens;
+	usage.totalTokens = next;
+	return delta;
 }
 
 /**
@@ -172,19 +237,21 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 			const message = event.message as {
 				role?: string;
 				content?: Array<{ type?: string; text?: string }>;
-				usage?: Partial<SpawnUsage> & { cost?: { total?: number }; totalTokens?: number };
+				usage?: ReportedUsage;
 				stopReason?: string;
 				errorMessage?: string;
 			};
 			if (message.role !== "assistant") return;
-			usage.turns++;
-			if (message.usage) {
-				usage.input += message.usage.input ?? 0;
-				usage.output += message.usage.output ?? 0;
-				usage.cacheRead += message.usage.cacheRead ?? 0;
-				usage.cacheWrite += message.usage.cacheWrite ?? 0;
-				usage.cost += message.usage.cost?.total ?? 0;
-				usage.totalTokens = message.usage.totalTokens ?? usage.totalTokens;
+			const delta = applyTurn(usage, message.usage);
+			// After the totals, so a throwing subscriber cannot leave `usage` half
+			// applied — and swallowed, because this runs on the stdout handler where
+			// an escape would take the whole spawn down.
+			if (request.onUsage) {
+				try {
+					request.onUsage(delta);
+				} catch {
+					/* a subscriber's problem is not the agent's */
+				}
 			}
 			const text = (message.content ?? [])
 				.filter((block) => block.type === "text" && typeof block.text === "string")
