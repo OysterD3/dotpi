@@ -31,7 +31,16 @@
 
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG, ENTRY_TYPE } from "./config.ts";
-import { generateRecap } from "./generate.ts";
+import { generateRecap, type SpendReport } from "./generate.ts";
+
+/**
+ * pi.events channel for announcing model spend, shared by every extension that
+ * bills money (the `usage` extension keeps the tally and `/usage` prints it).
+ * A literal string rather than an import: each extension here installs on its
+ * own, so the two sides share a channel name, not a module. With no subscriber
+ * the event goes nowhere.
+ */
+const SPEND_CHANNEL = "usage:spend";
 import { type GateEntry, shouldAutoRecap } from "./gate.ts";
 import { renderRecap, type RecapDetails } from "./render.ts";
 import { loadSettings } from "./settings.ts";
@@ -40,6 +49,9 @@ import { RecapState } from "./state.ts";
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	const state = new RecapState();
+
+	/** One recap call's spend, announced as an increment. */
+	const announce = (spend: SpendReport) => pi.events.emit(SPEND_CHANNEL, { source: "recap", usage: spend, calls: 1 });
 
 	pi.registerEntryRenderer<RecapDetails>(ENTRY_TYPE, (entry, _options, theme) =>
 		entry.data ? renderRecap(entry.data, theme) : undefined,
@@ -83,6 +95,7 @@ export default function (pi: ExtensionAPI) {
 				agentDir,
 				timeoutMs: CONFIG.autoTimeoutMs,
 				signal: ctx.signal,
+				onSpend: announce,
 			});
 			if (outcome.kind === "ok") {
 				pi.appendEntry<RecapDetails>(ENTRY_TYPE, { text: outcome.text, trigger: "auto", idleMs });
@@ -101,7 +114,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				const outcome = await generateRecap(ctx, { agentDir, timeoutMs: CONFIG.timeoutMs, signal: ctx.signal });
+				const outcome = await generateRecap(ctx, { agentDir, timeoutMs: CONFIG.timeoutMs, signal: ctx.signal, onSpend: announce });
 				switch (outcome.kind) {
 					case "ok":
 						pi.appendEntry<RecapDetails>(ENTRY_TYPE, { text: outcome.text, trigger: "manual" });

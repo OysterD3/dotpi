@@ -28,7 +28,7 @@
 
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
-import { evaluate, selectModel } from "./judge.ts";
+import { evaluate, selectModel, type SpendReport } from "./judge.ts";
 import { goalSetInstruction, notMetInstruction } from "./prompts.ts";
 import {
 	type GoalMessageDetails,
@@ -43,10 +43,22 @@ import { goalElapsed, GoalState, restoreGoal, tokensSpent } from "./state.ts";
 const GOAL_MESSAGE = "goal";
 const GOAL_RESULT = "goal_result";
 
+/**
+ * pi.events channel for announcing model spend, shared by every extension that
+ * bills money (the `usage` extension keeps the tally and `/usage` prints it).
+ * A literal string rather than an import: each extension here installs on its
+ * own, so the two sides share a channel name, not a module. With no subscriber
+ * the event goes nowhere.
+ */
+const SPEND_CHANNEL = "usage:spend";
+
 export default function (pi: ExtensionAPI) {
 	const state = new GoalState(pi);
 	const agentDir = getAgentDir();
 	let settings: GoalSettings = { ...DEFAULTS };
+
+	/** One evaluator call's spend, announced as an increment. */
+	const announce = (spend: SpendReport) => pi.events.emit(SPEND_CHANNEL, { source: "goal", usage: spend, calls: 1 });
 
 	pi.registerMessageRenderer<GoalMessageDetails>(GOAL_MESSAGE, (message, _options, theme) =>
 		message.details ? renderGoalMessage(message.details, theme) : undefined,
@@ -136,7 +148,7 @@ export default function (pi: ExtensionAPI) {
 		if (!state.beginEvaluation()) return;
 
 		try {
-			const verdict = await evaluate(ctx, goal.condition, ctx.signal, settings.model);
+			const verdict = await evaluate(ctx, goal.condition, ctx.signal, settings.model, announce);
 
 			// The judge call takes tens of seconds, and the user can type through it.
 			// If they cleared this goal or set a different one meanwhile, the verdict

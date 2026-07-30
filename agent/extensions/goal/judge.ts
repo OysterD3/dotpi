@@ -129,12 +129,23 @@ export function selectModel(
 	return { error: "no model selected" };
 }
 
-/** Run one evaluation against the current session transcript. */
+/** Flattened spend from one evaluator call, for SPEND_CHANNEL. */
+export type SpendReport = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; cost: number };
+
+/**
+ * Run one evaluation against the current session transcript.
+ *
+ * `onSpend` is called once per evaluator call — including the retry after an
+ * overflow, which is a second call and a second bill. A goal evaluation stores
+ * only a display entry, so without this its spend is invisible to any
+ * accounting; index.ts announces it.
+ */
 export async function evaluate(
 	ctx: ExtensionContext,
 	condition: string,
 	signal?: AbortSignal,
 	modelReference?: string,
+	onSpend?: (spend: SpendReport) => void,
 ): Promise<Verdict> {
 	const selected = selectModel(ctx, modelReference);
 	if ("error" in selected) return { kind: "error", reason: selected.error };
@@ -173,6 +184,17 @@ export async function evaluate(
 				reasoning: "minimal",
 			},
 		);
+
+		// Before any verdict is returned: every branch below is an outcome of a
+		// call that was already billed, including the aborted and errored ones.
+		onSpend?.({
+			input: response.usage?.input ?? 0,
+			output: response.usage?.output ?? 0,
+			cacheRead: response.usage?.cacheRead ?? 0,
+			cacheWrite: response.usage?.cacheWrite ?? 0,
+			reasoning: response.usage?.reasoning ?? 0,
+			cost: response.usage?.cost?.total ?? 0,
+		});
 
 		// (1) An interrupted call is not evidence of anything, whatever it managed
 		// to emit before it stopped.

@@ -41,6 +41,57 @@ is showing them in full while it is up.
 | `git.ts` | Working-tree diff counts |
 | `usage.ts` | Subscription limit windows via the Codex endpoint |
 
+**`agent/extensions/usage/`** — adds `/usage`: what this session has cost, and where it went.
+
+The statusline above already carries running token totals, but it has one line, so it answers "how
+full is the context" rather than "what am I paying for" — and the single number it shows leaves out
+every model call that was not a message in this conversation. `/usage` is the breakdown:
+
+```
+● Usage  ·  019f89f7  ·  1h 00m  ·  1 turn
+Context  [████········] 84k / 272k (31%)
+
+Source                      calls  input  output  cached      cost
+openai-codex/gpt-5.6-sol        1  1.20M     84k    980k  $12.3456
+anthropic/claude-haiku-4-5      1    23k    1.2k       0   $0.0231
+workflow (tool)                 1    40k    8.0k       0   $1.5000
+compaction                      1   140k    3.1k       0   $0.4200
+workflows                      40   900k     50k   2.10M   $8.0000
+──────────────────────────────────────────────────────────────────
+Total                          44  2.30M    147k   3.08M  $22.2887
+5.53M tokens billed  ·  57% of input served from cache  ·  41k reasoning
+```
+
+Every bug this could have makes the session look **cheaper** than it was, which is the one
+direction a cost report must never be wrong in — so the rows below the models are the point. A tool
+result carries its own `usage` when the tool itself talked to a model (a synchronous workflow, a
+subagent); pi calls that "not part of main LLM context accounting", which is right for context and
+wrong for money. Compaction and branch summarisation are model calls pi makes on your behalf,
+recorded on their own entries rather than as messages. Counted over the whole session **file**, not
+the current branch: an abandoned fork was still paid for, and a `/usage` that got cheaper when you
+rewound would be lying.
+
+The last category is spend that reaches the session file **nowhere at all**: background workflow
+agents are separate pi processes, and `recap` and `goal` call `completeSimple` directly and store
+only a display entry. Each announces on a shared `usage:spend` channel — named for the question,
+not for one answer to it, since a channel called `ultracode:spend` made workflows visible and left
+the other two invisible. The payload is an increment (`{ source, usage, calls }`, `cost` flat), so a
+producer announces as it spends and never keeps a tally of its own, and rows are keyed by source.
+A producer that isn't installed simply never fires and its row never appears.
+
+The report is written into the transcript as a custom entry, the way `/recap` is, so it never
+enters LLM context — and scrolling back to an earlier `/usage` shows what the session had spent *at
+that point*, which is what you want when working out what one stretch of work cost. The entry
+stores the numbers rather than the drawing, so it re-renders correctly after a theme change.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Command, entry renderer, workflow-spend subscription |
+| `collect.ts` | Session entries → per-source totals (pure) |
+| `render.ts` | Totals → the table (pure) |
+| `config.ts` | Channel name, meter glyphs, thresholds |
+| `usage.test.ts` | Unit coverage |
+
 **`agent/extensions/web-search/`** — registers a `web_search` tool backed by
 [Exa](https://exa.ai). Requires `EXA_API_KEY`.
 
@@ -496,15 +547,15 @@ once it holds an assistant turn. `agentType` borrows a standing definition from 
 **Workflows don't block the session.** The tool validates the script — meta *and* a compile check,
 so a syntax error fails the call rather than arriving minutes later as a failed run — starts the
 fleet, and returns immediately with a run id; the main agent keeps working while the bottom of the
-footer shows each run's phases, agent counts, spend, and elapsed time. ultracode does not draw that
+footer shows each run's phases, agent counts and elapsed time. ultracode does not draw that
 itself — it announces the lines on the `ultracode:panel` event channel and the statusline appends
 them, the same decoupling `permissions` → `cmux-notify` uses. When a run settles
 its outcome comes back to the model as a `workflow-result` message: a follow-up if the agent is
 mid-turn, a turn of its own if the session is idle, so results get processed the way a task
 notification would. The model can pass `wait: true` for the rare workflow whose result it needs
-before doing anything else; only those attach their spend to the tool result as `usage` (a
-background run's tool result is long gone by the time money is spent, so its cost is reported in
-the result message and `/workflows` instead).
+before doing anything else; only those attach their spend to the tool result as `usage`, which is
+what puts them in `/usage` under their tool name (a background run's tool result is long gone by the
+time money is spent, so its spend arrives on the `usage:spend` channel instead).
 
 **The workflow control panel is a panel, not a list.** `shift+↓` at the prompt opens it, and
 `/workflows` still does — the footer line advertising it sits directly under where you type, so
@@ -521,6 +572,51 @@ time) — and Esc-to-interrupt is unavailable until you do, which a one-key gest
 easier to trip into. Pausing is live: in-flight agents finish and new ones park at a gate, so a run can be held
 mid-fleet and let go again. The subcommands remain for scripting:
 `/workflows list|show <id>|pause <id>|resume <id>|cancel [id]`.
+
+**Runs are shown by name, not by id.** `wf-0ms5sqq7r-6` is fourteen characters of base36 in a line
+the statusline clips, and there is nothing in the panel you address by id anyway — you select with
+the arrows and act with a key. So the panel, the footer lines and the transcript row all read
+`migrate-parser`, and the start time takes the id's place in the run list, since with names alone
+five `code-review` runs are otherwise indistinguishable and `c` cancels whichever one the caret is
+on. Clock time for today's runs, a date for older ones:
+
+```
+▸ ◆ migrate-parser  running · 5 agent(s) · 1m35s · 16:01
+  ✓ code-review     done · 12 agent(s) · 3m20s · 14:03
+  ✗ code-review     error · 3 agent(s) · 1m00s · Jul 27
+```
+
+Ids survive exactly where something has to be *named*: `/workflows list` and `show` print them in
+trailing brackets, because finding an id to pass to `pause`/`cancel`/`show` is the only reason to
+type those rather than open the panel; argument completion offers `cancel code-review (16:01)` as
+the label and inserts the id, and matches on either, so you can complete by the name you know — with
+the same start-time disambiguator, since five identical labels that insert different ids are worse
+than the base36 they replaced. The model-facing text is untouched — the tool result, the
+`workflow-result` message and the `R` resume instruction all carry the run id, since
+`resumeFromRunId` is the only handle that identifies a run to the tool.
+
+**Spend is tracked here and reported in `/usage`.** No *ambient* workflow surface quotes a price —
+not the panel, not the footer line, not the transcript row, not the summary the model gets back.
+Watching work and watching money are different activities, and a live dollar figure under the
+prompt is a thing to stare at rather than read; `/usage` is where it belongs, and it has room for
+the breakdown. The one exception is `/workflows show <id>`, a report you type a run id into to ask
+about one run — without it, "which of these five cost $40" has no answer short of opening run.json
+by hand, because `/usage` only ever reports a session total.
+
+The numbers are still collected, and collected *promptly*: a subagent reports usage on every turn
+it takes and the run folds each one in as it arrives, rather than when the subprocess finally
+exits. `run.json` keeps a per-run total (written on a throttle while agents stream) — the only
+place per-run cost is now recorded, since no command prints it — and each turn is announced on the
+shared `usage:spend` channel, which is where `/usage` gets a workflow row it could not otherwise
+know about.
+
+A `wait: true` run announces **nothing** while it runs: pi already attaches its spend to the tool
+result, which `/usage` reads off the transcript as a `workflow (tool)` row, so announcing as well
+would bill every synchronous workflow twice. The exception is a run that fails or is cancelled —
+`execute` throws, pi builds the error result itself and that one carries no usage at all, so the
+run announces its total on the way out. The two doors stay exclusive; which one opens depends on
+how the run ended. Announcements also stop the moment a run is aborted, so children still dying
+after `/new` cannot bill the next session for tokens it never spent.
 
 Runs still do not survive a session switch — shutdown cancels the fleet — but that is no longer
 silent. A run whose owning process is gone is reconciled to `interrupted` on next start, and the

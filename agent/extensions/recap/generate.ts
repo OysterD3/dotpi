@@ -23,8 +23,17 @@ export type RecapOutcome =
 
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string; readonly contextWindow: number };
 
+/** Flattened spend from one model call, for SPEND_CHANNEL. */
+export type SpendReport = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; cost: number };
+
 export type GenerateOptions = {
 	agentDir: string;
+	/**
+	 * Called with what the recap call cost. A recap is a real model call that
+	 * leaves no usage anywhere in the session — it stores a display-only custom
+	 * entry — so without this it is spend nothing can see. index.ts announces it.
+	 */
+	onSpend?: (spend: SpendReport) => void;
 	/** Manual `/recap` gets the longer timeout; auto-on-return the shorter one. */
 	timeoutMs?: number;
 	signal?: AbortSignal;
@@ -72,6 +81,17 @@ export async function generateRecap(ctx: ExtensionContext, options: GenerateOpti
 				reasoning: "minimal",
 			},
 		);
+
+		// Before the outcome is decided: an errored or empty response was still
+		// billed for whatever it consumed.
+		options.onSpend?.({
+			input: response.usage?.input ?? 0,
+			output: response.usage?.output ?? 0,
+			cacheRead: response.usage?.cacheRead ?? 0,
+			cacheWrite: response.usage?.cacheWrite ?? 0,
+			reasoning: response.usage?.reasoning ?? 0,
+			cost: response.usage?.cost?.total ?? 0,
+		});
 
 		const text = response.content
 			.filter((block): block is { type: "text"; text: string } => block.type === "text")
