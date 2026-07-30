@@ -43,6 +43,7 @@ import { runWorkflowScript, validateScript, type AgentOptions, type EngineHooks 
 import { ReplayIndex, type JournalInput } from "./journal.ts";
 import { resolveModelReference } from "./models.ts";
 import { newProgress, PauseGate, RunRegistry, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
+import { startedLabel } from "./panel.ts";
 import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
 import {
 	agentErrorPath,
@@ -200,7 +201,7 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 					// minutes of agents that then failed would otherwise vanish from
 					// every total. Announced once, as the run's whole spend, because
 					// the per-turn door was shut for this run.
-					announceRunSpend(pi, run.progress.usage);
+					announceRunSpend(pi, run.progress.usage, run.spendDetail);
 					throw new Error(run.progress.status === "aborted" ? "Workflow aborted" : outcome.text);
 				}
 				return {
@@ -377,6 +378,12 @@ function startRun(
 	 * the announced total. Only background runs, whose tool result was resolved
 	 * long before the money was spent, need this door.
 	 */
+	// Named once, at start: the run's own label for /usage's per-run rows. Fixed
+	// for the run's lifetime so a fleet that crosses midnight does not split into
+	// two rows, and carrying the start time because two runs of the same workflow
+	// are otherwise indistinguishable.
+	const spendDetail = `${name} (${startedLabel(meta.startedAt, meta.startedAt)})`;
+
 	const announceSpend = (delta: SpawnUsage) => {
 		if (wait) return;
 		// Nothing after the run is cancelled. `session_shutdown` aborts every
@@ -388,6 +395,7 @@ function startRun(
 		if (controller.signal.aborted) return;
 		pi.events.emit(SPEND_CHANNEL, {
 			source: SPEND_SOURCE,
+			detail: spendDetail,
 			calls: delta.turns,
 			usage: {
 				input: delta.input,
@@ -591,6 +599,7 @@ function startRun(
 		gate,
 		startedAt: meta.startedAt,
 		settled: Promise.resolve(),
+		spendDetail,
 	};
 
 	journal({ kind: "run", event: "start" });
@@ -761,10 +770,14 @@ function toPiUsage(usage: SpawnUsage) {
  * per turn. Same payload shape as the per-turn announcement in startRun; see
  * SPEND_CHANNEL for why `cost` is flat.
  */
-function announceRunSpend(pi: ExtensionAPI, usage: SpawnUsage): void {
+function announceRunSpend(pi: ExtensionAPI, usage: SpawnUsage, detail: string | undefined): void {
 	if (usage.turns === 0) return;
 	pi.events.emit(SPEND_CHANNEL, {
 		source: SPEND_SOURCE,
+		// Absent only for a run built outside startRun (tests). A subscriber then
+		// gets the source row without a per-run child, which is the right
+		// degradation: no label is better than a wrong one.
+		...(detail ? { detail } : {}),
 		calls: usage.turns,
 		usage: {
 			input: usage.input,

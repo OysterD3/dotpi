@@ -51,10 +51,14 @@ export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
  * pi.events channel for announcing model spend — shared by every extension that
  * bills money, not owned by this one, which is why it is not `ultracode:*`.
  *
- * Payload is an INCREMENT: `{ source: "workflows", usage: { …, cost: number },
- * calls }`. Announced per subagent turn from the same hook that folds usage
- * into the run, so a subscriber sees spend as it happens without ultracode
- * keeping a second tally to hand out.
+ * Payload is an INCREMENT: `{ source: "workflows", detail, usage: { …, cost:
+ * number }, calls }`. Announced per subagent turn from the same hook that folds
+ * usage into the run, so a subscriber sees spend as it happens without
+ * ultracode keeping a second tally to hand out.
+ *
+ * `detail` names the individual run ("code-review (16:01)"), which is what lets
+ * /usage answer "which of these five cost $40" — the question that has no other
+ * home now that no /workflows surface prints a price.
  *
  * Workflow agents are separate pi processes, so none of their spend appears in
  * this session's own messages — an accounting that reads only the transcript is

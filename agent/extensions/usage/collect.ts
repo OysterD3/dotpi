@@ -46,6 +46,12 @@ export interface Totals {
 export interface Row {
 	label: string;
 	totals: Totals;
+	/**
+	 * Finer-grained rows under this one, when the producer named them: one
+	 * workflow run, say, inside the `workflows` total. Rendered indented, and
+	 * only when there is more than one — a single child just restates its parent.
+	 */
+	children?: Row[];
 }
 
 export interface SessionUsage {
@@ -249,6 +255,12 @@ export interface AnnouncedSpend {
 	};
 	/** Model calls this increment covers. Defaults to 1. */
 	calls?: number;
+	/**
+	 * Optional finer label within `source` — the individual run, request or job
+	 * this increment came from. Producers that have no meaningful subdivision
+	 * omit it and get a single row.
+	 */
+	detail?: string;
 }
 
 /**
@@ -260,14 +272,32 @@ export interface AnnouncedSpend {
  */
 export class AnnouncedSpendLog {
 	private sources = new Map<string, Totals>();
+	/** Per-source breakdown, keyed by the producer's `detail` label. */
+	private details = new Map<string, Map<string, Totals>>();
 
 	add(spend: AnnouncedSpend | undefined): void {
 		if (!spend || typeof spend.source !== "string" || !spend.source) return;
 		const totals = bucket(this.sources, spend.source);
-		// Coerced field by field inside `record`, not trusted: an unrecognised
-		// payload reports as zero rather than throwing mid-render or poisoning the
-		// accumulator. The end-to-end test against a real producer is what stops
-		// that zero going unnoticed.
+		if (typeof spend.detail === "string" && spend.detail) {
+			let within = this.details.get(spend.source);
+			if (!within) {
+				within = new Map<string, Totals>();
+				this.details.set(spend.source, within);
+			}
+			this.fold(bucket(within, spend.detail), spend);
+		}
+		this.fold(totals, spend);
+	}
+
+	/**
+	 * Add one announcement's numbers to a bucket.
+	 *
+	 * Coerced field by field inside `record`, not trusted: an unrecognised payload
+	 * reports as zero rather than throwing mid-render or poisoning the
+	 * accumulator. The end-to-end test against a real producer is what stops that
+	 * zero going unnoticed.
+	 */
+	private fold(totals: Totals, spend: AnnouncedSpend): void {
 		const before = totals.calls;
 		record(totals, { ...spend.usage, cost: { total: num(spend.usage?.cost) } });
 		// `record` counts one call; an announcement may cover several turns.
@@ -276,6 +306,7 @@ export class AnnouncedSpendLog {
 
 	reset(): void {
 		this.sources.clear();
+		this.details.clear();
 	}
 
 	/**
@@ -289,7 +320,12 @@ export class AnnouncedSpendLog {
 	 * message, sometimes those mutated numbers written into the session file.
 	 */
 	rows(): Row[] {
-		return rows(this.sources).map((row) => ({ label: row.label, totals: { ...row.totals } }));
+		return rows(this.sources).map((row) => {
+			const within = this.details.get(row.label);
+			// One child is the parent restated, so it earns no line.
+			const children = within && within.size > 1 ? rows(within).map((child) => ({ label: child.label, totals: { ...child.totals } })) : undefined;
+			return { label: row.label, totals: { ...row.totals }, ...(children ? { children } : {}) };
+		});
 	}
 }
 

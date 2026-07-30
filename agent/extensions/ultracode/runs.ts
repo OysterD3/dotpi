@@ -48,6 +48,8 @@ export interface WorkflowRun {
 	startedAt: number;
 	/** Resolves once the run has fully settled and outcome is recorded. */
 	settled: Promise<void>;
+	/** This run's label on the spend channel — "code-review (16:01)". */
+	spendDetail?: string;
 	outcome?: { text: string; isError: boolean };
 }
 

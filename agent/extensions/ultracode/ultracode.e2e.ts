@@ -32,7 +32,7 @@ const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = aw
 const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL } = await import("./config.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
-type SpendEvent = { source: string; calls?: number; usage: { cost?: number; reasoning?: number } };
+type SpendEvent = { source: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -650,6 +650,9 @@ console.log("\n--- workflow tool: a background run announces what it spends ---"
 		check("carrying the flat cost", bg[0]?.usage.cost, 0.25);
 		check("and the reasoning tokens", bg[0]?.usage.reasoning, 150);
 		check("counted as a call", bg[0]?.calls, 1);
+		// Named per run, which is what gives /usage a row per workflow — the only
+		// place per-run cost is reported now that no /workflows surface prints one.
+		check("and named for the run it came from", bg[0]?.detail?.startsWith("spender ("), true);
 		check("the run is real", runId.startsWith("wf-"), true);
 
 		// A wait:true run that FAILS attaches no usage — pi builds the error tool
@@ -666,6 +669,7 @@ console.log("\n--- workflow tool: a background run announces what it spends ---"
 		const failed = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
 		check("a failed wait:true run still reports its spend", failed.length, 1);
 		check("as the run's whole total", failed[0]?.usage.cost, 0.25);
+		check("named the same way", failed[0]?.detail?.startsWith("doomed ("), true);
 	} finally {
 		process.argv[1] = realArgv1;
 	}

@@ -203,6 +203,31 @@ console.log("\n--- collect: workflow spend folded in ---");
 	check("a string token count does not poison the sum", junky.rows()[0]?.totals.input, 300);
 	check("nor turn the type to string", typeof junky.rows()[0]?.totals.input, "number");
 	check("and the good fields still land", Number(junky.rows()[0]?.totals.cost.toFixed(4)), 0.03);
+
+	// Per-run rows. No /workflows surface prints a price any more, so "which of
+	// these five cost $40" is answered here or nowhere.
+	const perRun = new AnnouncedSpendLog();
+	perRun.add({ source: "workflows", detail: "code-review (16:01)", calls: 24, usage: { input: 540_000, cost: 5.2 } });
+	perRun.add({ source: "workflows", detail: "migrate-parser (14:03)", calls: 16, usage: { input: 360_000, cost: 2.8 } });
+	perRun.add({ source: "recap", usage: { cost: 0.01 } });
+	const [workflows, recap] = perRun.rows();
+	check("the source row still totals them", Number(workflows?.totals.cost.toFixed(2)), 8);
+	check("with a child per run, costliest first", workflows?.children?.map((row) => row.label), [
+		"code-review (16:01)",
+		"migrate-parser (14:03)",
+	]);
+	check("each carrying its own cost", workflows?.children?.map((row) => row.totals.cost), [5.2, 2.8]);
+	check("and its own calls", workflows?.children?.map((row) => row.totals.calls), [24, 16]);
+	// A producer with no detail, or with only one, gets no children — a single
+	// child would just restate its parent.
+	check("no detail, no children", recap?.children, undefined);
+	const single = new AnnouncedSpendLog();
+	single.add({ source: "workflows", detail: "only (09:00)", usage: { cost: 1 } });
+	check("one run, no children", single.rows()[0]?.children, undefined);
+	// Children are snapshots too, for the same reason the parents are.
+	const snap = perRun.rows()[0]!.children![0]!.totals.cost;
+	perRun.add({ source: "workflows", detail: "code-review (16:01)", usage: { cost: 99 } });
+	check("children are copies", snap, 5.2);
 }
 
 console.log("\n--- collect: the announced shape is the one a real producer sends ---");

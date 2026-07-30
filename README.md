@@ -48,18 +48,19 @@ full is the context" rather than "what am I paying for" — and the single numbe
 every model call that was not a message in this conversation. `/usage` is the breakdown:
 
 ```
-● Usage  ·  019f89f7  ·  1h 00m  ·  1 turn
+● Usage  ·  019f89f7  ·  1h 00m span  ·  1 turn
 Context  [████········] 84k / 272k (31%)
 
-Source                      calls  input  output  cached      cost
-openai-codex/gpt-5.6-sol        1  1.20M     84k    980k  $12.3456
-anthropic/claude-haiku-4-5      1    23k    1.2k       0   $0.0231
-workflow (tool)                 1    40k    8.0k       0   $1.5000
-compaction                      1   140k    3.1k       0   $0.4200
-workflows                      40   900k     50k   2.10M   $8.0000
-──────────────────────────────────────────────────────────────────
-Total                          44  2.30M    147k   3.08M  $22.2887
-5.53M tokens billed  ·  57% of input served from cache  ·  41k reasoning
+Source                    calls  input  output  cached      cost
+openai-codex/gpt-5.6-sol      1  1.20M     84k    980k  $12.3456
+compaction                    1   140k    3.1k       0   $0.4200
+workflows                    40   828k     44k   1.90M   $8.0008
+  code-review (16:01)        24   540k     30k   1.26M   $5.2008
+  migrate-parser (14:03)     16   288k     14k    640k   $2.8000
+recap                         3    24k     360       0   $0.0360
+────────────────────────────────────────────────────────────────
+Total                        45  2.19M    132k   2.88M  $20.8024
+5.20M tokens billed  ·  57% of input served from cache  ·  185k reasoning
 ```
 
 Every bug this could have makes the session look **cheaper** than it was, which is the one
@@ -75,9 +76,11 @@ The last category is spend that reaches the session file **nowhere at all**: bac
 agents are separate pi processes, and `recap` and `goal` call `completeSimple` directly and store
 only a display entry. Each announces on a shared `usage:spend` channel — named for the question,
 not for one answer to it, since a channel called `ultracode:spend` made workflows visible and left
-the other two invisible. The payload is an increment (`{ source, usage, calls }`, `cost` flat), so a
-producer announces as it spends and never keeps a tally of its own, and rows are keyed by source.
-A producer that isn't installed simply never fires and its row never appears.
+the other two invisible. The payload is an increment (`{ source, detail, usage, calls }`, `cost`
+flat), so a producer announces as it spends and never keeps a tally of its own. Rows are keyed by
+`source`, and the optional `detail` names one run/request inside it — that is what gives the
+indented per-run rows above. A producer that isn't installed simply never fires and its row never
+appears.
 
 The report is written into the transcript as a custom entry, the way `/recap` is, so it never
 enters LLM context — and scrolling back to an earlier `/usage` shows what the session had spent *at
@@ -595,13 +598,12 @@ than the base36 they replaced. The model-facing text is untouched — the tool r
 `workflow-result` message and the `R` resume instruction all carry the run id, since
 `resumeFromRunId` is the only handle that identifies a run to the tool.
 
-**Spend is tracked here and reported in `/usage`.** No *ambient* workflow surface quotes a price —
-not the panel, not the footer line, not the transcript row, not the summary the model gets back.
-Watching work and watching money are different activities, and a live dollar figure under the
-prompt is a thing to stare at rather than read; `/usage` is where it belongs, and it has room for
-the breakdown. The one exception is `/workflows show <id>`, a report you type a run id into to ask
-about one run — without it, "which of these five cost $40" has no answer short of opening run.json
-by hand, because `/usage` only ever reports a session total.
+**Spend is tracked here and reported in `/usage`.** No workflow surface quotes a price — not the
+panel, not the footer line, not `list` or `show`, not the transcript row, not the summary the model
+gets back. Watching work and watching money are different activities, and a live dollar figure
+under the prompt is a thing to stare at rather than read. Nothing is lost by moving it: each run
+announces under its own name, so `/usage` reports a row per run inside the `workflows` total and
+answers "which of these five cost $40" there instead.
 
 The numbers are still collected, and collected *promptly*: a subagent reports usage on every turn
 it takes and the run folds each one in as it arrives, rather than when the subprocess finally

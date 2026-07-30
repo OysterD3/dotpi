@@ -136,7 +136,13 @@ export function renderUsage(usage: SessionUsage, meta: ReportMeta, theme: Theme)
 	for (const row of usage.models) body.push({ row: cells(row.label, row.totals), muted: false });
 	for (const row of usage.tools) body.push({ row: cells(`${row.label} (tool)`, row.totals), muted: true });
 	for (const row of usage.overhead) body.push({ row: cells(row.label, row.totals), muted: true });
-	for (const row of usage.announced ?? []) body.push({ row: cells(row.label, row.totals), muted: true });
+	for (const row of usage.announced ?? []) {
+		body.push({ row: cells(row.label, row.totals), muted: true });
+		// Indented under their parent: which workflow run cost what. No /workflows
+		// surface prints a price, so this table is the only place that question
+		// gets answered.
+		for (const child of row.children ?? []) body.push({ row: cells(`  ${child.label}`, child.totals), muted: true });
+	}
 
 	if (body.length === 0) {
 		lines.push("", theme.fg("muted", "Nothing spent yet — no model has answered in this session."));
@@ -170,7 +176,7 @@ export function renderUsage(usage: SessionUsage, meta: ReportMeta, theme: Theme)
 	// no command prints per-run cost — so this points at where the figures
 	// actually are rather than at a command that would show nothing.
 	if (usage.announced?.length) {
-		lines.push(theme.fg("muted", "Announced rows cover this session only; `/workflows show <id>` has the per-run figure."));
+		lines.push(theme.fg("muted", "Announced rows cover what this session announced; runs from an earlier session are not in them."));
 	}
 
 	return lines.join("\n");

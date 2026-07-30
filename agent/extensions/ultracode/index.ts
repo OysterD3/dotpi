@@ -447,13 +447,9 @@ export default function (pi: ExtensionAPI) {
 					// Name first — you already know the id, you typed it — with the id
 					// kept at the end because this report is where you copy it from.
 					`${meta.name} — ${meta.status}${meta.resumedFrom ? ` (resumed ${meta.resumedFrom})` : ""}  [${meta.runId}]`,
-					// The one place per-run cost survives. Cost is off every AMBIENT
-					// workflow surface — the panel, the footer, the transcript row —
-					// but `show <id>` is a report you type a run id into to ask about
-					// one run, and without it "which of these five cost $40" has no
-					// answer short of opening run.json by hand. /usage stays the
-					// session total; this is the per-run figure.
-					`${meta.agentCount} agent(s), ${progress.replayedCount} replayed, ${meta.usage.turns} turns, $${meta.usage.cost.toFixed(4)}`,
+					// No cost, here or anywhere else under /workflows. The per-run
+					// figure lives in /usage, which reports one row per run.
+					`${meta.agentCount} agent(s), ${progress.replayedCount} replayed, ${meta.usage.turns} turns`,
 					`store: ${runDir(agentDir, target)}`,
 					"",
 					...allAgents(progress).map(
