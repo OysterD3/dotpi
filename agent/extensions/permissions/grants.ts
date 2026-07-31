@@ -66,7 +66,17 @@ export class SessionGrants {
 		for (const grant of this.grants.values()) {
 			switch (grant.kind) {
 				case "tool":
-					if (grant.tool === context.tool) return grant;
+					// Never over a destructive command. "Allow every bash call" is
+					// something people click to stop being nagged about ordinary work,
+					// and it used to disable the destructive table for the rest of the
+					// session — one impatient click and `rm -rf ~/work` ran unprompted,
+					// leaving the session weaker than the mode below it. Auto mode made
+					// that reachable from a classifier false positive, where the
+					// tool-wide grain is sometimes the only sticky option offered.
+					//
+					// The rule matches the pattern grain's: a blanket pass has to have
+					// every reason covered, and a finding is a reason nobody covered.
+					if (grant.tool === context.tool && context.findings.length === 0) return grant;
 					break;
 				case "exact":
 					if (grant.tool === context.tool && grant.target === context.target) return grant;

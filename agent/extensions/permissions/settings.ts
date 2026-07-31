@@ -24,8 +24,41 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { AUTO, MODE_ORDER, type Mode, STRICTER_THAN_AUTO, isMode } from "./config.ts";
 import { join } from "node:path";
-import { MODE_ORDER, type Mode, isMode } from "./config.ts";
+
+/**
+ * The `permissions.auto` block: what `auto` mode does when it is the mode.
+ *
+ * Every field here can loosen something — `onError: "allow"` most obviously, but
+ * `skipReadOnly` widens what is never looked at and `model` decides where your
+ * command text is sent. So the whole block is trusted-only, the way `allow` is.
+ */
+export type AutoSettings = {
+	/**
+	 * Model reference for the classifier, or undefined to use the session's.
+	 *
+	 * Worth setting. This is one bounded judgement about a few hundred characters,
+	 * it runs in front of tool calls, and paying frontier prices and frontier
+	 * latency for it is the difference between a mode you keep on and one you
+	 * switch off after an hour.
+	 */
+	model?: string;
+	/** Skip pi's read-only built-ins without asking the model. See tools.ts. */
+	skipReadOnly: boolean;
+	/**
+	 * What an unreachable or unreadable classifier means.
+	 *
+	 * `allow` — the default — degrades auto mode to `askDestructive`, which is the
+	 * mode directly below it and the one this repo ships as standard. Offline, out
+	 * of quota, or misconfigured, you get the deterministic table and a warning,
+	 * not a session where every command needs a keystroke. `ask` is the paranoid
+	 * setting: no verdict, no silent pass.
+	 */
+	onError: "allow" | "ask";
+	/** Per-call budget. Past this the call is an error and `onError` decides. */
+	timeoutMs: number;
+};
 
 export type PermissionSettings = {
 	defaultMode: Mode;
@@ -38,6 +71,8 @@ export type PermissionSettings = {
 	destructiveOverridesAllow: boolean;
 	/** What an "ask" becomes when there is no UI to ask with. */
 	askWithoutUi: "deny" | "allow";
+	/** Tunables for `auto` mode. Ignored unless `defaultMode` is `auto`. */
+	auto: AutoSettings;
 };
 
 export type LoadResult = {
@@ -56,6 +91,7 @@ export const BUILTIN: PermissionSettings = {
 	allowDestructive: [],
 	destructiveOverridesAllow: true,
 	askWithoutUi: "deny",
+	auto: { model: undefined, skipReadOnly: true, onError: "allow", timeoutMs: AUTO.timeoutMs },
 };
 
 /**
@@ -86,8 +122,26 @@ function stringArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-/** Is `candidate` at least as restrictive as `current`? */
+/**
+ * Is `candidate` at least as restrictive as `current`?
+ *
+ * The ladder answers this everywhere except at `auto`, which is not a subset of
+ * the mode above it: `askMutating` prompts for every write but says nothing at
+ * all about custom tools, which `auto` judges. So a project moving a session off
+ * `auto` would be trading prompts, not adding them — and a repo that wanted an
+ * MCP tool to run unwatched could do it by "tightening" the mode. Only the two
+ * modes that stop everything qualify as an upgrade from `auto`.
+ */
 function atLeastAsStrict(candidate: Mode, current: Mode): boolean {
+	// A project may never switch a session INTO auto. It is the one mode that
+	// costs money and sends data: every unrecognised tool call becomes a model
+	// call, and the command text, write paths and MCP arguments of that repo go
+	// to a provider. Because the `auto` block is trusted-only, a project that
+	// flipped the mode could not even name a cheap model for it, so the bill
+	// lands on the session's frontier model. The ladder called it a tightening —
+	// it prompts more — which is true and beside the point.
+	if (candidate === "auto") return false;
+	if (current === "auto") return STRICTER_THAN_AUTO.has(candidate);
 	return MODE_ORDER.indexOf(candidate) >= MODE_ORDER.indexOf(current);
 }
 
@@ -111,7 +165,17 @@ export function legacyProjectPath(cwd: string): string {
 export function loadSettings(agentDir: string, cwd: string, projectTrusted: boolean): LoadResult {
 	const warnings: string[] = [];
 	const sources: string[] = [];
-	const settings: PermissionSettings = { ...BUILTIN, allow: [], ask: [], deny: [], allowDestructive: [] };
+	// Every mutable field is rebuilt rather than shared with BUILTIN — including
+	// `auto`, which is an object: a spread would alias it, and the first project
+	// file to set `auto.onError` would edit the defaults for every later reload.
+	const settings: PermissionSettings = {
+		...BUILTIN,
+		allow: [],
+		ask: [],
+		deny: [],
+		allowDestructive: [],
+		auto: { ...BUILTIN.auto },
+	};
 
 	// Legacy standalone file first, so settings.json wins on conflict. Silently
 	// ignoring it would turn a policy someone still relies on into no policy.
@@ -152,6 +216,13 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 				if (project.allow !== undefined || project.allowDestructive !== undefined) {
 					warnings.push(`${projectPath}: ignoring allow rules — project is not trusted`);
 				}
+				// Named separately rather than folded into the line above: every key in
+				// the auto block can loosen something, and a repo quietly pointing the
+				// classifier at another model — or switching it off with
+				// `skipReadOnly` — should be visible, not merely ineffective.
+				if (project.auto !== undefined) {
+					warnings.push(`${projectPath}: ignoring the auto block — project is not trusted`);
+				}
 			}
 		}
 	}
@@ -180,5 +251,49 @@ function applyFull(
 	}
 	if (source.askWithoutUi === "deny" || source.askWithoutUi === "allow") {
 		target.askWithoutUi = source.askWithoutUi;
+	}
+	if (source.auto !== undefined) applyAuto(target.auto, source.auto, warnings, path);
+}
+
+/**
+ * Merge one file's `auto` block.
+ *
+ * Every field is validated and a bad value is a warning rather than a silent
+ * fallback. Silence would be the worst outcome here: a typo in `onError` reading
+ * as the default is exactly the case where someone believes they asked to fail
+ * closed and did not.
+ */
+function applyAuto(target: AutoSettings, source: unknown, warnings: string[], path: string): void {
+	if (!source || typeof source !== "object" || Array.isArray(source)) {
+		warnings.push(`${path}: permissions.auto must be an object, e.g. { "auto": { "model": "..." } }`);
+		return;
+	}
+
+	const block = source as Record<string, unknown>;
+
+	if (block.model !== undefined) {
+		if (typeof block.model === "string" && block.model.trim().length > 0) target.model = block.model.trim();
+		else warnings.push(`${path}: permissions.auto.model must be a non-empty string`);
+	}
+
+	if (block.skipReadOnly !== undefined) {
+		if (typeof block.skipReadOnly === "boolean") target.skipReadOnly = block.skipReadOnly;
+		else warnings.push(`${path}: permissions.auto.skipReadOnly must be true or false`);
+	}
+
+	if (block.onError !== undefined) {
+		if (block.onError === "allow" || block.onError === "ask") target.onError = block.onError;
+		else warnings.push(`${path}: permissions.auto.onError must be "allow" or "ask"`);
+	}
+
+	if (block.timeoutMs !== undefined) {
+		// A zero or negative timeout would make every call fail instantly and turn
+		// the mode into whatever `onError` says, which is not what anyone typing a
+		// number means.
+		if (typeof block.timeoutMs === "number" && Number.isFinite(block.timeoutMs) && block.timeoutMs > 0) {
+			target.timeoutMs = block.timeoutMs;
+		} else {
+			warnings.push(`${path}: permissions.auto.timeoutMs must be a positive number of milliseconds`);
+		}
 	}
 }

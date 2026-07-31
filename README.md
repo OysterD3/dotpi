@@ -10,6 +10,7 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | Path | What it does |
 | --- | --- |
 | `agent/settings.json` | Global pi settings: theme, model, and the `permissions` policy. |
+| `agent/keybindings.json` | Key overrides. Frees Shift+Tab for the permission-mode cycler. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
 | `agent/.env.example` | Template for `agent/.env`, which holds your keys and is gitignored. |
 
@@ -315,6 +316,7 @@ the network into a shell. Modes, from most to least permissive:
 | --- | --- |
 | `allowAll` | Never prompt. Rules still apply. |
 | `askDestructive` | Prompt only for destructive commands. **Default.** |
+| `auto` | `askDestructive`, plus a model's verdict on everything the table cleared. |
 | `askMutating` | Prompt for anything that writes: bash, write, edit. |
 | `askAll` | Prompt for every tool call. |
 | `denyAll` | Refuse everything not explicitly allowed. |
@@ -373,8 +375,108 @@ edit to `settings.json`, not something that accumulates from clicking. **No gran
 a command without running it, `/permissions grants` lists what you have approved this session,
 `/permissions forget` revokes it all, and `/permissions reload` re-reads the files.
 
+**Shift+Tab cycles the mode** for the session — `askDestructive → auto → askMutating → askAll` —
+and `/permissions mode [<mode>]` does the same thing by name. The change is *not* written back to
+`settings.json`: a keystroke is how you say "for the next ten minutes", and a durable policy change
+should be a deliberate edit to a file you can read later, not a residue of tabbing. A new session
+starts from what the files say.
+
+`allowAll` and `denyAll` are deliberately left out of the cycle. Neither end of the ladder should be
+one mistyped keystroke away — tabbing into "never prompt" by accident is precisely the accident this
+extension exists to prevent — but both remain available in `settings.json` and via
+`/permissions mode allowAll`, where choosing them is deliberate.
+
+One setup step, because **pi already binds Shift+Tab** to `app.thinking.cycle`, and a reserved
+binding beats an extension's, so the shortcut does nothing until you move it:
+
+```jsonc
+// agent/keybindings.json — in this repo, thinking-level cycling moved to Shift+Ctrl+T
+{ "app.thinking.cycle": "shift+ctrl+t" }
+```
+
+### `auto` mode — letting a model decide
+
+A pattern table only catches what it names. `auto` mode adds a second opinion: a small model is
+shown each tool call the rules did not settle and answers safe or unsafe, and unsafe becomes a
+prompt.
+
+```jsonc
+// agent/settings.json
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "auto": {
+      "model": "<provider>/<small-fast-model>",  // unset = the session model
+      "skipReadOnly": true,      // don't spend a call on read/grep/find/ls
+      "onError": "allow",        // unreachable classifier => fall back to the table
+      "timeoutMs": 10000
+    }
+  }
+}
+```
+
+**Where the classifier sits is the entire safety argument**, because a model can be argued with —
+that is what prompt injection *is*. So it is placed where being wrong is survivable. Precedence
+becomes **deny → destructive → ask → allow → classifier**: it is consulted *only* on calls the
+deterministic policy already decided to allow, and its only power is to turn that allow into an ask.
+There is no verdict it can return that runs something the rules would have stopped, and none that
+blocks outright either — a nondeterministic judge should not get to refuse your work with no way to
+overrule it.
+
+That gives a floor worth stating plainly. **Fully compromised, auto mode degrades to
+`askDestructive`** — the default this repo has been running all along. Working, it is that plus a
+second opinion.
+
+One exception, because an earlier version of this paragraph claimed there was none: **with no UI the
+classifier can fail a run.** `askWithoutUi` decides what an "ask" becomes headless and defaults to
+`deny`, so in `pi -p` or CI an `unsafe` verdict blocks the tool call with nobody to overrule it.
+That is your configured policy for asks rather than a power the classifier holds on its own, but a
+false positive costs you a CI run, and `askWithoutUi: "allow"` is the way out.
+
+The classifier is shown the tool, the call, and the working directory — **and nothing else**. No
+transcript, no task, no history. Partly cost, mostly injection: a classifier that reads the
+conversation can be talked into clearing a command by text earlier *in that conversation*, which is
+exactly the attack the gate exists to stop. Judging in isolation means the only thing that can argue
+for a command is the command. The call arrives stripped of invisible characters, fenced with markers
+it cannot forge, and labelled untrusted, and the classifier is told that text inside the fence
+claiming pre-approval is itself grounds to answer unsafe.
+
+Three limits worth knowing before you turn it on:
+
+- **It costs money and latency, per tool call.** `allow` rules short-circuit it, so a decent
+  allowlist is what makes the mode affordable; verdicts are cached for the session, so the test
+  command an agent runs forty times is paid for once; and `permissions.auto.model` exists so this is
+  never a frontier call. `/permissions auto` shows what it has spent.
+- **`write` and `edit` are judged on their path, not their content.** Content is unbounded and is
+  the richest injection surface there is, and the question that matters for a write is *where* it
+  lands — a `.zshrc`, a git hook, a file outside the project.
+- **Reads are skipped by default** (`skipReadOnly`), because paying for a model call before every
+  `grep` makes the mode unusable. Reading a file is still how a secret gets exposed, so `deny` rules
+  remain the answer for `.env` and friends; set `skipReadOnly: false` to close the gap at the price
+  of a call per read.
+
+An unreachable, misconfigured, or unreadable classifier is an **error**, never a silent "safe" — the
+only way to get a clearance is for the model to have literally answered `{"safe": true}`. What an
+error then means is `onError`: the default `allow` degrades the session to the pattern table alone
+and says so once, out loud, because a session that believes it is being checked and is not is the
+more dangerous misunderstanding. `ask` is the paranoid setting.
+
+`/permissions auto` shows the configuration and the session's tally; `/permissions classify <command>`
+asks the real classifier about one command without running it. `/permissions test` stays free and
+offline, and reports a classify outcome as the unanswered question it is. `/permissions forget`
+drops cached verdicts along with grants — a remembered "safe" is an approval in every sense that
+matters.
+
+One layering subtlety: the mode ladder is not a total order, and `auto` is where that shows. It is
+not a subset of `askMutating`, which prompts for every write but says nothing at all about custom
+tools. So an untrusted project may not "tighten" `auto` into `askMutating` — only `askAll` and
+`denyAll` count as an upgrade from it. The whole `auto` block is trusted-only for the same reason:
+every field in it can loosen something, and a repo quietly pointing your classifier at another model
+should be visible, not merely ineffective.
+
 **This is a guardrail, not a sandbox.** It gates tool calls before they run; it cannot contain code
-that is already executing, and `bash` remains able to do anything the pattern table does not name.
+that is already executing, and `bash` remains able to do anything the pattern table does not name —
+nor, in auto mode, anything a model was talked out of naming.
 
 | File | Role |
 | --- | --- |
@@ -386,7 +488,14 @@ that is already executing, and `bash` remains able to do anything the pattern ta
 | `settings.ts` | Loading and layering the JSON files |
 | `grants.ts` | Session-scoped approvals and what each one covers |
 | `config.ts` | Modes and their ordering |
+| `auto.ts` | Auto mode: the classifier's cache, books, and bounds |
+| `prompt.ts` | **What the classifier is shown — edit this to tune it** (pure) |
+| `classify.ts` | One classifier call |
+| `verdict.ts` | Reading the answer; unreadable is never "safe" (pure) |
+| `model.ts` | Resolving `permissions.auto.model` |
 | `corpus.test.ts` | 171 safe / 85 dangerous commands the table must get right |
+| `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
+| `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
 **`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
 directory into the session's workspace:

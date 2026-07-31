@@ -21,12 +21,20 @@
  * by a readable table in destructive.ts — deterministic, so it is fast, works
  * offline, costs nothing, and can be audited by reading it.
  *
+ * `auto` is that mode plus a model's second opinion on everything the table
+ * cleared. The classifier can only ever turn an allow into an ask — see auto.ts
+ * for why that bound is the entire reason it is safe to put a model here.
+ *
  *   config.ts       modes and their ordering
  *   settings.ts     loading and layering the JSON files
  *   rules.ts        rule syntax: parsing and matching
  *   glob.ts         path and command pattern matching
  *   destructive.ts  what counts as destructive, and why
  *   decide.ts       precedence: deny > destructive > ask > allow > mode
+ *   auto.ts         auto mode: the classifier, its cache, and its bounds
+ *   prompt.ts       what the classifier is shown (pure)
+ *   classify.ts     one classifier call and its verdict
+ *   model.ts        resolving permissions.auto.model
  *
  * Scope limit worth knowing: this gates tool calls pi routes through extensions.
  * It is a guardrail against an agent doing something you did not intend, not a
@@ -34,12 +42,15 @@
  */
 
 import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { CONFIG, MODE_HELP, MODE_ORDER } from "./config.ts";
+import { AutoClassifier } from "./auto.ts";
+import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
 import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
+import { buildQuestion, subjectOf } from "./prompt.ts";
 import { parseRules, ruleTarget } from "./rules.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
+import { type Verdict } from "./verdict.ts";
 
 function compile(agentDir: string, cwd: string, trusted: boolean): { policy: CompiledPolicy; report: string[] } {
 	const { settings, sources, warnings } = loadSettings(agentDir, cwd, trusted);
@@ -73,20 +84,93 @@ function compile(agentDir: string, cwd: string, trusted: boolean): { policy: Com
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
-	let policy: CompiledPolicy | undefined;
+	let loaded: CompiledPolicy | undefined;
 	let report: string[] = [];
+
+	/**
+	 * The mode Shift+Tab put us in, overriding the settings files for this session.
+	 *
+	 * Deliberately not written back to settings.json. A keystroke is how you say
+	 * "for the next ten minutes"; a durable policy change should be a deliberate
+	 * edit to a file you can read later, not a residue of tabbing. Cleared on
+	 * session_start, so a new session starts from what the files say.
+	 *
+	 * It can loosen as well as tighten, including past a restriction an untrusted
+	 * project asked for. That is consistent rather than a hole: a human at the
+	 * keyboard can already approve any individual prompt, so denying them the
+	 * mode switch would buy nothing but keystrokes.
+	 */
+	let override: Mode | undefined;
+
+	/** The policy actually in force: the files, with the session override applied. */
+	let policy: CompiledPolicy | undefined;
+
+	const applyOverride = () => {
+		policy =
+			loaded && override
+				? { ...loaded, settings: { ...loaded.settings, defaultMode: override } }
+				: loaded;
+	};
 
 	/** Approvals granted for the rest of the session. */
 	const grants = new SessionGrants();
 
+	/**
+	 * Auto mode's classifier. Built unconditionally and idle unless the mode is
+	 * `auto` — it holds a cache and a counter, not a connection, so there is
+	 * nothing to start and nothing to tear down when the mode changes on reload.
+	 */
+	const classifier = new AutoClassifier((spend) => {
+		pi.events.emit(AUTO.spendChannel, {
+			source: AUTO.spendSource,
+			usage: {
+				input: spend.input,
+				output: spend.output,
+				cacheRead: spend.cacheRead,
+				cacheWrite: spend.cacheWrite,
+				reasoning: spend.reasoning,
+				cost: spend.cost,
+			},
+			calls: 1,
+		});
+	});
+
 	const rebuild = (cwd: string, trusted: boolean) => {
 		const built = compile(agentDir, cwd, trusted);
-		policy = built.policy;
+		loaded = built.policy;
 		report = built.report;
+		applyOverride();
+	};
+
+	/**
+	 * Move the session to `next`. Returns what to tell the user.
+	 *
+	 * Cached classifier verdicts are dropped on every change, in both directions.
+	 * Leaving auto and coming back would otherwise reuse answers from before the
+	 * user changed their mind about how much checking they wanted.
+	 */
+	const setMode = (next: Mode): string => {
+		override = next === loaded?.settings.defaultMode ? undefined : next;
+		applyOverride();
+		classifier.clear();
+
+		const suffix =
+			next === "auto" && !policy?.settings.auto.model
+				? "\nRunning on the session model — set permissions.auto.model to a small one to make this cheap."
+				: override === undefined
+					? "\nBack to what your settings files say."
+					: "";
+		return `Permissions: ${next} — ${MODE_HELP[next]}${suffix}`;
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		// A keystroke override belongs to the session that saw the keystroke.
+		override = undefined;
 		rebuild(ctx.cwd, ctx.isProjectTrusted());
+		// Verdicts are session-scoped by design, and a new session can be a new cwd
+		// and a new policy — a cached "safe" reached under the old one has no
+		// standing here. Also re-arms the degraded-mode warning.
+		classifier.clear();
 		const problems = report.filter((line) => !line.startsWith("loaded "));
 		if (problems.length > 0) ctx.ui.notify(`Permissions:\n${problems.join("\n")}`, "warning");
 	});
@@ -96,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 
 		const input = event.input as Record<string, unknown>;
 		const call = { tool: event.toolName, input, cwd: ctx.cwd };
-		const decision = decide(policy, call);
+		let decision = decide(policy, call);
 
 		if (decision.behavior === "allow") return undefined;
 
@@ -105,12 +189,52 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `Permission denied — ${decision.reason}` };
 		}
 
-		const target = ruleTarget(event.toolName, input) ?? "";
+		// `ruleTarget` only knows bash and the path tools, so every custom or MCP
+		// tool used to fall back to "" — an approval prompt with a blank line where
+		// the call should be, and no "allow this exact call" option, leaving a
+		// blanket tool-wide grant as the only way to stop being asked. auto mode is
+		// the first everyday mode that prompts for those tools at all, so it is
+		// what made the gap visible. `subjectOf` already renders their arguments
+		// for the classifier; the human deciding deserves at least as much.
+		const target = ruleTarget(event.toolName, input) ?? subjectOf(event.toolName, input).body;
 		const findings = decision.findings ?? [];
 		const grantContext = { tool: event.toolName, target, findings, rule: decision.rule };
 
 		// Checked only after deny: a grant can lift an ask, never a hard block.
+		// It is also checked ahead of the classifier, so a command you approved
+		// earlier in the session is never paid for a second time.
 		if (grants.covers(grantContext)) return undefined;
+
+		if (decision.behavior === "classify") {
+			const auto = policy.settings.auto;
+
+			// A headless run whose "ask" already means "allow" would be buying a
+			// verdict it is contractually going to ignore. Skipping is not a
+			// loosening — askWithoutUi decided this call's outcome before we got here.
+			if (!ctx.hasUI && policy.settings.askWithoutUi === "allow") return undefined;
+
+			const verdict = await classifier.judge(ctx, event.toolName, input, auto);
+
+			// The classifier's entire authority: it can turn this allow into an ask.
+			// Nothing below reaches a deny, and `safe` returns to exactly where the
+			// call would have been without auto mode at all.
+			if (verdict.kind === "safe") return undefined;
+
+			if (verdict.kind === "aborted") {
+				return { block: true, reason: "Permission check was interrupted before this call was approved" };
+			}
+
+			if (verdict.kind === "error") {
+				if (classifier.shouldReport()) ctx.ui.notify(degradedMessage(verdict, auto.onError), "warning");
+				if (auto.onError === "allow") return undefined;
+				decision = { behavior: "ask", reason: `the auto classifier could not be reached — ${verdict.reason}` };
+			} else {
+				// Attributed out loud. A user must be able to tell a prompt raised by
+				// the auditable table from one raised by a model's opinion, because
+				// only one of those can be looked up and argued with.
+				decision = { behavior: "ask", reason: `auto classifier: ${verdict.reason}` };
+			}
+		}
 
 		if (!ctx.hasUI) {
 			if (policy.settings.askWithoutUi === "allow") return undefined;
@@ -160,16 +284,126 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
+	/**
+	 * Shift+Tab cycles the mode, the way the comparable agent does it.
+	 *
+	 * pi ships Shift+Tab as `app.thinking.cycle`, and a reserved binding beats an
+	 * extension's, so this silently does nothing until that one is moved. The
+	 * README carries the agent/keybindings.json that frees it. Registering it
+	 * regardless is the right call: the key is what was asked for, and a shortcut
+	 * that starts working the moment the conflict is resolved beats one bound to a
+	 * second-choice key forever.
+	 */
+	pi.registerShortcut(CYCLE_KEY, {
+		description: "Cycle permission mode",
+		handler: (ctx) => {
+			if (!policy) return;
+			const next = nextMode(policy.settings.defaultMode);
+			if (!next) {
+				ctx.ui.notify(
+					`Permissions: staying on ${policy.settings.defaultMode} — Shift+Tab will not loosen it. Use /permissions mode <mode> to change it deliberately.`,
+					"info",
+				);
+				return;
+			}
+			ctx.ui.notify(setMode(next), "info");
+		},
+	});
+
 	pi.registerCommand("permissions", {
-		description: "Show or test tool permission rules ([test <command>] | reload | patterns | grants | forget)",
+		description:
+			"Show or test tool permission rules (mode [<mode>] | test <command> | classify <command> | auto | reload | patterns | grants | forget)",
 
 		getArgumentCompletions: (prefix) =>
-			["test ", "reload", "patterns", "grants", "forget"]
+			["test ", "classify ", "auto", "reload", "patterns", "grants", "forget", ...MODE_ORDER.map((mode) => `mode ${mode}`)]
 				.filter((option) => option.startsWith(prefix))
 				.map((value) => ({ value, label: value.trim() })),
 
 		handler: async (args, ctx) => {
 			const text = args.trim();
+
+			if (text === "mode" || text.startsWith("mode ")) {
+				if (!policy) return;
+				const wanted = text.slice(4).trim();
+				if (wanted.length === 0) {
+					ctx.ui.notify(
+						[
+							`Mode: ${policy.settings.defaultMode}${override ? " (this session; Shift+Tab or /permissions mode)" : " (from your settings files)"}`,
+							"",
+							...MODE_ORDER.map((mode) => `  ${mode === policy?.settings.defaultMode ? "▸" : " "} ${mode.padEnd(15)} ${MODE_HELP[mode]}`),
+							"",
+							`Shift+Tab cycles: ${CYCLE.join(" → ")}`,
+						].join("\n"),
+						"info",
+					);
+					return;
+				}
+				if (!isMode(wanted)) {
+					ctx.ui.notify(`Unknown mode "${wanted}". One of: ${MODE_ORDER.join(", ")}`, "error");
+					return;
+				}
+				ctx.ui.notify(setMode(wanted), "info");
+				return;
+			}
+
+			if (text === "auto") {
+				if (!policy) return;
+				const auto = policy.settings.auto;
+				const stats = classifier.snapshot();
+				const active = policy.settings.defaultMode === "auto";
+				ctx.ui.notify(
+					[
+						active
+							? "Auto mode is ON — every call the rules do not settle goes to the classifier."
+							: `Auto mode is OFF (mode is ${policy.settings.defaultMode}). Set permissions.defaultMode to "auto" to turn it on.`,
+						"",
+						`Model:              ${auto.model ?? "the session model (set permissions.auto.model to use a cheaper one)"}`,
+						`Read-only tools:    ${auto.skipReadOnly ? "skipped without asking (read, grep, find, ls)" : "classified like everything else"}`,
+						`If unreachable:     ${auto.onError === "allow" ? "fall back to the destructive table alone" : "ask about every unrecognised call"}`,
+						`Timeout:            ${auto.timeoutMs} ms`,
+						"",
+						`This session: ${stats.calls} classified (${stats.safe} cleared, ${stats.unsafe} raised a prompt, ${stats.errors} failed)`,
+						`              ${stats.cached} answered from cache, ${formatTokens(stats.tokens)} tokens, ${formatCost(stats.cost)}`,
+					].join("\n"),
+					"info",
+				);
+				return;
+			}
+
+			if (text.startsWith("classify ")) {
+				if (!policy) return;
+				const command = text.slice(9).trim();
+				if (command.length === 0) return;
+
+				// The deterministic policy is consulted first, exactly as the live path
+				// does it. Without this the command reported SAFE for things auto mode
+				// would in fact stop: the system prompt tells the classifier not to
+				// re-find force-pushes and `sudo` because the table already caught them,
+				// so asking it about one in isolation gets the answer it was told to
+				// give — while `/permissions test`, documented right beside this,
+				// printed ASK for the same string.
+				const settled = decide(policy, { tool: "bash", input: { command }, cwd: ctx.cwd });
+				if (settled.behavior !== "classify") {
+					ctx.ui.notify(
+						`${command}\n\n=> ${settled.behavior.toUpperCase()} — ${settled.reason}\n   Settled before the classifier; it is never asked about this one.`,
+						settled.behavior === "allow" ? "info" : "warning",
+					);
+					return;
+				}
+
+				// Deliberately the live path, cache and all, rather than a replica: a
+				// dry run that exercised different code would be worth very little.
+				const verdict = await classifier.ask(
+					ctx,
+					buildQuestion("bash", { command }, ctx.cwd),
+					policy.settings.auto,
+				);
+				ctx.ui.notify(
+					`${command}\n\n=> ${describeVerdict(verdict)}`,
+					verdict.kind === "safe" ? "info" : "warning",
+				);
+				return;
+			}
 
 			if (text === "grants") {
 				const listed = grants.describe();
@@ -184,8 +418,14 @@ export default function (pi: ExtensionAPI) {
 
 			if (text === "forget") {
 				const count = grants.clear();
+				// Cached verdicts go too. A remembered "safe" is an approval in every
+				// sense that matters — it waves the next identical call through without
+				// asking — so leaving it behind would make "forget" a half-truth.
+				const verdicts = classifier.clear();
 				ctx.ui.notify(
-					count === 0 ? "There were no session approvals to revoke." : `Revoked ${count} session approval(s). You will be asked again.`,
+					count === 0 && verdicts === 0
+						? "There were no session approvals to revoke."
+						: `Revoked ${count} session approval(s) and dropped ${verdicts} cached classifier verdict(s). You will be asked again.`,
 					"info",
 				);
 				return;
@@ -193,7 +433,22 @@ export default function (pi: ExtensionAPI) {
 
 			if (text === "reload") {
 				rebuild(ctx.cwd, ctx.isProjectTrusted());
-				ctx.ui.notify(`Permissions reloaded.\n${report.join("\n") || "no settings files found"}`, "info");
+				// Verdicts were reached under the old settings — a different model, or
+				// a different notion of what is skipped. Keeping them would let a
+				// reload look like it took effect while old answers were still in use.
+				classifier.clear();
+				// The session override survives a reload — it is a layer above the
+				// files, not a copy of them. But someone who just edited defaultMode
+				// and reloaded to pick it up would otherwise watch nothing happen, so
+				// the masking is stated rather than left to be discovered.
+				const masked =
+					override !== undefined
+						? `\nStill on ${override} for this session (Shift+Tab), which is masking defaultMode ${loaded?.settings.defaultMode} from your files.`
+						: "";
+				ctx.ui.notify(
+					`Permissions reloaded.\n${report.join("\n") || "no settings files found"}${masked}`,
+					"info",
+				);
 				return;
 			}
 
@@ -211,8 +466,15 @@ export default function (pi: ExtensionAPI) {
 				const detail = findings.length
 					? findings.map((finding) => `  - ${finding.id}: ${finding.reason}\n      ${finding.segment}`).join("\n")
 					: "  (no destructive patterns matched)";
+				// `test` stays free and offline, so a classify outcome is reported as
+				// what it is — an unanswered question — rather than quietly billing a
+				// model call for a command the user only wanted explained.
+				const outcome =
+					decision.behavior === "classify"
+						? "CLASSIFY — the rules do not settle this; auto mode would ask the model\n           (/permissions classify <command> to actually ask it)"
+						: `${decision.behavior.toUpperCase()} — ${decision.reason}`;
 				ctx.ui.notify(
-					`${command}\n\n=> ${decision.behavior.toUpperCase()} — ${decision.reason}\n${detail}`,
+					`${command}\n\n=> ${outcome}\n${detail}`,
 					decision.behavior === "allow" ? "info" : "warning",
 				);
 				return;
@@ -220,12 +482,18 @@ export default function (pi: ExtensionAPI) {
 
 			if (!policy) return;
 			const { settings } = policy;
+			const stats = classifier.snapshot();
 			ctx.ui.notify(
 				[
-					`Mode: ${settings.defaultMode} — ${MODE_HELP[settings.defaultMode]}`,
+					`Mode: ${settings.defaultMode}${override ? " (this session — Shift+Tab)" : ""} — ${MODE_HELP[settings.defaultMode]}`,
 					`Rules: ${policy.deny.length} deny, ${policy.ask.length} ask, ${policy.allow.length} allow`,
 					`Destructive overrides allow: ${settings.destructiveOverridesAllow}`,
 					`Without a UI, "ask" becomes: ${settings.askWithoutUi}`,
+					...(settings.defaultMode === "auto"
+						? [
+								`Auto classifier: ${settings.auto.model ?? "the session model"} — ${stats.calls} call(s) this session, ${formatCost(stats.cost)} (/permissions auto)`,
+							]
+						: []),
 					`Session approvals held: ${grants.size()} (/permissions grants to list, forget to revoke)`,
 					"",
 					`User file:    ${userSettingsPath(agentDir)}`,
@@ -238,6 +506,47 @@ export default function (pi: ExtensionAPI) {
 			);
 		},
 	});
+}
+
+/**
+ * The one-time warning that auto mode is not actually auditing anything.
+ *
+ * Worth a warning rather than silence in either direction. With `onError:
+ * "allow"` the session is running at `askDestructive` while the user believes a
+ * model is checking their commands, which is the more dangerous
+ * misunderstanding; with `"ask"` they are about to be prompted for everything
+ * and deserve to know why.
+ */
+function degradedMessage(verdict: Extract<Verdict, { kind: "error" }>, onError: "allow" | "ask"): string {
+	const consequence =
+		onError === "allow"
+			? "Falling back to the destructive-pattern table alone for the rest of this session — commands it does not recognise will run without a prompt."
+			: "Every call the rules do not settle will ask, until it recovers.";
+	return `Auto mode is degraded: ${verdict.reason}\n${consequence}`;
+}
+
+function describeVerdict(verdict: Verdict): string {
+	switch (verdict.kind) {
+		case "safe":
+			return `SAFE — ${verdict.reason}`;
+		case "unsafe":
+			return `UNSAFE — ${verdict.reason}\n   (auto mode would prompt for this)`;
+		case "error":
+			return `NO VERDICT — ${verdict.reason}`;
+		case "aborted":
+			return "INTERRUPTED";
+	}
+}
+
+function formatTokens(total: number): string {
+	if (total >= 1_000_000) return `${(total / 1_000_000).toFixed(2)}M`;
+	if (total >= 1_000) return `${(total / 1_000).toFixed(1)}k`;
+	return String(total);
+}
+
+/** Sub-cent spend is the normal case for a small classifier, so it gets four places. */
+function formatCost(cost: number): string {
+	return cost === 0 ? "$0.0000" : `$${cost.toFixed(4)}`;
 }
 
 type PromptOption = { label: string; grant: Grant | "once" | "block" | "pattern" };
