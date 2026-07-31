@@ -4,6 +4,11 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "medium",
   "externalEditor": "nvim",
+  "scratchpad": {
+    "enabled": true,
+    "retainDays": 7
+  },
+
   "permissions": {
     "defaultMode": "askDestructive",
 

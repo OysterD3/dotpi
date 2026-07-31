@@ -521,6 +521,55 @@ nor, in auto mode, anything a model was talked out of naming.
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
+**`agent/extensions/scratchpad/`** — gives the agent somewhere to put files that are not your work.
+
+An agent constantly needs a file that is not part of the project: a script to check a hypothesis,
+the output of a command too long to read inline, a result carried across several steps. With nowhere
+designated it uses two places and both are wrong. `/tmp` is shared with every process and user on
+the machine. The project directory is worse — it is usually a git repository, so the file lands in
+`git status`, gets swept in by a directory-wide `git add`, and can be committed and pushed, which
+for a public repo is a one-way door.
+
+So: one directory per session, at
+`<tmp>/pi-scratchpad-<uid>/<project>/<session>/`, named in the system prompt so the agent reaches
+for it by default. `/scratchpad` shows it and what is in it, `/scratchpad path` prints just the path,
+`/scratchpad clear` empties it. Untouched sessions are pruned after 7 days.
+
+The three path segments each earn their place. **uid**, because `/tmp` is world-writable: without a
+per-user parent created `0700`, another account can read what the agent writes, or pre-create the
+directory it is about to use. **project**, so two repos open at once are legible rather than a wall
+of session ids. **session**, because two agents both writing `check.ts` is not hypothetical.
+
+```jsonc
+// agent/settings.json
+{
+  "scratchpad": {
+    "enabled": true,
+    "dir": "/custom/root",   // unset = the per-user directory under the system temp dir
+    "retainDays": 7          // 0 prunes as soon as a session is not the current one
+  }
+}
+```
+
+`dir` decides where the agent is told to write, so an untrusted project's block is ignored
+wholesale — a repo that could point it at a directory the repo also reads would have turned a
+convenience into a foothold.
+
+Worth knowing: **this is not a sandbox.** The agent can still write anywhere it has permission to.
+All this does is make the right place the easy place, which is the only mechanism available to an
+extension that cannot intercept the filesystem. And if you run permissions in `auto` or
+`askMutating` mode, allowlist the root — otherwise every scratch file costs a prompt, or a
+classifier call, for no benefit. `/scratchpad` prints the exact rule.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Session wiring, prompt injection, `/scratchpad` |
+| `prompt.ts` | **What the agent is told — edit this to change what lands there** (pure) |
+| `store.ts` | Where it lives, creating it, listing, clearing, pruning |
+| `settings.ts` | The `scratchpad` settings block |
+| `config.ts` | Tunables |
+| `scratchpad.test.ts` | Traversal, permissions, pruning bounds, layering |
+
 **`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
 directory into the session's workspace:
 
