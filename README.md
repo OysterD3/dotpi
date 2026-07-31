@@ -54,15 +54,33 @@ Context  [████········] 84k / 272k (31%)
 
 Source                    calls  input  output  cached      cost
 openai-codex/gpt-5.6-sol      1  1.20M     84k    980k  $12.3456
-compaction                    1   140k    3.1k       0   $0.4200
-workflows                    40   828k     44k   1.90M   $8.0008
+workflow                     40   828k     44k   1.90M   $8.0008
   code-review (16:01)        24   540k     30k   1.26M   $5.2008
   migrate-parser (14:03)     16   288k     14k    640k   $2.8000
+compaction                    1   140k    3.1k       0   $0.4200
 recap                         3    24k     360       0   $0.0360
 ────────────────────────────────────────────────────────────────
 Total                        45  2.19M    132k   2.88M  $20.8024
 5.20M tokens billed  ·  57% of input served from cache  ·  185k reasoning
+Model rows are this conversation's own calls. Tool rows are calls those tools made themselves.
 ```
+
+**`calls` means model calls in every row**, which is less obvious than it sounds. The natural
+reading of a tool result is "one call", and for the tools that cost real money that is wrong by an
+order of magnitude: a synchronous `workflow` arrives as a *single* tool result carrying the
+aggregate spend of a twenty-four agent fleet. Counted naively it put a `1` beside `$5.20` in the
+same column as a `3` beside `$3.30`, and made the Total row add round trips to tool invocations and
+call the sum a number of calls. pi's `Usage` has nowhere to put a call count, so the convention is
+`details.turns` — free-form, and persisted to the session file, which is what lets a resumed
+session still report the right number. `details.spendLabel` names the individual run the same way
+an announcement's `detail` does, so the indented lines add up to their parent.
+
+**One producer is one row, whichever route its numbers took.** `workflow` above holds both: the
+synchronous runs pi recorded on tool results and the background ones the extension announced.
+Before, those were `workflow (tool)` and `workflows` in different sections — and which one you got
+depended on `wait`, a parameter the report never showed, with a *failed* synchronous run switching
+between them because pi builds the error result itself and it carries no usage. An announcement is
+now merged into the row of the tool whose name it shares.
 
 Every bug this could have makes the session look **cheaper** than it was, which is the one
 direction a cost report must never be wrong in — so the rows below the models are the point. A tool
@@ -82,6 +100,12 @@ flat), so a producer announces as it spends and never keeps a tally of its own. 
 `source`, and the optional `detail` names one run/request inside it — that is what gives the
 indented per-run rows above. A producer that isn't installed simply never fires and its row never
 appears.
+
+Announced spend is the one category that does **not** survive a resume: it lives in memory and
+resets with the session, because there is nothing in the file to rebuild it from. That is why
+synchronous workflow spend still rides on the tool result rather than being announced too, which
+would have been the tidier-looking fix and would have quietly made a resumed session under-report.
+The footnote says so whenever any announced spend is in the table.
 
 The report is written into the transcript as a custom entry, the way `/recap` is, so it never
 enters LLM context — and scrolling back to an earlier `/usage` shows what the session had spent *at

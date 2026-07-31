@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { AnnouncedSpendLog, billedTokens, cacheHitPercent, collectUsage, emptyTotals, withAnnounced } from "./collect.ts";
+import { AnnouncedSpendLog, billedTokens, cacheHitPercent, callsFor, collectUsage, emptyTotals, withAnnounced } from "./collect.ts";
 import { formatCost, formatTokens, plainUsage } from "./render.ts";
 
 let failures = 0;
@@ -75,6 +75,211 @@ console.log("\n--- collect: the spend the transcript hides ---");
 	check("compaction and branch summary both counted", usage.overhead.map((row) => row.label), ["compaction", "branch summary"]);
 	check("the total is all four", Number(usage.total.cost.toFixed(4)), 1.97);
 	check("and it is not just the assistant message", usage.total.cost > usage.models[0]!.totals.cost, true);
+}
+
+console.log("\n--- collect: one tool result can be many calls ---");
+{
+	// The bug this pins: a `wait: true` workflow arrives as ONE tool result
+	// carrying the aggregate spend of a whole fleet. Counted as one call, the
+	// table put a `1` beside $5.20 in the same column as a `3` beside $3.30, and
+	// the Total row added round trips to tool invocations.
+	const usage = collectUsage([
+		assistant("openai-codex", "gpt-5.6-sol", usageBlock(1000, 200, 0.05)),
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "workflow",
+				isError: false,
+				details: { turns: 24 },
+				usage: usageBlock(540_000, 30_000, 5.2),
+			},
+		},
+	]);
+	check("the fleet reports its real call count", usage.tools[0]?.totals.calls, 24);
+	check("and the total is calls, not invocations", usage.total.calls, 25);
+}
+
+console.log("\n--- collect: what callsFor will and will not believe ---");
+{
+	// A tool that spent money made at least one call, so every unusable shape
+	// falls back to 1 rather than to 0 — a zero would hide spend behind a row
+	// that claims nothing happened.
+	check("a positive integer is taken", callsFor({ turns: 12 }), 12);
+	check("absent means one", callsFor({}), 1);
+	check("no details at all means one", callsFor(undefined), 1);
+	check("zero is not believed", callsFor({ turns: 0 }), 1);
+	check("negative is not believed", callsFor({ turns: -5 }), 1);
+	check("fractional is not believed", callsFor({ turns: 2.5 }), 1);
+	check("a string is not believed", callsFor({ turns: "24" }), 1);
+	check("neither is Infinity", callsFor({ turns: Number.POSITIVE_INFINITY }), 1);
+	// ultracode's details is a whole progress object with turns lifted to the top.
+	check("a fat details object still works", callsFor({ runId: "r1", phases: [], turns: 8 }), 8);
+}
+
+console.log("\n--- collect: one producer, one row, whichever route it took ---");
+{
+	// A synchronous workflow records on the tool result; a background one
+	// announces. Same feature. It used to appear as `workflow (tool)` and
+	// `workflows` in two different sections, and a *failed* synchronous run
+	// silently moved between them.
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "workflow", detail: "migrate-parser (14:03)", calls: 16, usage: { input: 288_000, cost: 2.8 } });
+
+	const merged = withAnnounced(
+		collectUsage([
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "workflow",
+					isError: false,
+					details: { turns: 24 },
+					usage: usageBlock(540_000, 30_000, 5.2),
+				},
+			},
+		]),
+		log.rows(),
+	);
+
+	check("they share one row", merged.tools.map((row) => row.label), ["workflow"]);
+	check("no separate announced row is left over", merged.announced?.length, 0);
+	check("calls are both routes added up", merged.tools[0]?.totals.calls, 40);
+	check("and so is the money", Number(merged.tools[0]!.totals.cost.toFixed(4)), 8);
+	// The synchronous run has no spendLabel here, so it produces no named child.
+	// Its 24 calls used to vanish from the breakdown, leaving indented lines that
+	// summed to less than their own parent — a reader adding them up concluded the
+	// row cost $2.80 when it held $8.00. The remainder now gets its own line.
+	check("the per-run breakdown survives the merge", merged.tools[0]?.children?.map((row) => row.label), [
+		"migrate-parser (14:03)",
+		"(unnamed runs)",
+	]);
+	check("and the remainder carries the unnamed run's calls", merged.tools[0]?.children?.[1]?.totals.calls, 24);
+	check("and its money", Number(merged.tools[0]!.children![1]!.totals.cost.toFixed(4)), 5.2);
+	check(
+		"so the children sum to the parent",
+		merged.tools[0]?.children?.reduce((sum, child) => sum + child.totals.calls, 0),
+		merged.tools[0]?.totals.calls,
+	);
+	check("the grand total counts it exactly once", Number(merged.total.cost.toFixed(4)), 8);
+	check("and the footnote still knows announcements happened", merged.hasAnnounced, true);
+}
+
+console.log("\n--- collect: a labelled run completes the breakdown ---");
+{
+	// With `details.spendLabel` the synchronous run gets its own line, and the
+	// children finally add up to their parent. Children that do not sum to their
+	// own total are a worse report than no children at all.
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "workflow", detail: "migrate-parser (14:03)", calls: 16, usage: { input: 288_000, cost: 2.8 } });
+
+	const merged = withAnnounced(
+		collectUsage([
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "workflow",
+					isError: false,
+					details: { turns: 24, spendLabel: "code-review (16:01)" },
+					usage: usageBlock(540_000, 30_000, 5.2),
+				},
+			},
+		]),
+		log.rows(),
+	);
+
+	const row = merged.tools[0]!;
+	check("both runs are named, costliest first", row.children?.map((child) => child.label), [
+		"code-review (16:01)",
+		"migrate-parser (14:03)",
+	]);
+	check("and the children sum to the parent's calls", row.children?.reduce((sum, child) => sum + child.totals.calls, 0), row.totals.calls);
+	check("and to its money", Number(row.children!.reduce((sum, child) => sum + child.totals.cost, 0).toFixed(4)), Number(row.totals.cost.toFixed(4)));
+}
+
+console.log("\n--- collect: two results from the same run are one line ---");
+{
+	// Same label twice must add up, not appear twice at half the money each.
+	const usage = collectUsage([
+		{ type: "message", message: { role: "toolResult", toolName: "workflow", isError: false, details: { turns: 3, spendLabel: "sweep (10:00)" }, usage: usageBlock(100, 10, 1) } },
+		{ type: "message", message: { role: "toolResult", toolName: "workflow", isError: false, details: { turns: 5, spendLabel: "sweep (10:00)" }, usage: usageBlock(100, 10, 2) } },
+	]);
+	check("one child line", usage.tools[0]?.children?.map((child) => child.label), ["sweep (10:00)"]);
+	check("with both call counts", usage.tools[0]?.children?.[0]?.totals.calls, 8);
+	check("and both costs", Number(usage.tools[0]!.children![0]!.totals.cost.toFixed(4)), 3);
+}
+
+console.log("\n--- collect: a lone child is dropped even with nothing announced ---");
+{
+	// The commonest shape there is: one synchronous workflow, no background runs.
+	// pruning lived behind withAnnounced's early return, so this printed the run's
+	// figures on two consecutive lines — reading as double the spend — and whether
+	// it did depended on whether some *unrelated* extension happened to announce.
+	const collected = collectUsage([
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "workflow",
+				isError: false,
+				details: { turns: 24, spendLabel: "code-review (16:01)" },
+				usage: usageBlock(540_000, 30_000, 5.2),
+			},
+		},
+	]);
+	const alone = withAnnounced(collected, []);
+	check("the duplicate line is gone", alone.tools[0]?.children, undefined);
+	check("and the row itself is intact", alone.tools[0]?.totals.calls, 24);
+
+	// With something else announcing, the same report must look the same.
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "recap", calls: 3, usage: { cost: 0.036 } });
+	const withOther = withAnnounced(collected, log.rows());
+	check("and it does not reappear when an unrelated source spends", withOther.tools[0]?.children, undefined);
+}
+
+console.log("\n--- render: the provenance footnote survives an older stored entry ---");
+{
+	// /usage stores numbers, not drawings, and re-renders them later. An entry
+	// written before `hasAnnounced` existed still has announced rows and no flag;
+	// re-keying the footnote without a fallback silently presented in-memory-only
+	// figures as if the session file corroborated them.
+	const legacy = {
+		...collectUsage([]),
+		announced: [{ label: "workflows", totals: { ...emptyTotals(), calls: 40, cost: 8 } }],
+	};
+	const text = plainUsage(legacy, {});
+	check("the older entry still warns", text.includes("announced by extensions"), true);
+	check("a report with no announced spend does not", plainUsage(collectUsage([]), {}).includes("announced by extensions"), false);
+}
+
+console.log("\n--- collect: an announcement from a non-tool keeps its own row ---");
+{
+	// recap and goal announce but are not tools, so there is nothing to merge
+	// into and they must not be swallowed.
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "recap", calls: 3, usage: { input: 24_000, cost: 0.036 } });
+	const merged = withAnnounced(collectUsage([]), log.rows());
+	check("it stands alone", merged.announced?.map((row) => row.label), ["recap"]);
+	check("with its calls intact", merged.announced?.[0]?.totals.calls, 3);
+	check("and reaches the total", Number(merged.total.cost.toFixed(4)), 0.036);
+}
+
+console.log("\n--- collect: merging does not mutate what it merged ---");
+{
+	// The rows go into a stored /usage entry that re-renders on every redraw, and
+	// the log keeps accumulating. Folding twice must not double anything.
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "workflow", calls: 4, usage: { cost: 1 } });
+	const collected = collectUsage([
+		{ type: "message", message: { role: "toolResult", toolName: "workflow", isError: false, details: { turns: 2 }, usage: usageBlock(10, 10, 1) } },
+	]);
+	const first = withAnnounced(collected, log.rows());
+	const second = withAnnounced(collected, log.rows());
+	check("the source rows are untouched", collected.tools[0]?.totals.calls, 2);
+	check("so a second fold matches the first", second.tools[0]?.totals.calls, first.tools[0]?.totals.calls);
+	check("and the total does not creep", second.total.cost, first.total.cost);
 }
 
 console.log("\n--- collect: a tool result without usage is not a call ---");
@@ -159,7 +364,11 @@ console.log("\n--- collect: workflow spend folded in ---");
 	check("calls come from the announcement", merged.announced?.[0]?.totals.calls, 40);
 	check("the total includes it", Number(merged.total.cost.toFixed(2)), 12.55);
 	check("the session's own total is untouched", Number(base.total.cost.toFixed(2)), 0.05);
-	check("no announcements, no rows", withAnnounced(base, []).announced, undefined);
+	// An empty announcement list still runs the reconcile pass — that is the whole
+	// point of dropping the early return — but must add no rows and must not claim
+	// the report contains announced spend.
+	check("no announcements, no rows", withAnnounced(base, []).announced, []);
+	check("and no announced-spend footnote", withAnnounced(base, []).hasAnnounced, false);
 
 	// Increments, not snapshots: a second announcement from the same source adds
 	// to the first rather than replacing it. recap fires repeatedly in one
@@ -218,12 +427,14 @@ console.log("\n--- collect: workflow spend folded in ---");
 	]);
 	check("each carrying its own cost", workflows?.children?.map((row) => row.totals.cost), [5.2, 2.8]);
 	check("and its own calls", workflows?.children?.map((row) => row.totals.calls), [24, 16]);
-	// A producer with no detail, or with only one, gets no children — a single
-	// child would just restate its parent.
 	check("no detail, no children", recap?.children, undefined);
+	// A lone run that IS its parent earns no line. The log emits it regardless —
+	// it cannot know whether the finished row will also hold a tool result's
+	// spend — so the rule is applied by withAnnounced, against the real parent.
 	const single = new AnnouncedSpendLog();
 	single.add({ source: "workflows", detail: "only (09:00)", usage: { cost: 1 } });
-	check("one run, no children", single.rows()[0]?.children, undefined);
+	check("the log emits it", single.rows()[0]?.children?.length, 1);
+	check("the report drops it", withAnnounced(collectUsage([]), single.rows()).announced?.[0]?.children, undefined);
 	// Children are snapshots too, for the same reason the parents are.
 	const snap = perRun.rows()[0]!.children![0]!.totals.cost;
 	perRun.add({ source: "workflows", detail: "code-review (16:01)", usage: { cost: 99 } });
@@ -257,9 +468,16 @@ if (!ultracode) {
 		cost: { total: 3.25 },
 		totalTokens: 6200,
 	});
+	// The real source name, not a literal. The merge that keeps a workflow in ONE
+	// row turns entirely on this string matching ultracode's tool name — rename
+	// it back to "workflows" and the two-rows-in-two-sections confusion returns
+	// silently, with every other test still green.
+	const config = await import("../ultracode/config.ts");
+	const source = config.SPEND_SOURCE;
+
 	const log = new AnnouncedSpendLog();
 	log.add({
-		source: "workflows",
+		source,
 		calls: delta.turns,
 		usage: {
 			input: delta.input,
@@ -271,6 +489,23 @@ if (!ultracode) {
 		},
 	});
 
+	// The invariant itself: an announcement lands on the row of the tool that
+	// made it, rather than beside it.
+	const sameRow = withAnnounced(
+		collectUsage([
+			{
+				type: "message",
+				message: { role: "toolResult", toolName: "workflow", isError: false, details: { turns: 2 }, usage: usageBlock(10, 10, 1) },
+			},
+		]),
+		log.rows(),
+	);
+	check("the announced source is the tool's own name", sameRow.tools.map((row) => row.label), ["workflow"]);
+	check("so nothing is left standing beside it", sameRow.announced?.length, 0);
+	check("and both routes are in one call count", sameRow.tools[0]?.totals.calls, 2 + delta.turns);
+
+	// Fresh log for the standalone assertions below, so the row is only the
+	// announcement and not the merge built above.
 	const merged = withAnnounced(collectUsage([]), log.rows());
 	check("a real producer's payload lands as money", merged.announced?.[0]?.totals.cost, 3.25);
 	check("and as tokens", merged.announced?.[0]?.totals.input, 1000);

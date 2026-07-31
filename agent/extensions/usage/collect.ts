@@ -33,6 +33,20 @@
  * getContextUsage(), where it is a current fact rather than an accumulation.
  */
 export interface Totals {
+	/**
+	 * Model calls — round trips to a provider, wherever they happened.
+	 *
+	 * One meaning, in every row, and it took work to get there. The obvious
+	 * reading of a tool result is "one call", and that is wrong by an order of
+	 * magnitude for the tools that matter: a `wait: true` workflow arrives as a
+	 * single tool result carrying the aggregate spend of a twenty-four agent
+	 * fleet. Counting it as 1 put a `1` next to `$5.20` in the same column as a
+	 * `3` next to `$3.30`, and made the Total row add round trips to tool
+	 * invocations and call the sum a number of calls.
+	 *
+	 * So a tool that spends on its own account reports how many calls that was,
+	 * on `details.turns`; see `callsFor`.
+	 */
 	calls: number;
 	input: number;
 	output: number;
@@ -61,8 +75,18 @@ export interface SessionUsage {
 	tools: Row[];
 	/** Compaction and branch summarisation — pi's own calls. */
 	overhead: Row[];
-	/** Spend extensions announced on SPEND_CHANNEL, one row per source. */
+	/**
+	 * Announced spend from sources that are not also tools, one row per source.
+	 * An announcement matching a tool's name is merged into that tool's row
+	 * instead — see withAnnounced.
+	 */
 	announced?: Row[];
+	/**
+	 * Whether anything in this report came from SPEND_CHANNEL, wherever it ended
+	 * up. Drives the footnote, which has to stay true even when every
+	 * announcement was merged into a tool row and `announced` is empty.
+	 */
+	hasAnnounced?: boolean;
 	total: Totals;
 	/** User messages, i.e. how many times you asked for something. */
 	turns: number;
@@ -108,9 +132,50 @@ function num(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-/** Fold one recorded usage block into `into`, counting it as one call. */
-function record(into: Totals, usage: RecordedUsage | undefined): void {
-	into.calls++;
+/**
+ * How many model calls one tool result stands for.
+ *
+ * The convention, and it is a convention rather than something pi enforces: a
+ * tool that spent on its own account puts the number of calls it made on
+ * `details.turns`. Every spending tool in this repo already had that number to
+ * hand — `subagents` and `advisor` were already reporting it, `ultracode` now
+ * does — because each of them counts subagent turns to build the usage block in
+ * the first place.
+ *
+ * It cannot travel on `usage`, which is the obvious place: pi's `Usage` has no
+ * field for a call count, only tokens and cost. `details` is the only channel
+ * that is both free-form and persisted to the session file, which is what lets
+ * a resumed session still report the right number.
+ *
+ * Anything absent, zero, or not a positive integer falls back to one call. A
+ * tool that spent money made at least one, and a fabricated larger number would
+ * be worse than a conservative one.
+ */
+export function callsFor(details: unknown): number {
+	if (!details || typeof details !== "object") return 1;
+	const turns = (details as { turns?: unknown }).turns;
+	return typeof turns === "number" && Number.isInteger(turns) && turns > 0 ? turns : 1;
+}
+
+/**
+ * The name of the individual run behind one tool result, when it has one.
+ *
+ * The second half of the same convention as `details.turns`: `details.spendLabel`
+ * is what an announcing producer would have put in `detail`, so a synchronous
+ * run and a background one land under the same parent with the same kind of
+ * label. Without it a merged row shows a breakdown that does not add up to its
+ * own total — 16 of 40 accounted for — which is a worse report than no
+ * breakdown at all.
+ */
+export function labelFor(details: unknown): string | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const label = (details as { spendLabel?: unknown }).spendLabel;
+	return typeof label === "string" && label.trim() ? label.trim() : undefined;
+}
+
+/** Fold one recorded usage block into `into`, counting it as `calls` calls. */
+function record(into: Totals, usage: RecordedUsage | undefined, calls = 1): void {
+	into.calls += calls;
 	if (!usage) return;
 	into.input += num(usage.input);
 	into.output += num(usage.output);
@@ -153,6 +218,8 @@ type EntryLike = {
 		model?: string;
 		toolName?: string;
 		usage?: RecordedUsage;
+		/** Free-form, tool-defined, and persisted. Read only for `turns`; see callsFor. */
+		details?: unknown;
 		stopReason?: string;
 	};
 };
@@ -182,6 +249,8 @@ function timestampOf(entry: EntryLike): number | undefined {
 export function collectUsage(entries: readonly unknown[]): SessionUsage {
 	const models = new Map<string, Totals>();
 	const tools = new Map<string, Totals>();
+	/** Per-run breakdown within a tool, keyed by `details.spendLabel`. */
+	const toolDetails = new Map<string, Map<string, Totals>>();
 	const overhead = new Map<string, Totals>();
 	let turns = 0;
 	let failed = 0;
@@ -217,15 +286,30 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
 			if (message.stopReason === "error" || message.stopReason === "aborted") failed++;
 			continue;
 		}
-		// A tool result only carries usage when the tool spent on its own account.
+		// A tool result only carries usage when the tool spent on its own account,
+		// and when it did, one result can stand for many calls.
 		if (message.role === "toolResult" && message.usage) {
-			record(bucket(tools, message.toolName ?? "tool"), message.usage);
+			const name = message.toolName ?? "tool";
+			const calls = callsFor(message.details);
+			record(bucket(tools, name), message.usage, calls);
+			const label = labelFor(message.details);
+			if (label) {
+				let within = toolDetails.get(name);
+				if (!within) {
+					within = new Map<string, Totals>();
+					toolDetails.set(name, within);
+				}
+				record(bucket(within, label), message.usage, calls);
+			}
 		}
 	}
 
 	const total = emptyTotals();
 	const modelRows = rows(models);
-	const toolRows = rows(tools);
+	const toolRows = rows(tools).map((row) => {
+		const within = toolDetails.get(row.label);
+		return within?.size ? { ...row, children: rows(within) } : row;
+	});
 	const overheadRows = rows(overhead);
 	for (const row of [...modelRows, ...toolRows, ...overheadRows]) addTotals(total, row.totals);
 
@@ -322,8 +406,12 @@ export class AnnouncedSpendLog {
 	rows(): Row[] {
 		return rows(this.sources).map((row) => {
 			const within = this.details.get(row.label);
-			// One child is the parent restated, so it earns no line.
-			const children = within && within.size > 1 ? rows(within).map((child) => ({ label: child.label, totals: { ...child.totals } })) : undefined;
+			// Every child is emitted, including a lone one. Whether it earns a line
+			// is not knowable here: a single run restates its parent only if the
+			// parent is nothing but that run, and after withAnnounced merges this
+			// into a tool that also spent, it no longer is. The redundant-child rule
+			// therefore lives where the finished parent exists — see pruneChildren.
+			const children = within?.size ? rows(within).map((child) => ({ label: child.label, totals: { ...child.totals } })) : undefined;
 			return { label: row.label, totals: { ...row.totals }, ...(children ? { children } : {}) };
 		});
 	}
@@ -333,14 +421,133 @@ export class AnnouncedSpendLog {
  * Fold announced spend into a collected session.
  *
  * Kept out of collectUsage because it comes from events rather than the session
- * file, and because it must be visibly separable: this is the spend nothing in
- * the transcript can corroborate — workflow agents are other processes, and
- * recap and goal record their calls nowhere at all.
+ * file: this is the spend nothing in the transcript can corroborate — workflow
+ * agents are other processes, and recap and goal record their calls nowhere at
+ * all.
+ *
+ * An announcement whose `source` matches a tool that already spent is merged
+ * into that tool's row rather than added beside it. One producer reaching the
+ * report by two routes is not two producers, and it used to read as two: a
+ * `wait: true` workflow attaches its spend to the tool result, a background one
+ * announces, and the same feature appeared as `workflow (tool)` and `workflows`
+ * in different sections of the table — which of the two you got depending on a
+ * parameter the report never showed, and a *failed* synchronous run switching
+ * from one to the other because pi builds the error result itself and it
+ * carries no usage. Merging on the shared name makes those one row, however the
+ * numbers arrived.
  */
+/**
+ * Combine two breakdowns of the same row, folding on the run label.
+ *
+ * Same-labelled children are added rather than listed twice — a run that
+ * somehow reported through both routes is still one run, and two lines with the
+ * same name and half the money each would be the exact confusion this whole
+ * change is removing.
+ */
+function mergeChildren(existing: Row[] | undefined, incoming: Row[]): Row[] {
+	const byLabel = new Map<string, Totals>();
+	for (const child of [...(existing ?? []), ...incoming]) {
+		const totals = bucket(byLabel, child.label);
+		addTotals(totals, child.totals);
+	}
+	return rows(byLabel);
+}
+
+/**
+ * Make a row's breakdown either absent, or complete.
+ *
+ * Two failures live here, and both are about a reader trusting indented lines.
+ *
+ * A lone child that exactly restates its parent is a duplicate line: the same
+ * figures twice, which reads as double the spend. The test is equality with the
+ * parent rather than "there is only one of them", because that same single
+ * child under a row that also absorbed a synchronous run's spend is a real
+ * breakdown of a mixed total.
+ *
+ * The opposite failure is a breakdown that silently sums to LESS than its own
+ * parent — a workflow result with no `spendLabel` (an older session, or a run
+ * whose detail was never set) contributes to the parent but produces no child.
+ * A reader adding up the indented lines then concludes the row cost less than
+ * it did, which is the direction a cost report must never be wrong in. So the
+ * remainder is given its own line instead of being left to be noticed.
+ */
+function reconcileChildren(row: Row): Row {
+	const children = row.children;
+	if (!children?.length) return row;
+
+	if (children.length === 1) {
+		const only = children[0]!;
+		const restatesParent =
+			only.totals.cost === row.totals.cost &&
+			only.totals.calls === row.totals.calls &&
+			billedTokens(only.totals) === billedTokens(row.totals);
+		if (restatesParent) {
+			const { children: _dropped, ...rest } = row;
+			return rest;
+		}
+	}
+
+	const counted = emptyTotals();
+	for (const child of children) addTotals(counted, child.totals);
+
+	const remainder: Totals = {
+		calls: row.totals.calls - counted.calls,
+		input: row.totals.input - counted.input,
+		output: row.totals.output - counted.output,
+		cacheRead: row.totals.cacheRead - counted.cacheRead,
+		cacheWrite: row.totals.cacheWrite - counted.cacheWrite,
+		reasoning: row.totals.reasoning - counted.reasoning,
+		cost: row.totals.cost - counted.cost,
+	};
+
+	// Floating-point cost never lands exactly, so the gap has to be material in
+	// something countable before it earns a line.
+	if (remainder.calls <= 0 && billedTokens(remainder) <= 0) return row;
+
+	return { ...row, children: [...children, { label: "(unnamed runs)", totals: remainder }] };
+}
+
 export function withAnnounced(usage: SessionUsage, announced: Row[]): SessionUsage {
-	if (announced.length === 0) return usage;
+	// Deliberately NOT short-circuited on an empty announcement list. The
+	// reconcile pass below is the only thing that drops a duplicated child line,
+	// and returning early skipped it for the commonest case there is: one
+	// synchronous workflow and nothing announced at all. That printed the run's
+	// figures twice, and whether it did depended on whether some unrelated
+	// extension happened to spend money in the same session.
+
+	// Copied before merging: these Totals belong to collectUsage's maps, and the
+	// announced log hands out snapshots that callers may re-fold on a later
+	// redraw. Mutating either in place makes a stored report restate itself.
+	const tools = usage.tools.map((row) => ({
+		...row,
+		totals: { ...row.totals },
+		...(row.children ? { children: row.children.map((child) => ({ ...child, totals: { ...child.totals } })) } : {}),
+	}));
+	const standalone: Row[] = [];
+
+	for (const row of announced) {
+		const merged = tools.find((tool) => tool.label === row.label);
+		if (!merged) {
+			standalone.push(row);
+			continue;
+		}
+		addTotals(merged.totals, row.totals);
+		// Both sides' breakdowns are combined, not one replaced by the other: a
+		// merged row can hold synchronous runs (named on the tool result) and
+		// background ones (named in the announcement), and showing only one set
+		// gives children that do not add up to their own parent.
+		if (row.children?.length) merged.children = mergeChildren(merged.children, row.children);
+	}
+
 	const total = emptyTotals();
 	addTotals(total, usage.total);
 	for (const row of announced) addTotals(total, row.totals);
-	return { ...usage, announced, total };
+
+	return {
+		...usage,
+		tools: tools.map(reconcileChildren).sort((a, b) => b.totals.cost - a.totals.cost || a.label.localeCompare(b.label)),
+		announced: standalone.map(reconcileChildren),
+		hasAnnounced: announced.length > 0,
+		total,
+	};
 }

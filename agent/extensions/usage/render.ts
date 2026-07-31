@@ -134,7 +134,14 @@ export function renderUsage(usage: SessionUsage, meta: ReportMeta, theme: Theme)
 
 	const body: Array<{ row: string[]; muted: boolean }> = [];
 	for (const row of usage.models) body.push({ row: cells(row.label, row.totals), muted: false });
-	for (const row of usage.tools) body.push({ row: cells(`${row.label} (tool)`, row.totals), muted: true });
+	// No "(tool)" suffix. It was disambiguation, and merging made it a half-truth:
+	// a `workflow` row now holds both the synchronous runs pi recorded on tool
+	// results and the background ones the extension announced, so labelling the
+	// whole row a tool named only one of its two halves. The row is the producer.
+	for (const row of usage.tools) {
+		body.push({ row: cells(row.label, row.totals), muted: true });
+		for (const child of row.children ?? []) body.push({ row: cells(`  ${child.label}`, child.totals), muted: true });
+	}
 	for (const row of usage.overhead) body.push({ row: cells(row.label, row.totals), muted: true });
 	for (const row of usage.announced ?? []) {
 		body.push({ row: cells(row.label, row.totals), muted: true });
@@ -168,15 +175,32 @@ export function renderUsage(usage: SessionUsage, meta: ReportMeta, theme: Theme)
 	].filter(Boolean);
 	lines.push(theme.fg("muted", footnotes.join("  ·  ")));
 
-	// Said out loud rather than left to be inferred: these rows are the only ones
-	// whose evidence is not in the session file, so they cover only what this pi
-	// process announced and start again at zero with a new session.
-	//
-	// It used to promise "/workflows has the per-run breakdown". It does not —
-	// no command prints per-run cost — so this points at where the figures
-	// actually are rather than at a command that would show nothing.
-	if (usage.announced?.length) {
-		lines.push(theme.fg("muted", "Announced rows cover what this session announced; runs from an earlier session are not in them."));
+	// A model row is this conversation, not everything that ran on that model.
+	// Subagents and workflow fleets usually run on the very model named above
+	// them and are billed on their own rows, so without this the top row reads as
+	// a model total it never was. Only worth a line when there is another row for
+	// it to be confused with.
+	if (usage.tools.length > 0 || (usage.announced?.length ?? 0) > 0) {
+		lines.push(
+			theme.fg("muted", "Model rows are this conversation's own calls. Tool rows are calls those tools made themselves."),
+		);
+	}
+
+	// Said out loud rather than left to be inferred: some of these numbers have
+	// no evidence in the session file, so they cover only what this pi process
+	// announced and start again at zero with a new session. Keyed on
+	// hasAnnounced, not on the `announced` array — after merging, a workflow's
+	// spend can be entirely inside a tool row while still being exactly the kind
+	// of figure this warns about.
+	// Falls back to the old key. `/usage` stores its numbers in the session file
+	// and re-renders them later, so entries written before `hasAnnounced` existed
+	// still have announced rows and no flag — and re-keying without a fallback
+	// silently dropped this warning from every one of them, presenting
+	// in-memory-only figures as if the file corroborated them.
+	if (usage.hasAnnounced ?? (usage.announced?.length ?? 0) > 0) {
+		lines.push(
+			theme.fg("muted", "Some spend was announced by extensions rather than recorded in the session; runs from an earlier session are not in it."),
+		);
 	}
 
 	return lines.join("\n");

@@ -29,7 +29,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
-const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL } = await import("./config.ts");
+const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { createRun } = await import("./store.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
@@ -659,7 +659,11 @@ console.log("\n--- workflow tool: a background run announces what it spends ---"
 		}
 		const bg = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
 		check("a background run announces its spend", bg.length > 0, true);
-		check("under the shared source name", bg[0]?.source, "workflows");
+		// Against the constant, not a copy of its value. The literal here pinned the
+		// old name and failed the suite when the source was deliberately renamed to
+		// match the tool — which is the property that keeps /usage showing one
+		// workflow row rather than two.
+		check("under the shared source name", bg[0]?.source, SPEND_SOURCE);
 		check("carrying the flat cost", bg[0]?.usage.cost, 0.25);
 		check("and the reasoning tokens", bg[0]?.usage.reasoning, 150);
 		check("counted as a call", bg[0]?.calls, 1);

@@ -206,7 +206,14 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 				}
 				return {
 					content: [{ type: "text", text: outcome.text }],
-					details: structuredClone(run.progress),
+					// `turns` is lifted to the top of details on purpose, beside the
+					// progress it duplicates. pi's `Usage` carries tokens and cost but
+					// no call count, so a reader adding up a session sees one tool
+					// result and counts one call — for a fleet that made twenty-four.
+					// details is the only channel that is both free-form and persisted,
+					// and `details.turns` is the shape the other spending tools in this
+					// repo already use.
+					details: { ...structuredClone(run.progress), turns: run.progress.usage.turns, spendLabel: run.spendDetail },
 					usage: toPiUsage(run.progress.usage),
 				};
 			}

@@ -51,7 +51,7 @@ export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
  * pi.events channel for announcing model spend — shared by every extension that
  * bills money, not owned by this one, which is why it is not `ultracode:*`.
  *
- * Payload is an INCREMENT: `{ source: "workflows", detail, usage: { …, cost:
+ * Payload is an INCREMENT: `{ source: SPEND_SOURCE, detail, usage: { …, cost:
  * number }, calls }`. Announced per subagent turn from the same hook that folds
  * usage into the run, so a subscriber sees spend as it happens without
  * ultracode keeping a second tally to hand out.
@@ -72,8 +72,17 @@ export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
  */
 export const SPEND_CHANNEL = "usage:spend";
 
-/** The `source` this extension announces under. */
-export const SPEND_SOURCE = "workflows";
+/**
+ * The `source` this extension announces under.
+ *
+ * Deliberately the tool's own name, singular, and not "workflows". A reader
+ * merges an announcement into the row of the tool it names, and this extension
+ * reaches a spend report by two routes — `wait: true` runs on the tool result,
+ * background ones on the channel. Under two names they showed up as two rows in
+ * two sections of /usage, and which one you got depended on a parameter the
+ * report never displayed. Sharing the tool name makes them one row.
+ */
+export const SPEND_SOURCE = "workflow";
 
 /**
  * Floor on how often live spend is written to run.json, in ms.
