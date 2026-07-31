@@ -85,43 +85,6 @@ export function ensure(root: string, cwd: string, sessionId: string): string | u
 	}
 }
 
-export type Entry = { name: string; bytes: number };
-
-/** Files in the scratchpad, largest first. Directories are summarised, not walked. */
-export function list(dir: string): Entry[] {
-	try {
-		return readdirSync(dir, { withFileTypes: true })
-			.map((entry) => {
-				try {
-					const stat = statSync(join(dir, entry.name));
-					return { name: entry.isDirectory() ? `${entry.name}/` : entry.name, bytes: stat.isDirectory() ? 0 : stat.size };
-				} catch {
-					return { name: entry.name, bytes: 0 };
-				}
-			})
-			.sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name));
-	} catch {
-		return [];
-	}
-}
-
-/**
- * Empty the scratchpad without removing it.
- *
- * Entry by entry rather than `rm -rf` on the directory itself, so the path the
- * agent was told about in this turn's system prompt still exists afterwards.
- */
-export function clear(dir: string): number {
-	let removed = 0;
-	for (const entry of list(dir)) {
-		try {
-			rmSync(join(dir, entry.name.replace(/\/$/, "")), { recursive: true, force: true });
-			removed++;
-		} catch {}
-	}
-	return removed;
-}
-
 /**
  * Remove session directories nobody has touched for the retention window.
  *

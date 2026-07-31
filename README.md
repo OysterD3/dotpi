@@ -532,8 +532,10 @@ for a public repo is a one-way door.
 
 So: one directory per session, at
 `<tmp>/pi-scratchpad-<uid>/<project>/<session>/`, named in the system prompt so the agent reaches
-for it by default. `/scratchpad` shows it and what is in it, `/scratchpad path` prints just the path,
-`/scratchpad clear` empties it. Untouched sessions are pruned after 7 days.
+for it by default. Untouched sessions are pruned after 7 days.
+
+There is no `/scratchpad` command, deliberately: the agent knows the path and will tell you if you
+ask, which is one fewer command to remember for something you rarely need to look at directly.
 
 The three path segments each earn their place. **uid**, because `/tmp` is world-writable: without a
 per-user parent created `0700`, another account can read what the agent writes, or pre-create the
@@ -557,13 +559,21 @@ convenience into a foothold.
 
 Worth knowing: **this is not a sandbox.** The agent can still write anywhere it has permission to.
 All this does is make the right place the easy place, which is the only mechanism available to an
-extension that cannot intercept the filesystem. And if you run permissions in `auto` or
-`askMutating` mode, allowlist the root — otherwise every scratch file costs a prompt, or a
-classifier call, for no benefit. `/scratchpad` prints the exact rule.
+extension that cannot intercept the filesystem.
+
+And if you run permissions in `auto` or `askMutating` mode, allowlist the root — otherwise every
+scratch file costs a prompt, or a classifier call, for no benefit. The rule goes against the stable
+root rather than a session directory, so it keeps working tomorrow:
+
+```jsonc
+"allow": ["Write(/var/folders/**/T/pi-scratchpad-*/**)", "Edit(/var/folders/**/T/pi-scratchpad-*/**)"]
+```
+
+On Linux that root is `/tmp/pi-scratchpad-<uid>/`; `echo $TMPDIR` shows yours.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Session wiring, prompt injection, `/scratchpad` |
+| `index.ts` | Session wiring and prompt injection |
 | `prompt.ts` | **What the agent is told — edit this to change what lands there** (pure) |
 | `store.ts` | Where it lives, creating it, listing, clearing, pruning |
 | `settings.ts` | The `scratchpad` settings block |

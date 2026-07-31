@@ -25,7 +25,4 @@ export const CONFIG = {
 	 * out of. A week covers "what was that script I wrote on Friday".
 	 */
 	pruneAfterDays: 7,
-
-	/** Files listed by `/scratchpad` before the rest collapse into a count. */
-	maxListed: 20,
 };

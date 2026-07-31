@@ -25,27 +25,24 @@
  */
 
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG } from "./config.ts";
 import { scratchpadPrompt } from "./prompt.ts";
-import { loadSettings, type ScratchpadSettings } from "./settings.ts";
-import { clear, ensure, list, prune, rootFor } from "./store.ts";
-
-function formatBytes(bytes: number): string {
-	if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)}MB`;
-	if (bytes >= 1000) return `${Math.round(bytes / 1000)}kB`;
-	return `${bytes}B`;
-}
+import { loadSettings } from "./settings.ts";
+import { ensure, prune, rootFor } from "./store.ts";
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
-	let settings: ScratchpadSettings | undefined;
+
+	/**
+	 * This session's directory, and the only state worth holding: the settings
+	 * and warnings behind it are read, used, and finished with inside start().
+	 * `undefined` means there is no scratchpad — switched off, or the filesystem
+	 * refused — and the prompt hook stays silent rather than naming a path that
+	 * does not exist.
+	 */
 	let dir: string | undefined;
-	let warnings: string[] = [];
 
 	const start = (ctx: ExtensionContext) => {
-		const loaded = loadSettings(agentDir, ctx.cwd, ctx.isProjectTrusted());
-		settings = loaded.settings;
-		warnings = loaded.warnings;
+		const { settings, warnings } = loadSettings(agentDir, ctx.cwd, ctx.isProjectTrusted());
 		dir = undefined;
 
 		if (!settings.enabled) return;
@@ -75,69 +72,5 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		if (!dir) return undefined;
 		return { systemPrompt: `${event.systemPrompt}\n\n${scratchpadPrompt(dir)}` };
-	});
-
-	pi.registerCommand("scratchpad", {
-		description: "Show this session's scratchpad directory (path | clear)",
-
-		getArgumentCompletions: (prefix) =>
-			["path", "clear"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
-
-		handler: async (args, ctx) => {
-			const text = args.trim();
-
-			if (!settings?.enabled) {
-				ctx.ui.notify(`Scratchpad is off (${"scratchpad"}.enabled is false).`, "info");
-				return;
-			}
-			if (!dir) {
-				ctx.ui.notify("No scratchpad this session — it could not be created. See the warning at startup.", "warning");
-				return;
-			}
-
-			// Bare path, for piping or copying. Nothing else on the line.
-			if (text === "path") {
-				ctx.ui.notify(dir, "info");
-				return;
-			}
-
-			if (text === "clear") {
-				const removed = clear(dir);
-				ctx.ui.notify(
-					removed === 0 ? "Scratchpad was already empty." : `Removed ${removed} item(s) from the scratchpad.`,
-					"info",
-				);
-				return;
-			}
-
-			const entries = list(dir);
-			const shown = entries.slice(0, CONFIG.maxListed);
-			const total = entries.reduce((sum, entry) => sum + entry.bytes, 0);
-
-			const lines = [
-				dir,
-				"",
-				entries.length === 0
-					? "Empty."
-					: `${entries.length} item(s), ${formatBytes(total)}:\n${shown
-							.map((entry) => `  ${formatBytes(entry.bytes).padStart(7)}  ${entry.name}`)
-							.join("\n")}${entries.length > shown.length ? `\n  …and ${entries.length - shown.length} more` : ""}`,
-				"",
-				`Kept for ${settings.retainDays} day(s) after last use, then pruned. /scratchpad clear empties it now.`,
-			];
-
-			// Only worth saying when something is actually gating writes there: in
-			// `auto` mode every write the rules do not settle costs a model call, and
-			// the scratchpad is the one directory where that is pure waste. The rule
-			// is printed against the stable root rather than this session's directory,
-			// so it keeps working tomorrow.
-			lines.push(
-				"",
-				"If you run permissions in auto or askMutating mode, this is worth allowlisting:",
-				`  "allow": ["Write(${rootFor(settings.dir)}/**)", "Edit(${rootFor(settings.dir)}/**)"]`,
-			);
-
-			ctx.ui.notify(lines.join("\n"), "info");
-		},
 	});
 }

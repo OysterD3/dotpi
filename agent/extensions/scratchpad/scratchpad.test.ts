@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
-import { clear, ensure, list, prune, projectDir, rootFor, sessionDir, slug } from "./store.ts";
+import { ensure, prune, projectDir, rootFor, sessionDir, slug } from "./store.ts";
 import { scratchpadPrompt } from "./prompt.ts";
 import { DEFAULTS, loadSettings } from "./settings.ts";
 
@@ -96,29 +96,6 @@ console.log("ensure — creates it, and keeps the root private");
 
 	// A root that cannot be created is not fatal.
 	eq("an impossible root yields no scratchpad", ensure("/proc/nonexistent-xyz/root", "/w", "s"), undefined);
-}
-
-// ---------------------------------------------------------------------------
-console.log("list and clear");
-
-{
-	const base = mkdtempSync(join(tmpdir(), "pi-scratch-test-"));
-	const dir = ensure(join(base, "root"), "/w/proj", "s")!;
-	writeFileSync(join(dir, "small.txt"), "x");
-	writeFileSync(join(dir, "big.txt"), "x".repeat(5000));
-	mkdirSync(join(dir, "sub"));
-	writeFileSync(join(dir, "sub", "nested.txt"), "y");
-
-	const entries = list(dir);
-	eq("every entry is listed", entries.length, 3);
-	eq("largest first", entries[0]?.name, "big.txt");
-	check("directories are marked", entries.some((entry) => entry.name === "sub/"));
-
-	const removed = clear(dir);
-	eq("everything is removed", removed, 3);
-	eq("including the nested directory", list(dir).length, 0);
-	// The path the system prompt named must survive being emptied.
-	check("but the scratchpad itself remains", existsSync(dir));
 }
 
 // ---------------------------------------------------------------------------
