@@ -9,11 +9,13 @@
     "providers": {
       "openai": {
         "session": "openai-codex/gpt-5.6-sol",
+        "frontier": "openai-codex/gpt-5.6-sol",
         "fast": "openai-codex/gpt-5.6-luna",
         "cheap": "openai-codex/gpt-5.4-mini"
       },
       "anthropic": {
         "session": "anthropic/claude-opus-5",
+        "frontier": "anthropic/claude-opus-5",
         "fast": "anthropic/claude-sonnet-5",
         "cheap": "anthropic/claude-haiku-4-5"
       }
@@ -54,9 +56,33 @@
     }
   },
   "advisor": {
-    "model": "session"
+    "model": "frontier"
   },
   "goal": {
     "model": "cheap"
+  },
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "steer": true,
+    "thinking": "low",
+    "maxWords": 700,
+    "compactAtPercent": 70,
+    "compactAtTokens": 0
+  },
+  "contextBudget": {
+    "enabled": true,
+    "maxChars": 60000,
+    "headShare": 0.6,
+    "tools": [
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "read",
+      "web_fetch",
+      "web_search"
+    ]
   }
 }

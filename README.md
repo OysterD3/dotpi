@@ -535,12 +535,12 @@ So a setting names a **role**, and roles are defined per provider:
 "models": {
   "active": "openai",
   "providers": {
-    "openai":    { "session": "openai-codex/gpt-5.6-sol",  "fast": "openai-codex/gpt-5.6-luna", "cheap": "openai-codex/gpt-5.4-mini" },
-    "anthropic": { "session": "anthropic/claude-opus-5",   "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" }
+    "openai":    { "session": "openai-codex/gpt-5.6-sol", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-luna", "cheap": "openai-codex/gpt-5.4-mini" },
+    "anthropic": { "session": "anthropic/claude-opus-5",  "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" }
   }
 },
 
-"advisor":     { "model": "session" },
+"advisor":     { "model": "frontier" },
 "permissions": { "auto": { "model": "cheap" } }
 ```
 
@@ -549,6 +549,12 @@ role became. `/provider` on its own shows where things stand. Role names are you
 the only reserved one, and it is what `/provider` writes into pi's `defaultProvider`/`defaultModel`
 and pushes into the running session with `setModel`. Those two keys can't be roles themselves: pi
 resolves them before any extension runs.
+
+**`session` and `frontier` are worth keeping apart even when they name the same model**, which they
+do above. They answer different questions — what you talk to, versus the best thing available — and
+the day you put the session on something faster, anything pointed at `session` follows it down.
+`advisor` is the case that makes this concrete: it exists to consult a *stronger* model than the one
+you are running, so pointing it at `session` quietly defeats it.
 
 **The map is a data contract, not a module.** Every extension here installs independently and may
 not import across boundaries, so each carries its own fifteen-line reader — the same arrangement as
@@ -754,10 +760,38 @@ level is untouched — the keyword and the session mode are independent.
 
 The **session mode** (`/ultracode`, or `/ultracode on|off|status`) raises thinking to xhigh for the
 session, and standing reminders follow a fixed cadence — the full "Ultracode is on" reminder on
-entry, a sparse "still on" nudge every 10th user turn, and one exit notice when it goes off.
-Changing the thinking level away from xhigh exits the mode. The mode survives session resume:
-toggles are replayed from the branch, and delivered reminders are counted so a resumed session
-continues the cadence instead of re-announcing.
+entry, a sparse nudge every 10th user turn, and one exit notice when it goes off. Changing the
+thinking level away from xhigh exits the mode. The mode survives session resume: toggles are
+replayed from the branch, and delivered reminders are counted so a resumed session continues the
+cadence instead of re-announcing.
+
+**What the mode means was rewritten after measuring it.** It used to say *"optimize for the most
+exhaustive, correct answer"*, *"use the Workflow tool on every substantive task"* and *"token cost
+is not a constraint"*. A 39-turn session on this machine then cost $25.16, of which **three
+workflow turns were 83% of the input tokens, 93% of the cached reads and 88% of the output**. The
+model was doing exactly what it had been told.
+
+The surprise was in the shape of the spend. Those runs were **four and five agents wide** — fan-out
+was never the problem. `pi-desktop-implementation` was 4 agents and **264 agent-turns**, about 66
+turns each, for $9.67. Cost is driven by how long an agent runs, not how many you start, and pi has
+no `--max-turns` for a headless run: an agent stops when it decides it is finished. Wall-clock is
+the only hard bound there is.
+
+So the mode now reads as **permission rather than instruction** — reach for a fleet when the task's
+shape needs it (coverage wider than one context holds, independent verification of a claim you
+cannot check yourself, a mechanical sweep over many files) and work inline when it does not — and
+the tool description gained a **Bounding an agent** section, with the matching discipline in the
+subagent preamble: do what the task asks and then stop, do not widen scope, returning early is
+correct. The tool description is *not* smaller for this; it sits in the cached prefix, where ~2.7k
+tokens cost a few cents across a long session, so it is written for behaviour rather than brevity.
+The e2e suite asserts both the presence of the new sections and the **absence** of the old phrasings,
+because the old phrasings are what the spend was made of.
+
+One knob is deliberately left as it is: `ultracode.limits.agentTimeoutMs` in `agent/settings.json` is
+set to 36,000,000 ms — ten hours, against a 10-minute default — which makes the only backstop
+effectively no backstop. Lowering it is not obviously right, because a killed agent wastes
+everything it already spent, so a short timeout can cost more than a long one. It is a judgement
+call about how long your workflows legitimately run.
 
 The **`workflow` tool** is the thing the reminders point at: the model writes a plain-JS script
 with `export const meta = {...}` and orchestrates subagents with `agent()`, `parallel()`, and
@@ -1257,6 +1291,116 @@ which is expected here.
 | `render.ts` | The per-tool call/result summary strings, collapsed and expanded (pure) |
 | `config.ts` | Settings and the tool list (write/edit excluded) |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
+
+**`agent/extensions/context-budget/`** — caps what one tool result contributes to the context window.
+
+Easy to confuse with `compact-tools`, and worth keeping straight: **compact-tools changes what you
+see, this changes what the model receives.** A `bash` that returns a whole build log is one row on
+screen either way, but without this it is still tens of thousands of tokens in every subsequent
+request. Over budget, the result is replaced by its head and tail with a marker between them naming
+the way to the rest.
+
+**The timing is the whole design.** The obvious way to shrink a context is to walk it on the
+`context` event and drop what has gone stale — which fights the prompt cache, because the cached
+prefix is only valid up to the first changed token. Editing a message that is already in context
+re-bills everything after it as fresh input. Measured on this machine, cached reads run $0.5/M
+against $5/M fresh, so invalidating a 100k prefix costs about **$0.45 once to save $0.0025 a turn** —
+it pays back after roughly 180 turns. Eager trimming loses money.
+
+Capping at `tool_result`, before the message has ever been sent, has none of that: the result enters
+context already capped and is never rewritten, so no prefix is ever invalidated and the saving is
+pure. A result that already fits returns `undefined` — pi's signal for "nothing to change" — rather
+than an identical copy, and that distinction is asserted in the tests, because a version that
+returned a copy every time would look correct while throwing away the property the extension exists
+for.
+
+Head **and** tail, because the two tools that produce enormous output put the answer at opposite
+ends: a test run fails at the bottom, a listing is most informative at the top. `write` and `edit`
+are not capped — their results are short and their inputs are the change itself.
+
+```jsonc
+{
+  "contextBudget": {
+    "enabled": true,      // optional; false sends every result in full
+    "maxChars": 60000,    // optional; ~15k tokens per result
+    "headShare": 0.6,     // optional; 0..1, the rest is taken from the tail
+    "tools": ["bash", "grep", "find", "ls", "read", "web_fetch", "web_search"]
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Settings, tool filter, the `tool_result` hook |
+| `budget.ts` | The capping and the elision marker; why it happens at creation (pure) |
+| `config.ts` | Settings and defaults |
+| `context-budget.test.ts` | Capping, edges, settings, and the returns-nothing-when-it-fits property |
+
+**`agent/extensions/compaction/`** — lets the summary shed as well as accumulate, and compacts before
+the context is enormous.
+
+Two things were wrong with the default path on a long session. First, pi has two summarizer prompts,
+and the one used on every compaction after the first opens with *"PRESERVE all existing information
+from the previous summary"*, with only a weak *"if something is no longer relevant, you may remove
+it"* against it. Read as append-only, which it largely is, that makes the summary — the one part of
+the context that survives every compaction — also the one part that only ever grows. Second, pi
+passes the **session's** thinking level to the summarizer, so a session set to `max` pays max
+reasoning to write a summary, and reasoning bills at output rates. Summarizing is mostly
+transcription; it does not earn that.
+
+Rather than reimplement compaction, this calls pi's own exported `compact()` with different
+arguments — so the split-turn prefix summary, the read/modified file lists and the previous-summary
+merge all stay pi's code. What changes is the thinking level, and an instruction appended as
+*"Additional focus"* that reframes the summary as a **working brief with a budget**: it names what to
+drop (finished work, files only read, superseded decisions, process narration) and, just as
+specifically, what to keep exact (the user's own constraints, live paths and error strings, binding
+decisions with their reasons). Both halves are needed — a prompt that only says "be shorter" gets
+shorter by dropping the things that are expensive to recover. A `/compact <instructions>` of your own
+is kept and placed last, where it wins.
+
+**Failure always falls back to pi.** An extension cannot reach pi's retry settings or stream
+function, so this call has no retry behind it where pi's own does — and compaction fires when the
+context is nearly full, the worst possible moment to fail. Every failure path returns `undefined`,
+which makes pi run its built-in compaction exactly as if the extension were absent. The steering is
+an optimisation, never a dependency.
+
+**It also fires compaction at all.** pi triggers on `contextTokens > contextWindow - reserveTokens`,
+so on a million-token model with the default 16k reserve that is ~984k — a measured session here
+reached 634k without a single compaction, paying cached reads on all of it every turn.
+`reserveTokens` cannot be repurposed to fire earlier, because it is also the summary's own token
+budget (`maxTokens = 0.8 × reserveTokens`), so raising it would commission an enormous summary. Hence
+a separate trigger, expressed the two ways the question actually gets asked:
+
+```jsonc
+{
+  "compaction": {
+    // pi's own keys — this block is shared, pi reads these three by name
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+
+    "steer": true,             // optional; false leaves pi's summary prompt alone
+    "thinking": "low",         // optional; the summarizer's level, NOT the session's
+    "maxWords": 700,           // optional; the budget given to the summary
+    "compactAtPercent": 70,    // optional; 0 disables
+    "compactAtTokens": 0       // optional; hard ceiling whatever the window. 0 disables
+  }
+}
+```
+
+`compactAtTokens` is the cost control: per-turn cached reads scale with context size, so a ceiling on
+context is a ceiling on the standing cost of every remaining turn. It is **off by default**, because
+the right number is a preference rather than a correctness question — a big window hides a big
+context from the percent trigger, so 200k of context on a 1M model is 20% and nowhere near firing.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Settings, the `session_before_compact` hook, and the threshold trigger |
+| `steer.ts` | The steering decision, with `compact()` injected so it is testable |
+| `instructions.ts` | The steering text, and why it is phrased as a focus rather than a rule (pure) |
+| `threshold.ts` | When to compact, given a context reading (pure) |
+| `config.ts` | Settings, and why they share pi's `compaction` block |
+| `compaction.test.ts` | Settings, steering text, every fallback path, and the re-fire guard |
 
 **`agent/extensions/memory/`** — gives pi memory by reading another agent's store on this machine.
 
