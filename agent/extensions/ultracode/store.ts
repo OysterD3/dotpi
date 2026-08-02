@@ -21,6 +21,7 @@
  * /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/), which is how agent sessions
  * are named `<runId>-a<index>`.
  */
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUN_STORE_DIR } from "./config.ts";
@@ -80,6 +81,31 @@ export function agentsDir(agentDir: string, runId: string): string {
  */
 export function agentSessionId(runId: string, index: number, attempt = 0): string {
 	return attempt > 0 ? `${runId}-a${index}r${attempt}` : `${runId}-a${index}`;
+}
+
+/**
+ * The pi session id for a SHARED session — one conversation that several
+ * agent() calls continue in turn (`agent(p, { session: "explore" })`).
+ *
+ * Two constraints meet here. The id is a file name and a pi `--session-id`, so
+ * it has to be sanitised; and it must be injective, because two script-level
+ * names that collided would silently merge two chains into one transcript. A
+ * slug alone is not injective ("my session" and "my-session" slug identically),
+ * so the full name is hashed and appended. The slug is kept only so the file is
+ * recognisable on disk.
+ *
+ * `-s` rather than `-a` keeps shared ids out of the agent-index namespace: an
+ * agent named "1" must not land on the same file as agent index 1.
+ */
+export function sharedSessionId(runId: string, name: string): string {
+	const slug =
+		name
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 24) || "session";
+	const digest = createHash("sha256").update(name).digest("hex").slice(0, 8);
+	return `${runId}-s${slug}-${digest}`;
 }
 
 let counter = 0;
@@ -180,6 +206,43 @@ export function reconcile(agentDir: string): RunMeta[] {
 	return interrupted;
 }
 
+/**
+ * Interrupted runs that nothing has resumed yet — the work still owed.
+ *
+ * `reconcile` only reports runs it just marked, because it skips anything
+ * already settled. That is right for "this died a moment ago", but it made the
+ * notice a one-shot: a run that died and was not resumed in the very next
+ * session was never mentioned again, and with `/workflows` scoped to the
+ * current session it also left the panel. Its id survived only in run.json, on
+ * disk, for a person to find by hand — while `R resume run` sat in the panel
+ * unable to see it.
+ *
+ * A run counts as dealt with once some other run records it as a parent, which
+ * is exactly what `resumedFrom` is written for. Aborted and errored runs are
+ * deliberately excluded: the first was cancelled on purpose, and the second
+ * already delivered its failure, with a resume hint, in the session that ran
+ * it. Only an interrupted run's result message never arrived at all.
+ */
+export function unresumedInterrupted(metas: RunMeta[], cwd?: string): RunMeta[] {
+	const resumed = new Set<string>();
+	for (const meta of metas) {
+		if (meta.resumedFrom) resumed.add(meta.resumedFrom);
+	}
+	return metas.filter(
+		(meta) =>
+			meta.status === "interrupted" &&
+			!resumed.has(meta.runId) &&
+			// Same project only. The run store is global — listRuns reads every
+			// directory under ~/.pi/agent/workflow-runs — while a resume runs its
+			// agents in the CURRENT session's cwd. Without this, an interrupted run
+			// from one repository was advertised in every session in every other
+			// repository, for good, and taking the hint would re-run that repo's
+			// agents in the wrong tree. A meta with no cwd recorded is not matched
+			// to anything rather than shown everywhere.
+			(cwd === undefined || meta.cwd === cwd),
+	);
+}
+
 /** Drop the oldest settled runs past `keep`. Active runs are never pruned. */
 export function pruneRuns(agentDir: string, keep: number): void {
 	const settled = listRuns(agentDir).filter((meta) => isSettled(meta.status));
@@ -228,9 +291,18 @@ export function agentErrorPath(agentDir: string, runId: string, index: number): 
 }
 
 /** The session file pi writes for one agent, if it got far enough to make one. */
-export function agentSessionPath(agentDir: string, runId: string, index: number, attempt = 0): string | undefined {
+/**
+ * The transcript pi wrote for one session id, or undefined.
+ *
+ * Takes the id rather than deriving it from (index, attempt): a shared-session
+ * agent runs under `<runId>-s<slug>-<hash>`, not `<runId>-a<index>`, so
+ * re-deriving it here searched for a filename pi never wrote and every chained
+ * agent came back with no transcript at all — the /workflows row read
+ * "session none" for exactly the agents whose accumulated conversation is the
+ * point of the feature.
+ */
+export function sessionPathById(agentDir: string, runId: string, id: string): string | undefined {
 	const dir = agentsDir(agentDir, runId);
-	const id = agentSessionId(runId, index, attempt);
 	let names: string[];
 	try {
 		names = readdirSync(dir);
@@ -240,6 +312,11 @@ export function agentSessionPath(agentDir: string, runId: string, index: number,
 	// pi names session files <timestamp>_<id>.jsonl.
 	const match = names.find((name) => name.endsWith(`_${id}.jsonl`));
 	return match ? join(dir, match) : undefined;
+}
+
+/** The per-index transcript, for callers that have no session id to hand. */
+export function agentSessionPath(agentDir: string, runId: string, index: number, attempt = 0): string | undefined {
+	return sessionPathById(agentDir, runId, agentSessionId(runId, index, attempt));
 }
 
 export function ensureStore(agentDir: string): void {

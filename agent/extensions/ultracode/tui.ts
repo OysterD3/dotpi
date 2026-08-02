@@ -46,6 +46,12 @@ export interface TuiHost {
 	/** The pi session id, so the list can be scoped to this session's runs. */
 	sessionId?: string;
 	/**
+	 * This session's project directory. Unresumed interrupted runs are shown
+	 * across sessions but NOT across projects — the store is global, and
+	 * resuming another repository's run would spawn its agents in this tree.
+	 */
+	cwd?: string;
+	/**
 	 * Called when the panel works out it no longer holds the editor slot.
 	 *
 	 * Deliberately NOT `done()`. See the watchdog in the constructor: resolving
@@ -256,7 +262,12 @@ export class WorkflowsPanel {
 	 * whatever the caret is on.
 	 */
 	private refresh(): void {
-		this.metas = sessionRuns(listRuns(this.host.agentDir), this.host.sessionId, (runId) => this.host.registry.get(runId) !== undefined);
+		this.metas = sessionRuns(
+			listRuns(this.host.agentDir),
+			this.host.sessionId,
+			(runId) => this.host.registry.get(runId) !== undefined,
+			this.host.cwd,
+		);
 		const found = this.selectedRunId ? this.metas.findIndex((meta) => meta.runId === this.selectedRunId) : -1;
 		this.runIndex = found >= 0 ? found : Math.min(this.runIndex, Math.max(0, this.metas.length - 1));
 		this.selectedRunId = this.metas[this.runIndex]?.runId;

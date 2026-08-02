@@ -13,15 +13,10 @@
  */
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type AskUserSettings, CONFIG, TOOL_NAME } from "./config.ts";
+import { CONFIG, TOOL_NAME } from "./config.ts";
 import { ASK_USER_DESCRIPTION, ASK_USER_GUIDELINES, ASK_USER_SNIPPET } from "./guidance.ts";
 import { type AskOption, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
 import { showAsk } from "./prompt.ts";
-
-export interface AskUserToolOptions {
-	/** Current settings, read fresh on every call. */
-	settings: () => AskUserSettings;
-}
 
 /**
  * A trailing "(Recommended)" written into the label itself.
@@ -93,7 +88,7 @@ export function normalizeQuestions(params: Record<string, unknown>): AskQuestion
 	return questions;
 }
 
-export function registerAskUserTool(pi: ExtensionAPI, options: AskUserToolOptions): void {
+export function registerAskUserTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Ask User",
@@ -160,7 +155,7 @@ export function registerAskUserTool(pi: ExtensionAPI, options: AskUserToolOption
 				};
 			}
 
-			const session = new AskSession(questions, options.settings().allowNotes);
+			const session = new AskSession(questions);
 			const settled = await showAsk(pi, ctx, session);
 
 			return {

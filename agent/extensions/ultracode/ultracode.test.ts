@@ -17,12 +17,20 @@ import { parseAgentTypes } from "./agents.ts";
 import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, type AgentOptions } from "./engine.ts";
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
-import { CONFIG, DEFAULT_LIMITS, resolveLimits } from "./config.ts";
+import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
-import { newProgress, PauseGate, RunRegistry, type AgentRow, type WorkflowRun } from "./runs.ts";
-import { addUsage, applyTurn, buildArgs, emptyUsage, stderrDetail, type ReportedUsage } from "./spawn.ts";
+import {
+	allAgentsFailed,
+	newProgress,
+	PauseGate,
+	RunRegistry,
+	tallyAgents,
+	type AgentRow,
+	type WorkflowRun,
+} from "./runs.ts";
+import { addUsage, applyTurn, buildArgs, emptyUsage, scrubArg, stderrDetail, type ReportedUsage } from "./spawn.ts";
 import {
 	agentSessionId,
 	createRun,
@@ -34,9 +42,11 @@ import {
 	reconcile,
 	appendJournalLine,
 	readJournalLines,
+	sharedSessionId,
+	unresumedInterrupted,
 	type RunMeta,
 } from "./store.ts";
-import { resolveScript, safeStringify } from "./tool.ts";
+import { resolveScript, resolveThinking, safeStringify } from "./tool.ts";
 import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
 import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
@@ -296,27 +306,33 @@ console.log("\n--- engine: schema retry ---");
 console.log("\n--- engine: caps and aborts ---");
 {
 	const f = fakeHooks(() => "x");
+	// parallel() used to refuse more than 4096 items. There is no cap now, so a
+	// call that would once have been rejected outright simply runs.
 	const outcome = await runWorkflowScript(
-		`${META}return await parallel(new Array(5000).fill(0).map(() => () => agent('x')))`,
+		`${META}return (await parallel(new Array(4200).fill(0).map(() => () => agent('x')))).length`,
 		undefined,
 		f.hooks,
 	).then(
-		() => "no-throw",
-		(error) => (error instanceof Error && error.message.includes("4096") ? "capped" : "wrong-error"),
+		(run) => run.result,
+		(error) => `threw: ${error}`,
 	);
-	check("parallel item cap", outcome, "capped");
+	check("parallel() takes any number of items", outcome, 4200);
+	check("and every one of them ran", f.spawned.length, 4200);
 }
 {
 	const f = fakeHooks(() => "x");
+	// The 1000-agent runaway backstop is gone too: a run may start as many
+	// agents as its script asks for.
 	const outcome = await runWorkflowScript(
 		`${META}for (let i = 0; i < 1001; i++) { const r = await agent('x'); if (r === null) return 'agent-null' }\nreturn 'done'`,
 		undefined,
 		f.hooks,
 	).then(
 		(run) => run.result,
-		(error) => (error instanceof Error && error.message.includes("1000-agent") ? "capped" : "wrong-error"),
+		(error) => `threw: ${error}`,
 	);
-	check("1000-agent backstop", outcome, "capped");
+	check("no cap on agents per run", outcome, "done");
+	check("all 1001 spawned", f.spawned.length, 1001);
 }
 {
 	const f = fakeHooks(() => "x");
@@ -395,22 +411,23 @@ console.log("\n--- engine: rejection safety ---");
 	check("orphan produced no unhandled rejection", unhandled, 0);
 }
 {
-	// The 1000-agent cap must fail the run even when agent() is called through
-	// parallel(), which nulls ordinary failures.
+	// The same, through parallel(), which is where the old cap surfaced as a
+	// fatal rather than a nulled thunk. Two rounds of 600 is 1200 agents.
 	const f = fakeHooks(() => "x");
 	const outcome = await runWorkflowScript(
 		`${META}
 for (let round = 0; round < 2; round++) {
   await parallel(new Array(600).fill(0).map(() => () => agent('x')))
 }
-return 'never'`,
+return 'done'`,
 		undefined,
 		f.hooks,
 	).then(
-		() => "no-throw",
-		(error) => (error instanceof Error && error.message.includes("1000-agent") ? "capped" : `wrong: ${error}`),
+		(run) => run.result,
+		(error) => `threw: ${error}`,
 	);
-	check("agent cap propagates through parallel", outcome, "capped");
+	check("nor through parallel", outcome, "done");
+	check("all 1200 spawned", f.spawned.length, 1200);
 }
 
 console.log("\n--- engine: nested workflow() refused ---");
@@ -423,8 +440,11 @@ console.log("\n--- engine: nested workflow() refused ---");
 	check("workflow() throws", outcome, "refused");
 }
 
-console.log("\n--- engine: concurrency is bounded ---");
+console.log("\n--- engine: concurrency is unbounded ---");
 {
+	// This is the change, stated as a number. The semaphore used to hold peak at
+	// min(16, cores - 2) and queue the rest; every agent a script starts now
+	// starts immediately, so 40 items in one parallel() is 40 at once.
 	let active = 0;
 	let peak = 0;
 	const f = fakeHooks(async () => {
@@ -439,7 +459,7 @@ console.log("\n--- engine: concurrency is bounded ---");
 		undefined,
 		f.hooks,
 	);
-	check("peak concurrency <= 16", peak <= 16, true);
+	check("nothing is queued: all 40 run at once", peak, 40);
 	check("all 40 ran", f.spawned.length, 40);
 }
 
@@ -486,6 +506,29 @@ console.log("\n--- models: reference resolution ---");
 	check('"claude" is ambiguous', resolve("claude"), "error:ambiguous");
 	check("unknown reference errors", resolve("nope"), "error:none");
 	check("case-insensitive", resolve("SONNET"), "anthropic/claude-sonnet-5");
+
+	// An unresolvable reference fails EVERY agent that uses it, so the message
+	// is all that stands between one bad word in a script and a dead fleet. The
+	// local run store holds five runs killed outright by model "agent" and
+	// model "coding" — each re-authored under a new name rather than corrected,
+	// because "use a more specific id" never said which ids existed.
+	const failure = (reference: string) => {
+		const outcome = resolveModelReference(reference, MODELS);
+		return outcome.ok ? "resolved" : outcome.error;
+	};
+	const ambiguous = failure("claude");
+	check("an ambiguous reference names the candidates", ambiguous.includes("anthropic/claude-sonnet-5"), true);
+	check("all of them", ambiguous.includes("anthropic/claude-haiku-4-5") && ambiguous.includes("anthropic/claude-fable-5"), true);
+	check("and says to use one", ambiguous.includes("use one of those ids"), true);
+	// The "agent"/"coding" case: not a model name at all. Seeing the real list
+	// is what stops the next attempt being another guess.
+	const unknown = failure("agent");
+	check("an unknown reference lists what is available", unknown.includes("available:"), true);
+	check("with real ids in it", unknown.includes("anthropic/claude-sonnet-5"), true);
+	// Long registries are capped, and say so rather than looking complete.
+	const many = Array.from({ length: 12 }, (_, i) => ({ provider: "p", id: `m-${i}`, name: `M ${i}` }));
+	const capped = resolveModelReference("zzz", many);
+	check("a long list is capped", capped.ok ? "" : capped.error.includes("and 4 more"), true);
 }
 
 // --------------------------------------------------- routing in the request
@@ -526,6 +569,46 @@ console.log("\n--- routing: model mentions in the triggering prompt ---");
 		routingReminder(["sonnet", "fable"]),
 		'This request names models (sonnet, fable). Route the workflow accordingly: pass each agent whose role the request covers a matching model reference via the agent() model option, e.g. agent(prompt, { model: "sonnet" }).',
 	);
+}
+
+console.log("\n--- routing: a word is only a model if it resolves to one ---");
+{
+	// The registry that caused it. Splitting ids into segments made "coding" a
+	// vocabulary word, so any prompt about a CODING AGENT produced a reminder
+	// instructing agent(prompt, { model: "coding" }) — a reference matching two
+	// kimi models and resolving to neither. Three agents dead per run, and the
+	// instruction came from us rather than from the user.
+	const REGISTRY = [
+		{ provider: "kimi-coding", id: "kimi-for-coding", name: "Kimi for Coding" },
+		{ provider: "kimi-coding", id: "kimi-for-coding-highspeed", name: "Kimi for Coding Highspeed" },
+		{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+	];
+	const vocabulary = modelVocabulary(REGISTRY);
+
+	check("an ambiguous segment is not a model name", vocabulary.has("coding"), false);
+	check("nor is it found in a prompt", findModelMentions("build the pi coding agent GUI", vocabulary), []);
+	// The mechanism, stated directly: vocabulary and resolver cannot disagree.
+	check("but an unambiguous one is", vocabulary.has("sol"), true);
+	check("and is found", findModelMentions("ultracode, use sol for this", vocabulary), ["sol"]);
+	// Full ids are explicit and always usable, ambiguous segments or not.
+	check("full ids survive", vocabulary.has("kimi-for-coding"), true);
+	check(
+		"and can still be named outright",
+		findModelMentions("use kimi-for-coding please", vocabulary),
+		["kimi-for-coding"],
+	);
+	// "kimi" matches both kimi models, so it is not a routing signal either.
+	check("a shared family word is not a signal", vocabulary.has("kimi"), false);
+
+	// Regression guard for the original registry: real family words must still
+	// work when they genuinely identify one model.
+	const clean = modelVocabulary([
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
+		{ provider: "anthropic", id: "claude-fable-5", name: "Fable 5" },
+	]);
+	check("distinct families still resolve", clean.has("sonnet") && clean.has("fable"), true);
+	// "claude" is in both ids, so it names no single model — and never did.
+	check("a shared prefix does not", clean.has("claude"), false);
 }
 
 // ------------------------------------------------------------ runs and panel
@@ -606,6 +689,60 @@ console.log("\n--- runs: interrupted runs from the store ---");
 	const two = interruptedNotice([meta("wf-1"), meta("wf-2")])!;
 	check("names both runs", two.includes("wf-1, wf-2"), true);
 	check("plural phrasing", two.includes("their result messages will"), true);
+	// It used to list every dead run but offer resumeFromRunId for only the
+	// first, so a session that lost three was told how to recover one.
+	check("every dead run gets its own resume call", two.includes('resumeFromRunId: "wf-2"'), true);
+	// Across 23 runs in this store, resume was never used once — every failure
+	// was answered by authoring a fresh workflow. The notice has to say not to.
+	check("re-authoring is ruled out explicitly", one.includes("do NOT write a new workflow"), true);
+}
+
+console.log("\n--- runs: judging a run on its agents, not on the script returning ---");
+{
+	const withAgents = (statuses: Array<AgentRow["status"]>) => {
+		const progress = newProgress("wf-1", "review");
+		progress.phases.push({
+			title: "Find",
+			agents: statuses.map((status, index) => ({ index, label: `a${index}`, status, startedAt: 0 })),
+		});
+		return progress;
+	};
+
+	check("counts every outcome", tallyAgents(withAgents(["done", "failed", "replayed", "done"])), {
+		total: 4,
+		done: 2,
+		failed: 1,
+		replayed: 1,
+	});
+	check("spans phases", tallyAgents(progressOverTwoPhases()).total, 3);
+
+	// The case that cost the most: a script that swallowed every failure and
+	// returned cleanly, reported as "done" with 0 turns and $0.00.
+	check("all failed is a failure", allAgentsFailed(tallyAgents(withAgents(["failed", "failed"]))), true);
+	// But one dead verifier out of five has not invalidated the other four.
+	check("a partial failure is not", allAgentsFailed(tallyAgents(withAgents(["done", "failed"]))), false);
+	check("a clean run is not", allAgentsFailed(tallyAgents(withAgents(["done", "done"]))), false);
+	// A script may legitimately spawn nothing; that is not a fleet that died.
+	check("no agents at all is not a failure", allAgentsFailed(tallyAgents(newProgress("wf-1", "review"))), false);
+	// A resumed run whose every agent replayed from the journal did no new work
+	// and must not read as a wipeout.
+	check("all replayed is not a failure", allAgentsFailed(tallyAgents(withAgents(["replayed", "replayed"]))), false);
+}
+
+function progressOverTwoPhases() {
+	const progress = newProgress("wf-1", "review");
+	progress.phases.push({
+		title: "Find",
+		agents: [{ index: 0, label: "a", status: "done", startedAt: 0 }],
+	});
+	progress.phases.push({
+		title: "Verify",
+		agents: [
+			{ index: 1, label: "b", status: "failed", startedAt: 0 },
+			{ index: 2, label: "c", status: "done", startedAt: 0 },
+		],
+	});
+	return progress;
 }
 
 console.log("\n--- tool: safeStringify ---");
@@ -883,26 +1020,44 @@ console.log("\n--- context: rendering the parent branch ---");
 
 console.log("\n--- context: the seed bundle ---");
 {
-	const limits = { contextBudgetChars: 10_000, fileBudgetChars: 1000 };
 	const branch = [{ type: "message", message: { role: "user", content: [{ type: "text", text: "the ask" }] } }];
-	check("nothing requested -> no bundle", buildContextBundle({ context: {}, branch, cwd: "/p", limits }), undefined);
+	check("nothing requested -> no bundle", buildContextBundle({ context: {}, branch, cwd: "/p" }), undefined);
 
-	const text = buildContextBundle({ context: { text: "findings" }, branch, cwd: "/p", limits })!;
+	const text = buildContextBundle({ context: { text: "findings" }, branch, cwd: "/p" })!;
 	check("literal text is carried", text.includes("## Context\n\nfindings"), true);
 	check("the bundle explains itself", text.startsWith("The following is context forked from"), true);
 
-	const parent = buildContextBundle({ context: { parent: 1 }, branch, cwd: "/p", limits })!;
+	const parent = buildContextBundle({ context: { parent: 1 }, branch, cwd: "/p" })!;
 	check("parent turns are carried", parent.includes("## Conversation so far\n\nUser: the ask"), true);
 
-	const missing = buildContextBundle({ context: { files: ["definitely-not-here.txt"] }, branch, cwd: "/p", limits })!;
+	const missing = buildContextBundle({ context: { files: ["definitely-not-here.txt"] }, branch, cwd: "/p" })!;
 	check("an unreadable file is reported, not fatal", missing.includes("could not be read"), true);
 
-	const real = buildContextBundle({ context: { files: ["config.ts"] }, branch, cwd: import.meta.dirname, limits })!;
+	const real = buildContextBundle({ context: { files: ["config.ts"] }, branch, cwd: import.meta.dirname })!;
 	check("a real file is embedded", real.includes("### config.ts"), true);
-	check("sections are ordered text, files, parent", real.indexOf("## Files") < (real.indexOf("## Conversation") + 1e9), true);
 
-	const squeezed = buildContextBundle({ context: { text: "x".repeat(50) }, branch, cwd: "/p", limits: { contextBudgetChars: 60, fileBudgetChars: 10 } })!;
-	check("the whole bundle is capped", squeezed.endsWith("… [context truncated]"), true);
+	// Ordering, asserted on a bundle that actually HAS all three sections. The
+	// old assertion compared against `indexOf("## Conversation") + 1e9` on a
+	// bundle built without a parent, so the right-hand side was ~1e9 and it was
+	// true no matter what the function emitted — including the reverse order,
+	// and including no files section at all. It was the only coverage of the
+	// ordering code, in the same hunk that rewrote it.
+	const ordered = buildContextBundle({
+		context: { text: "background", files: ["config.ts"], parent: 1 },
+		branch,
+		cwd: import.meta.dirname,
+	})!;
+	const at = (heading: string) => ordered.indexOf(heading);
+	check("all three sections are present", [at("## Context"), at("## Files"), at("## Conversation")].every((i) => i >= 0), true);
+	check("text comes before files", at("## Context") < at("## Files"), true);
+	check("files come before the parent conversation", at("## Files") < at("## Conversation"), true);
+
+	// The seed used to be cut at 60k characters. It is not any more: an agent
+	// given half a file, with no way to tell it was half, fails in a way that is
+	// far harder to see than a large prompt.
+	const huge = buildContextBundle({ context: { text: "x".repeat(200_000) }, branch, cwd: "/p" })!;
+	check("nothing is truncated", huge.includes("[context truncated]"), false);
+	check("and the whole seed survives", huge.includes("x".repeat(200_000)), true);
 }
 
 // ----------------------------------------------------------------- new: engine
@@ -975,6 +1130,126 @@ console.log("\n--- engine: replay ---");
 	check("a replayed agent reports lifecycle events", f.lifecycle.filter((entry) => entry.event === "start").length, 2);
 }
 
+console.log("\n--- engine: shared sessions ---");
+{
+	// Sequential chaining is the supported shape: each agent continues the
+	// conversation the previous one left.
+	const f = fakeHooks(async (prompt) => `saw:${prompt}`);
+	const chained = await runWorkflowScript(
+		`${META}const a = await agent('one', { session: 'explore' })\nconst b = await agent('two', { session: 'explore' })\nreturn [a, b]`,
+		undefined,
+		f.hooks,
+	);
+	check("a chain runs to completion", chained.result, ["saw:one", "saw:two"]);
+	check("both agents carry the session", f.spawned.map((c) => c.options.session), ["explore", "explore"]);
+
+	// The guard. Two agents holding one session at once would interleave their
+	// turns into a single transcript, and every later link would be reading
+	// state assembled in an undefined order.
+	const g = fakeHooks(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		return "x";
+	});
+	const clash = await runWorkflowScript(
+		`${META}return await parallel([() => agent('a', { session: 's' }), () => agent('b', { session: 's' })])`,
+		undefined,
+		g.hooks,
+	).then(
+		() => "no-throw",
+		(error: Error) => error.message,
+	);
+	check("concurrent use of one session fails the run", clash.includes('two agents hold the shared session "s" at once'), true);
+	// Fatal rather than a nulled agent: by the time the second arrives the
+	// chain's ordering is already undefined, so continuing would produce wrong
+	// answers that look right.
+	check("and it says how to fix it", clash.includes("continued sequentially"), true);
+
+	// The lock must survive a failing agent, or one failure would wedge the
+	// chain for the rest of the run.
+	let calls = 0;
+	const h = fakeHooks(async () => {
+		calls++;
+		if (calls === 1) throw new Error("boom");
+		return "recovered";
+	});
+	const afterFailure = await runWorkflowScript(
+		`${META}const a = await agent('one', { session: 's' })\nconst b = await agent('two', { session: 's' })\nreturn [a, b]`,
+		undefined,
+		h.hooks,
+	);
+	check("a failed agent releases its session", afterFailure.result, [null, "recovered"]);
+
+	// Different names are independent and may run concurrently.
+	const i = fakeHooks(async (prompt) => prompt);
+	const parallelOk = await runWorkflowScript(
+		`${META}return await parallel([() => agent('a', { session: 'x' }), () => agent('b', { session: 'y' })])`,
+		undefined,
+		i.hooks,
+	);
+	check("distinct sessions run concurrently", parallelOk.result, ["a", "b"]);
+
+	// A name that is not a usable string is a script error, caught before it can
+	// become a strange file on disk.
+	const j = fakeHooks(async () => "x");
+	const blank = await runWorkflowScript(`${META}return await agent('a', { session: '  ' })`, undefined, j.hooks).then(
+		() => "no-throw",
+		(error: Error) => error.message,
+	);
+	check("a blank session name is rejected", blank.includes("session must be a non-empty string"), true);
+}
+
+console.log("\n--- engine: a shared session is never replayed ---");
+{
+	// Resume allocates a fresh runId, so a replayed agent writes no session file
+	// into the new run. A later live agent in the same chain would find nothing,
+	// quietly start a new conversation, and return an answer computed without
+	// the accumulated context — right-looking and wrong. So the chain re-runs.
+	const f = fakeHooks(async (prompt) => `live:${prompt}`);
+	const served = new Map([[agentKey("cached", {}), "from-journal"]]);
+	const chainKey = agentKey("cached", { session: "s" });
+	served.set(chainKey, "from-journal-chain");
+	const hooks = {
+		...f.hooks,
+		replay: (key: string) => (served.has(key) ? { hit: true as const, value: served.get(key) } : { hit: false as const }),
+	};
+	const run = await runWorkflowScript(
+		`${META}const plain = await agent('cached')\nconst chained = await agent('cached', { session: 's' })\nreturn { plain, chained }`,
+		undefined,
+		hooks,
+	);
+	check("a plain agent still replays", (run.result as { plain: string }).plain, "from-journal");
+	check("a shared-session agent does not", (run.result as { chained: string }).chained, "live:cached");
+	check("only the chained one is spawned", f.spawned.map((c) => c.prompt), ["cached"]);
+	check("and only the plain one counts as replayed", run.replayedCount, 1);
+	// Silently re-running would show up as an unexplained bill on a resume.
+	check("the reason is logged", f.logs.some((l) => l.includes('session "s" is shared')), true);
+	check("once per session", f.logs.filter((l) => l.includes('session "s" is shared')).length, 1);
+}
+
+console.log("\n--- journal: session is part of an agent's identity ---");
+{
+	// Shared-session agents never replay, but they are still RECORDED. If the
+	// key ignored `session`, a later plain agent with the same prompt would
+	// match one and be handed a result computed with a whole chain behind it.
+	check("session changes the key", agentKey("p", {}) === agentKey("p", { session: "s" }), false);
+	check("different sessions are different agents", agentKey("p", { session: "a" }) === agentKey("p", { session: "b" }), false);
+	check("the same session is the same agent", agentKey("p", { session: "a" }), agentKey("p", { session: "a" }));
+}
+
+console.log("\n--- store: shared session ids ---");
+{
+	check("named after the run and the session", sharedSessionId("wf-1-2", "explore").startsWith("wf-1-2-sexplore-"), true);
+	check("stable for one name", sharedSessionId("wf-1-2", "explore"), sharedSessionId("wf-1-2", "explore"));
+	// Injective, or two chains would silently share one transcript. A slug alone
+	// is not: these two collapse to the same slug.
+	check("slug collisions are separated", sharedSessionId("wf-1", "my session") === sharedSessionId("wf-1", "my-session"), false);
+	// An agent literally named "1" must not land on agent index 1's file.
+	check("never collides with an agent index", sharedSessionId("wf-1", "1") === agentSessionId("wf-1", 1), false);
+	// Awkward names still have to produce a usable file name and pi session id.
+	check("unusable characters are stripped", /^wf-1-s[a-z0-9-]+$/.test(sharedSessionId("wf-1", "../../etc/passwd")), true);
+	check("an all-symbol name still yields an id", /^wf-1-ssession-[0-9a-f]{8}$/.test(sharedSessionId("wf-1", "!!!")), true);
+}
+
 console.log("\n--- engine: pause ---");
 {
 	const f = fakeHooks(() => "x");
@@ -1045,14 +1320,21 @@ console.log("\n--- agents: the subagent registry ---");
 
 // ---------------------------------------------------------------- new: plumbing
 
-console.log("\n--- config: settings-driven limits ---");
+console.log("\n--- config: nothing is limited any more ---");
 {
-	check("no overrides -> defaults", resolveLimits(undefined), DEFAULT_LIMITS);
-	check("an override is applied", resolveLimits({ maxConcurrency: 3 }).maxConcurrency, 3);
-	check("other limits keep their default", resolveLimits({ maxConcurrency: 3 }).maxAgentsPerRun, DEFAULT_LIMITS.maxAgentsPerRun);
-	check("a non-positive override is ignored", resolveLimits({ maxConcurrency: 0 }).maxConcurrency, DEFAULT_LIMITS.maxConcurrency);
-	check("a non-numeric override is ignored", resolveLimits({ maxConcurrency: "lots" }).maxConcurrency, DEFAULT_LIMITS.maxConcurrency);
-	check("unknown keys are ignored", resolveLimits({ nonsense: 5 }), DEFAULT_LIMITS);
+	// The limits block is gone, and these pin that it stays gone. Every cap it
+	// held either never bound the runs that hurt (one agent deep for an hour is
+	// not shortened by a concurrency cap) or actively killed work in progress.
+	const config = CONFIG as Record<string, unknown>;
+	for (const gone of ["maxConcurrency", "maxAgentsPerRun", "maxItemsPerCall", "agentTimeoutMs", "contextBudgetChars", "fileBudgetChars"]) {
+		check(`${gone} is gone`, gone in config, false);
+	}
+	// What is left is plumbing, and it has to keep working: without retainRuns
+	// the run store grows without bound.
+	check("retention survives as an internal", typeof CONFIG.retainRuns, "number");
+	check("so does the schema retry", typeof CONFIG.schemaRetries, "number");
+	// A limits block left behind in settings.json must be inert, not honoured.
+	check("settings carry no limits", "limits" in DEFAULT_SETTINGS, false);
 }
 
 console.log("\n--- spawn: argument building ---");
@@ -1078,6 +1360,50 @@ console.log("\n--- spawn: argument building ---");
 	);
 	check("a real error still surfaces", stderrDetail("Warning: No project session found with id 'x'\nmodel is overloaded"), "model is overloaded");
 	check("empty stderr", stderrDetail("   "), "");
+
+	// pi's own errors often END with a documentation path on its own line.
+	// Returning the last line reported the PATH, so every model-resolution
+	// failure read `subagent failed: /Users/…/docs/models.md` — a pointer to a
+	// file instead of the sentence directly above it.
+	check(
+		"a trailing docs path is not the reason",
+		stderrDetail('model "agent" matches several models\n/Users/me/pnpm/@earendil-works/pi-coding-agent/docs/models.md'),
+		'model "agent" matches several models',
+	);
+	check("a trailing URL is not either", stderrDetail("auth failed\nhttps://example.com/docs"), "auth failed");
+	// A path is only set ASIDE, not banned: if it is all there is, it beats "".
+	check("but a lone path still beats nothing", stderrDetail("/Users/me/docs/models.md"), "/Users/me/docs/models.md");
+	// The message is often split across lines, so a few are kept.
+	check(
+		"a split message is kept together",
+		stderrDetail('No model matched "x".\nAvailable: a, b'),
+		'No model matched "x". Available: a, b',
+	);
+	check("and capped", stderrDetail("x".repeat(400)).length, 301);
+	// Dropping the pointer left the words that introduced it: "…Use /login to
+	// log into a provider. See:" reads as though something went missing.
+	check(
+		"the dangling connector goes with the path",
+		stderrDetail("No API key found for kimi-coding. Use /login to log in. See:\n/Users/me/docs/models.md"),
+		"No API key found for kimi-coding. Use /login to log in.",
+	);
+	check("a sentence ending in 'see' is not mangled", stderrDetail("nothing left to see here"), "nothing left to see here");
+	// The benign notice must never come back, even as the last resort — an agent
+	// that only announced its new session id would otherwise report that
+	// announcement as its cause of death.
+	check(
+		"the notice never returns as a fallback",
+		stderrDetail("Warning: No project session found with id 'x'; creating a new session with that id."),
+		"",
+	);
+
+	// Node's spawn rejects an argv slot containing a NUL and kills the call
+	// before the child exists. A subagent prompt carries forked context and
+	// earlier stages' results, so one binary byte upstream failed whole fleets.
+	const dirty = buildArgs({ ...base, prompt: "do\0 it", model: "a\0b", appendSystemPrompt: "role\0" });
+	check("nulls are stripped from the prompt", dirty.at(-1), "do it");
+	check("and from every other argument", dirty.some((a) => a.includes("\0")), false);
+	check("scrubbing leaves clean text alone", scrubArg("plain text"), "plain text");
 }
 
 console.log("\n--- spawn: a turn's usage delta ---");
@@ -1529,6 +1855,160 @@ console.log("\n--- panel: /workflows lists this session's runs ---");
 	check("a session with no id sees nothing stored", sessionRuns(all, undefined, none), []);
 	check("but still sees what it is driving", sessionRuns(all, undefined, (id) => id === "ancient").map((m) => m.runId), ["ancient"]);
 	check("and a live run outranks a foreign id", sessionRuns(all, "s1", (id) => id === "theirs").map((m) => m.runId), ["mine", "theirs"]);
+
+	// Session scoping is a browsing convenience, but `R resume run` lives in
+	// this panel. Filtering out an interrupted run from an earlier session
+	// removed the only way to reach the very thing the notice tells the model to
+	// resume, leaving its id recoverable only by reading run.json by hand.
+	const dead = { ...meta("crashed", "s2"), status: "interrupted" as const };
+	const withDead = [meta("mine", "s1"), dead];
+	check(
+		"an unresumed interrupted run crosses the session boundary",
+		sessionRuns(withDead, "s1", none).map((m) => m.runId).sort(),
+		["crashed", "mine"],
+	);
+	// ...and stops crossing it once something has picked it up, or the panel
+	// would keep showing finished business forever.
+	const resumer = { ...meta("retry", "s2"), resumedFrom: "crashed" };
+	check(
+		"but not once it has been resumed",
+		sessionRuns([...withDead, resumer], "s1", none).map((m) => m.runId),
+		["mine"],
+	);
+	// Only interrupted. An aborted run was cancelled on purpose and an errored
+	// one already reported itself, with a resume hint, in its own session.
+	const cancelled = { ...meta("cancelled", "s2"), status: "aborted" as const };
+	const broken = { ...meta("broken", "s2"), status: "error" as const };
+	check(
+		"deliberate and reported endings stay scoped out",
+		sessionRuns([meta("mine", "s1"), cancelled, broken], "s1", none).map((m) => m.runId),
+		["mine"],
+	);
+}
+
+console.log("\n--- tool: the reasoning-level chain ---");
+{
+	const defaults = { thinking: "low" } as never;
+	const type = { thinking: "medium" } as never;
+	check("the call wins", resolveThinking({ thinking: "high" } as never, type, defaults), "high");
+	check("then the agent type", resolveThinking({} as never, type, defaults), "medium");
+	check("then the registry default", resolveThinking({} as never, undefined, defaults), "low");
+	check("nothing anywhere -> omit --thinking", resolveThinking({} as never, undefined, {} as never), undefined);
+
+	// The bug. Testing `typeof thinking === "string"` short-circuited the chain,
+	// so one capital letter failed THINKING_LEVELS, returned undefined, and threw
+	// away BOTH the agent type's level and the registry default. --thinking was
+	// then omitted and the child fell back to its own settings.json
+	// defaultThinkingLevel — the max-reasoning blowup reading defaults.thinking
+	// was added to prevent, restored invisibly by a generated script's casing.
+	check("a mis-cased level is normalised, not dropped", resolveThinking({ thinking: "High" } as never, type, defaults), "high");
+	check("so is stray whitespace", resolveThinking({ thinking: " high " } as never, type, defaults), "high");
+	check("an unusable level falls through to the type", resolveThinking({ thinking: "maximum" } as never, type, defaults), "medium");
+	check(
+		"and past the type to the default",
+		resolveThinking({ thinking: "maximum" } as never, { thinking: "nonsense" } as never, defaults),
+		"low",
+	);
+}
+
+console.log("\n--- store: work still owed ---");
+{
+	const meta = (runId: string, status: RunMeta["status"], resumedFrom?: string, cwd = "/p"): RunMeta => ({
+		runId,
+		name: runId,
+		status,
+		cwd,
+		pid: 1,
+		startedAt: 0,
+		endedAt: 1,
+		agentCount: 0,
+		resumedFrom,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 },
+	});
+
+	check(
+		"an interrupted run is owed",
+		unresumedInterrupted([meta("a", "interrupted")]).map((m) => m.runId),
+		["a"],
+	);
+	// resumedFrom is written by the run that picks it up, so the debt is settled
+	// by the existence of a child — not by anything the parent records.
+	check(
+		"until something resumes it",
+		unresumedInterrupted([meta("a", "interrupted"), meta("b", "done", "a")]).map((m) => m.runId),
+		[],
+	);
+	// A resume that itself died leaves the debt outstanding — on the child now,
+	// since that is the run holding the newer journal.
+	check(
+		"a resume that also died is owed in its turn",
+		unresumedInterrupted([meta("a", "interrupted"), meta("b", "interrupted", "a")]).map((m) => m.runId),
+		["b"],
+	);
+	check(
+		"other endings are not owed",
+		unresumedInterrupted([meta("a", "done"), meta("b", "aborted"), meta("c", "error"), meta("d", "running")]),
+		[],
+	);
+
+	// Project scoping. The run store is global — listRuns reads every directory
+	// under workflow-runs — while a resume spawns its agents in the CURRENT
+	// session's cwd. Without a filter, one abandoned run in repo-A was advertised
+	// in every session in every other repo, permanently, and taking the hint
+	// would have re-run repo-A's agents in the wrong tree.
+	const here = [meta("a", "interrupted", undefined, "/repo-a"), meta("b", "interrupted", undefined, "/repo-b")];
+	check(
+		"scoped to this project",
+		unresumedInterrupted(here, "/repo-a").map((m) => m.runId),
+		["a"],
+	);
+	check(
+		"another project sees only its own",
+		unresumedInterrupted(here, "/repo-b").map((m) => m.runId),
+		["b"],
+	);
+	// No cwd means "do not scope" — the callers that have no session cwd to hand.
+	check(
+		"omitting the cwd keeps every project",
+		unresumedInterrupted(here).map((m) => m.runId),
+		["a", "b"],
+	);
+}
+
+console.log("\n--- notice: runs owed from earlier sessions ---");
+{
+	const meta = (runId: string, name = runId): RunMeta => ({
+		runId,
+		name,
+		status: "interrupted",
+		cwd: "/p",
+		pid: 1,
+		startedAt: 0,
+		endedAt: 1,
+		agentCount: 1,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 },
+	});
+
+	// The bug this closes: reconcile() skips already-settled runs, so a run not
+	// resumed in the session immediately after the crash was never named again.
+	const staleOnly = interruptedNotice([], [meta("wf-old", "audit")])!;
+	check("a leftover alone still produces a notice", staleOnly.includes("wf-old"), true);
+	check("named for what it was", staleOnly.includes("audit (wf-old)"), true);
+	check("and still resumable", staleOnly.includes('resumeFromRunId: "wf-old"'), true);
+	// It repeats every session until resolved, so it must not read as urgent or
+	// demand the user's attention on a turn about something else.
+	check("but does not demand to be raised", staleOnly.includes("only if it bears on what they are asking"), true);
+	check("nothing owed and nothing dead -> no notice", interruptedNotice([], []), undefined);
+
+	const both = interruptedNotice([meta("wf-new")], [meta("wf-old")])!;
+	check("a fresh death leads", both.indexOf("wf-new") < both.indexOf("wf-old"), true);
+	check("and the leftover follows it", both.includes("Also still unresumed"), true);
+
+	// Capped, because this repeats every session; the overflow is counted rather
+	// than dropped, since a truncated list that looks complete is worse.
+	const many = interruptedNotice([], [meta("a"), meta("b"), meta("c"), meta("d"), meta("e")])!;
+	check("the list is capped", many.includes('resumeFromRunId: "d"'), false);
+	check("and says how many it left out", many.includes("and 2 older ones — see /workflows"), true);
 }
 
 console.log("\n--- tui: clipping keeps the tail ---");

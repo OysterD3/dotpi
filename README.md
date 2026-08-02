@@ -158,7 +158,7 @@ no LSP support of its own, so this is a complete client.
 | `manager.ts` | Server selection, project-root detection, client reuse and idle reaping |
 | `format.ts` | Compact `path:line:col: severity: message` rendering (pure) |
 | `render.ts` | Collapsed/expanded TUI view |
-| `config.ts` | Timeouts and limits |
+| `config.ts` | Timeouts and tunables |
 
 **`agent/extensions/goal/`** — adds `/goal`. Set a condition and pi keeps working until it holds.
 
@@ -331,6 +331,27 @@ permissions block intact.
 `Bash(git log *)` is a prefix rule (the space enforces a word boundary; a trailing `:*` is the
 legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, and a bare `Bash`
 matches every use of the tool.
+
+**Rules can name extension tools too**, which is how `Workflow`, `Advisor` and `Ask_user` are
+allowed outright here. Unknown names pass through lower-cased (`resolveToolName`), so `Workflow` resolves to the
+`workflow` tool; the capital is required by the rule syntax.
+
+Those two are in `allow` for a reason worth writing down. In `auto` mode any tool without a matching
+rule goes to the classifier, which can turn it into a prompt — and for these two the prompt never
+stops coming. The remembered-approval grain that would normally silence it is `exact:<tool>:<target>`,
+where `target` for a custom tool is `JSON.stringify(input)`. For `advisor` that input is the free-text
+question, and for `workflow` it is the entire script, so the target is different on every single call
+and an "allow this exact call" grant can never match the next one. The tool-wide grant does stick,
+but it has to be found and clicked; allowing them by rule is the honest version of the same thing.
+The trade is explicit, and larger for `workflow` than it looks. Both spawn subprocesses with
+`--no-extensions`, which disables extension discovery in the child — so the permissions extension,
+and with it the destructive table, is **not loaded there at all**. A workflow subagent runs `bash`
+with no destructive gate: `rm -rf`, `git push --force` and `curl | sh` are not classified, not
+prompted, and not denied. (`--approve` does not help; pi maps it to project *trust*, not tool
+approval.) `advisor` is a different case only because it also passes `--no-tools`, so it has no
+`bash` to gate. Allowing `workflow` therefore means trusting the scripts this agent writes to run
+unsupervised in your project. `deny` rules still outrank everything in the PARENT session, which is
+where you and the agent share a shell.
 
 **The default mode is `askDestructive`** — exactly the "only ask me about destructive things" case.
 Everything runs silently except commands that destroy work, publish, escalate privilege, or pipe
@@ -581,65 +602,6 @@ where it was. `setModel` returns false in that case, so that is reported rather 
 | `config.ts` | The contract and the reserved `session` role |
 | `provider.test.ts` | Fallbacks, the switch plan, the writer, and copy drift |
 
-**`agent/extensions/scratchpad/`** — gives the agent somewhere to put files that are not your work.
-
-An agent constantly needs a file that is not part of the project: a script to check a hypothesis,
-the output of a command too long to read inline, a result carried across several steps. With nowhere
-designated it uses two places and both are wrong. `/tmp` is shared with every process and user on
-the machine. The project directory is worse — it is usually a git repository, so the file lands in
-`git status`, gets swept in by a directory-wide `git add`, and can be committed and pushed, which
-for a public repo is a one-way door.
-
-So: one directory per session, at
-`<tmp>/pi-scratchpad-<uid>/<project>/<session>/`, named in the system prompt so the agent reaches
-for it by default. Untouched sessions are pruned after 7 days.
-
-There is no `/scratchpad` command, deliberately: the agent knows the path and will tell you if you
-ask, which is one fewer command to remember for something you rarely need to look at directly.
-
-The three path segments each earn their place. **uid**, because `/tmp` is world-writable: without a
-per-user parent created `0700`, another account can read what the agent writes, or pre-create the
-directory it is about to use. **project**, so two repos open at once are legible rather than a wall
-of session ids. **session**, because two agents both writing `check.ts` is not hypothetical.
-
-```jsonc
-// agent/settings.json
-{
-  "scratchpad": {
-    "enabled": true,
-    "dir": "/custom/root",   // unset = the per-user directory under the system temp dir
-    "retainDays": 7          // 0 prunes as soon as a session is not the current one
-  }
-}
-```
-
-`dir` decides where the agent is told to write, so an untrusted project's block is ignored
-wholesale — a repo that could point it at a directory the repo also reads would have turned a
-convenience into a foothold.
-
-Worth knowing: **this is not a sandbox.** The agent can still write anywhere it has permission to.
-All this does is make the right place the easy place, which is the only mechanism available to an
-extension that cannot intercept the filesystem.
-
-And if you run permissions in `auto` or `askMutating` mode, allowlist the root — otherwise every
-scratch file costs a prompt, or a classifier call, for no benefit. The rule goes against the stable
-root rather than a session directory, so it keeps working tomorrow:
-
-```jsonc
-"allow": ["Write(/var/folders/**/T/pi-scratchpad-*/**)", "Edit(/var/folders/**/T/pi-scratchpad-*/**)"]
-```
-
-On Linux that root is `/tmp/pi-scratchpad-<uid>/`; `echo $TMPDIR` shows yours.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Session wiring and prompt injection |
-| `prompt.ts` | **What the agent is told — edit this to change what lands there** (pure) |
-| `store.ts` | Where it lives, creating it, listing, clearing, pruning |
-| `settings.ts` | The `scratchpad` settings block |
-| `config.ts` | Tunables |
-| `scratchpad.test.ts` | Traversal, permissions, pruning bounds, layering |
-
 **`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
 directory into the session's workspace:
 
@@ -788,11 +750,65 @@ tokens cost a few cents across a long session, so it is written for behaviour ra
 The e2e suite asserts both the presence of the new sections and the **absence** of the old phrasings,
 because the old phrasings are what the spend was made of.
 
-One knob is deliberately left as it is: `ultracode.limits.agentTimeoutMs` in `agent/settings.json` is
-set to 36,000,000 ms — ten hours, against a 10-minute default — which makes the only backstop
-effectively no backstop. Lowering it is not obviously right, because a killed agent wastes
-everything it already spent, so a short timeout can cost more than a long one. It is a judgement
-call about how long your workflows legitimately run.
+### Nothing is capped
+
+There used to be an `ultracode.limits` block over most of this — a concurrency cap, an agent cap per
+run, an item cap on `parallel()`/`pipeline()`, a per-agent wall-clock ceiling, and character budgets
+on forked context. All of it is gone, and the reasoning is worth keeping because it is the opposite
+of what a limits block is usually for.
+
+None of those caps ever bound a run that was going *well*. Measured here, the runs that hurt were one
+agent deep for an hour, and no ceiling shortens that — the ceiling had in fact been raised to ten
+hours precisely because at ten minutes it was killing work in progress, which wastes everything the
+agent already spent and leaves nothing to resume from. A cap that you have to disable to get correct
+behaviour is not protecting you.
+
+So: **an agent runs until it finishes or you abort it.** There is no timeout. `parallel()` and
+`pipeline()` start every agent they are given at once, with no queue, so a fan-out over fifty items
+launches fifty `pi` processes. Breadth is now free to ask for and entirely the script's
+responsibility to get right — the tool description says so in as many words, and pairs it with the
+decomposition guidance that makes a wide run the *normal* shape for implementation work rather than a
+special case.
+
+Two internals survive, and neither is a budget: `retainRuns` (how many run directories to keep before
+the oldest are pruned — without it the store grows without bound) and `schemaRetries` (how many times
+to re-ask an agent whose JSON did not parse). Both are fixed constants in `config.ts`, not settings.
+
+A leftover `ultracode.limits` block in `agent/settings.json` is inert; nothing reads it.
+
+### Why the output did not work
+
+Slow and wrong turned out to have different causes, and the second one was partly self-inflicted.
+
+The workflow that ran for an hour produced an Electron backend that did not start. Both its agents
+reported success, and neither was lying: between them they ran 36 bash commands — `pnpm check`
+twenty-five times, plus `pnpm test` and `pnpm build` — and the final reports said "`pnpm check`
+passes" and "`pnpm test` passed 17/17 tests across 4 files".
+
+Grepping those 36 commands for anything that touches the real application returns **one** hit in the
+implementer (`command -v electron`, a *which* check) and **zero** in the adversarial reviewer that
+followed it. Electron was never launched. A real `pi` process was never spoken to. The 17 tests ran
+against a fake RPC fixture that the same agent had written earlier in the same run.
+
+Two things caused that, and both are fixed:
+
+**The script named a finish line the agent could satisfy by writing it.** The implement prompt ended
+"Run pnpm check"; the review prompt said "rerun `pnpm check`, and report evidence". A typecheck
+proves the code compiles. Tests an agent wrote against a fixture it also wrote are a closed loop that
+closes green whatever the code does. The tool description now says this in as many words, with the
+measurement attached, and asks for acceptance stated against the real artifact — start the binary and
+see it answer, drive the actual endpoint, run the pre-existing suite and not just the new one — with
+the exact command and the observable that means success.
+
+**The subagent preamble told them not to check.** It read "Do what the task asks and then stop. Do
+not widen the scope, do not verify beyond what was asked…". That clause was written to stop a
+*research* agent grinding through 90 turns of one-more-thing, and to an implementer it reads as
+permission to ship unrun code. Self-verification is now carved out of the stop-early rule
+explicitly — checking what you built is the last step of the task, not a widening of it — along with
+an instruction to report what was observed rather than what was intended, and to say plainly when the
+only thing that ran was a typecheck. The e2e suite asserts the old phrasing stays gone, because its
+return brings the behaviour back.
+
 
 The **`workflow` tool** is the thing the reminders point at: the model writes a plain-JS script
 with `export const meta = {...}` and orchestrates subagents with `agent()`, `parallel()`, and
@@ -801,7 +817,7 @@ one retry on unusable output). Each subagent is a headless `pi --mode json -p --
 --no-skills` subprocess in the project directory — pi's own vendor pattern — so a wedged agent
 cannot take down the session, subagents cannot recurse into further workflows, and project trust
 is forwarded (`--approve` only when the parent session trusts the project). Concurrency is
-`min(16, cores − 2)` with 1000-agent and 4096-item caps; all of those are settings.
+unbounded and there is no timeout — see **Nothing is capped** above.
 
 **Every run is a directory.** `~/.pi/agent/workflow-runs/<runId>/` holds `run.json` (the row
 `/workflows` lists), `journal.jsonl` (an append-only record of every agent, log line and result),
@@ -819,6 +835,28 @@ depends on when earlier stages finished, and only a content key is stable under 
 determinism: `Date.now()`, argless `new Date()` and `Math.random()` throw inside a script (a script
 that truly needs them sets `deterministic: false` in its meta and gives up resume).
 
+**A run is judged on its agents, not on the script returning** — a rule bought at some expense.
+`agent()` returns `null` on failure and the script is free to carry on, so a script that swallows
+every failure and returns a perfectly valid value used to be recorded `done`. Five runs in the local
+store did exactly that: an ambiguous model reference from an older `subagents.json` killed all four
+or five agents on spawn, and each run was filed as **`done`, 0 turns, $0.00**. Told a workflow had
+succeeded, the model wrote a fresh one under a new name — `-fallback`, `-default` — and paid for the
+same discovery three and four times over.
+
+Now the agents are counted. If every one failed, the run is an `error` whatever the script returned:
+the panel says so, a `wait: true` call throws, and the message carries the first failure once
+(a dead fleet is almost always one cause repeated, and printing it five times buries the single
+thing to fix). If only some failed the run stays `done` — four good results should not be thrown
+away because a fifth verifier died — but the summary says `N FAILED` and calls the result
+incomplete, so the gap is not silently inherited by whatever gets built on it.
+
+Every failure path now also says **resume instead of re-authoring**, in those words. Across 23 runs
+in the local store `resumeFromRunId` was used exactly zero times, while three of four attempts at one
+implementation died and restarted from nothing — $11.15 and 72 minutes in runs that finished with
+no result, whose successful agents were sitting on disk the whole time. The interrupted-run notice
+also used to list every dead run but offer a resume call for only the first, so a session that lost
+three was told how to recover one.
+
 **Agents can be forked context.** `agent(prompt, { context: { parent: 6, files: [...], text: ... } })`
 seeds that agent's session with recent turns of the conversation, whole files, or literal
 background, instead of the script pasting everything into a prompt string. It is built with pi's
@@ -826,6 +864,43 @@ own `SessionManager` as a user message plus a one-line assistant acknowledgement
 required, since providers reject consecutive user messages and pi only flushes a session to disk
 once it holds an assistant turn. `agentType` borrows a standing definition from `subagents.json`
 (its tools, role prompt, model and reasoning level), and `tools` pins an allowlist directly.
+
+**Agents can share a session.** By default every agent is a fresh pi run that forgets everything on
+exit, so a three-stage pipeline derives the same understanding three times — which is most of why
+one measured build re-ran "discovery" four separate times. `agent(prompt, { session: "explore" })`
+makes several calls continue **one** conversation: the second sees what the first actually did, its
+tool calls and its dead ends, rather than a summary someone had to write into a prompt.
+
+It works because `--session-id` pointing at an existing session makes pi **open** it rather than
+create one (`main.js`) — the same mechanism context seeding already relied on. The id is
+`<runId>-s<slug>-<hash>`: slugged so the file is recognisable, hashed so it is injective, because
+two script names that collided ("my session" and "my-session" slug identically) would silently merge
+two chains into one transcript. The `-s` prefix keeps it out of the `-a<index>` namespace, so an
+agent named "1" cannot land on agent 1's file.
+
+Three properties are enforced rather than documented, because each failure mode is silent:
+
+- **Sequential.** Two agents holding one name at once fails the *run*, not just the agent. A
+  conversation cannot have two authors, and by the time a second claimant arrives the chain's
+  ordering is already undefined — every later link would read state assembled in an unknown order
+  and return answers that look right. The claim is taken before the pause and the semaphore, so the
+  error is immediate and does not depend on the concurrency limit. Inside `pipeline()`, give each
+  item its own name (`session: \`file-${index}\``) so items stay independent while their stages chain.
+- **Never replayed.** Resume allocates a fresh `runId`, so a replayed agent writes no session file
+  into the new run; a later live agent in the chain would find nothing, quietly start a new
+  conversation and answer without the accumulated context. Replaying only when the *whole* chain
+  replays can't be decided up front — `pipeline()` has no fixed order — so the chain re-runs, and
+  says so in the log rather than leaving it to be discovered from a bill. `session` is also part of
+  the agent key, so a later plain agent with the same prompt can't be served a chained result.
+- **Seeded once.** Seeding *creates* a session file, so only the first agent in a chain may take
+  `context`; a second would leave two files claiming one id with a directory scan deciding which pi
+  opens. A later `context` is refused with a log line rather than silently dropped.
+
+Reach for it when stages build on each other over the same subject — inspect → change → verify one
+file — not as a general way to share context. It is not a substitute for working inline: your main
+session is already one accumulating context, with your extensions, memory and you in it. And note
+that subagents run `--no-extensions`, so a long chain that fills its window compacts with pi's
+built-in behaviour, not the steering in `agent/extensions/compaction/`.
 
 **Workflows don't block the session.** The tool validates the script — meta *and* a compile check,
 so a syntax error fails the call rather than arriving minutes later as a failed run — starts the
@@ -900,18 +975,34 @@ run announces its total on the way out. The two doors stay exclusive; which one 
 how the run ended. Announcements also stop the moment a run is aborted, so children still dying
 after `/new` cannot bill the next session for tokens it never spent.
 
-**The list is scoped to this session.** `/workflows` and its `list` show the runs this session
-started, not fifty deep of history — the store keeps `retainRuns` of them and every one is still on
-disk. Runs from another session stay reachable where you name them explicitly: `show <id>` reads
-any of them and says which session it came from, and the interrupted-run notice below still hands
-the model the ids it needs to resume. A run is matched by the session id recorded in its
-`run.json`; a run this process is *driving* is always listed whatever that says, so an ephemeral
-session (`--no-session`, which has no id to match) still sees its own fleet.
+**The list is scoped to this session — with one exception.** `/workflows` and its `list` show the
+runs this session started, not fifty deep of history; the store keeps 50 of them and every
+one is still on disk. Runs from another session stay reachable where you name them explicitly:
+`show <id>` reads any of them and says which session it came from. A run is matched by the session
+id recorded in its `run.json`; a run this process is *driving* is always listed whatever that says,
+so an ephemeral session (`--no-session`, which has no id to match) still sees its own fleet.
+
+The exception is **an interrupted run nothing has resumed**, which crosses the session boundary and
+stays in the panel until it is picked up or pruned. Scoping it out was a mistake with teeth: `R
+resume run` lives in that panel, so the filter removed the only way to reach the very run the notice
+was telling the model to resume, leaving its id recoverable only by opening `run.json` by hand. A
+run counts as dealt with once another records it as `resumedFrom`, at which point it drops out
+again. Aborted and errored runs stay scoped out — the first was cancelled deliberately, the second
+already reported its failure, with a resume hint, in the session that ran it.
 
 Runs still do not survive a session switch — shutdown cancels the fleet — but that is no longer
 silent. A run whose owning process is gone is reconciled to `interrupted` on next start, and the
 model is told which ids died *and that each is resumable*, rather than the old approach of scraping
 its own transcript for the sentence that announced them.
+
+**And it keeps being told.** `reconcile()` skips anything already settled, which is right for
+"this died a moment ago" but made the notice a one-shot: a run not resumed in the very session
+after the crash was never mentioned again, and had just left the panel as well. Runs still owed are
+now gathered separately and repeated once per session start until something resumes them. That
+second half of the notice is deliberately quiet — it tells the model to raise them *only if they
+bear on what the user is asking now* — because it recurs, and a nag on every unrelated turn would
+be worse than the silence it replaced. The list is capped at three with the remainder counted, not
+dropped.
 
 **Say which models to use in the request itself.** Routing is not configured ahead of time — it is
 part of the prompt that triggers the workflow:
@@ -929,21 +1020,44 @@ models, a reminder rides that turn so the instruction lands on the workflow rath
 as conversation; roles you did not mention use the default subagent model, and a routing
 instruction holds for later workflows until you change it.
 
+**What an agent inherits, most specific first:** `agent(…, { model })` → the agentType's own model →
+`subagents.json`'s `defaults.model` → the run default (`ultracode.model`, else the **session's**
+model). The same chain applies to the reasoning level.
+
+The `defaults` link was missing until it was measured. `agents.ts` has always parsed
+`subagents.json`'s `{ defaults: { model, reasoning } }` and `tool.ts` only ever read `types`, so a
+configured default was silently ignored and every unpinned agent fell straight through to whichever
+model you happened to be talking to. The reasoning half was worse: with no `--thinking` passed, the
+child pi reads its *own* `defaultThinkingLevel` from `settings.json` — so a session set to `max` ran
+every subagent at max reasoning, which is a third to two thirds of output tokens in the measured
+runs, and no amount of configuring `subagents.json` changed it.
+
+**A word is only a model name if it resolves to one.** The vocabulary that reminder is built from
+comes from splitting registry ids into segments — which quietly turned a provider called
+`kimi-coding`, with models `kimi-for-coding` and `kimi-for-coding-highspeed`, into the vocabulary
+word **"coding"**. Every prompt about a *pi coding agent* then looked like it named a model, and the
+reminder instructed the model, in the imperative, to call `agent(prompt, { model: "coding" })` — a
+reference matching two kimi models and resolving to neither. All three agents died and the run
+produced nothing, on an instruction this repo generated rather than one the user gave. A `NOISE`
+word list cannot fix it: "coding" and "agent" are exactly the words a coding-agent prompt contains,
+and the next provider brings its own. So a segment enters the vocabulary only if
+`resolveModelReference` resolves it to exactly one model — vocabulary and resolver cannot disagree.
+Full ids are always included; shared family words ("kimi" here, "claude" across two claude models)
+are not.
+
+**Routing only considers models you can actually run.** The follow-up failure was `No API key found
+for kimi-coding`, discovered once per agent after spawning, with the reason buried in each
+subagent's stderr. Both the vocabulary and reference resolution now filter the registry by
+`hasConfiguredAuth`, falling back to the full list if that leaves nothing so an unexpected auth
+shape degrades rather than making every model unresolvable. A reference resolving *only* among
+unusable models now fails at resolution time, naming the provider and pointing at `/login`, instead
+of letting a fleet spawn and die one agent at a time.
+
 ```jsonc
 {
   "ultracode": {
     "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
-    "model": "fast",          // optional default for agents no request routes; a role or a reference
-    "limits": {               // all optional; anything absent keeps its default
-      "maxConcurrency": 8,    // default min(16, cores − 2)
-      "maxAgentsPerRun": 1000,
-      "maxItemsPerCall": 4096,
-      "agentTimeoutMs": 600000,
-      "schemaRetries": 1,
-      "retainRuns": 50,          // run directories kept before the oldest are pruned
-      "contextBudgetChars": 60000,  // ceiling on what one agent may be forked
-      "fileBudgetChars": 20000      // ceiling per embedded file
-    }
+    "model": "fast"           // optional default for agents no request routes; a role or a reference
   }
 }
 ```
@@ -985,7 +1099,7 @@ the model to always await.
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |
 | `description.ts` | The tool's LLM-facing contract |
-| `config.ts` | Constants and pi-side limits |
+| `config.ts` | Constants and pi-side tunables |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
 
 **`agent/extensions/elapsed/`** — how long the agent has been working, and how long it took.
@@ -1096,6 +1210,21 @@ Assistant  → called advisor()
 Result of advisor:
   Biggest issue: don't use yaml.load on a user upload — use safe_load. …
 ```
+
+**Being tool-less is also its failure mode.** The reviewer sees the transcript and nothing else — it
+cannot list a directory or open a file — while being asked to be specific and to produce prioritised
+next steps. So it invents concrete detail. Observed here: step 1 of a numbered plan was *"Read
+`~/.pi/agent/skills/ultracode/SKILL.md`"*, a file that does not exist; `agent/skills/` holds two
+symlinks and nothing else. Because the caller is told to give the advice serious weight, an invented
+path becomes an errand the agent runs and finds nothing at the end of.
+
+Both halves are now stated. The reviewer is told to stay inside what it has seen — every path,
+symbol, flag or API it names must appear in the transcript — and given the alternative, which is to
+say what to look *for* rather than inventing where it lives, and to mark inferences as inferences
+("if X exists"). Without that alternative it would comply by going vague, which throws away the
+point of the tool. The caller is told the matching rule: weight the judgment, verify the details,
+and when a detail turns out wrong, take the intent rather than the literal target — a wrong filename
+does not make the underlying point wrong.
 
 The natural way to build this is a server-side tool, where the API forwards the whole conversation
 to the reviewer model. pi has no such server tool, so the forwarding is done in the client — the tool
@@ -1258,6 +1387,49 @@ repo. It's disabled where it can't help (no `pi.exec`, non-interactive) and can 
 | `config.ts` | defaults and constants |
 | `self-update.test.ts` | Throttle, settings, the flow against scripted git, and session_start gating |
 
+**`agent/extensions/tool-batching/`** — six lines of prompt, because turns are what a task costs.
+
+pi's system prompt never mentions batching tool calls, and it turns out that is the largest
+avoidable cost in a long run. Profiling the workflow agent that ran for 53 minutes on this machine:
+
+| | |
+| --- | --- |
+| assistant messages | 151 |
+| **made exactly one tool call** | **142** |
+| batched (3–4 calls) | 7 |
+| tool calls total | 166 — 73 edit, 32 write, 25 bash, 19 read, 12 grep |
+
+The agent was not over-exploring — only 31 of 166 calls were reads or greps. It was *building*, one
+round trip at a time. And a round trip is not free: that run re-read **16,310,272 cached tokens
+across 177 turns**, about 92k tokens of context per turn, whether the turn carried one grep or ten.
+Reads, greps, finds and `ls` are almost all mutually independent, and so are edits to files that do
+not overlap; batching those removes turns one for one.
+
+pi has supported this the whole time. `agent-loop.js` sends the calls in one assistant message
+through `executeToolCallsParallel` unless some tool in the batch declares `executionMode:
+"sequential"` — which `ask_user` does, deliberately, because it blocks on a human. Nothing needed
+building. The model simply was never told. (Claude Code carries this instruction in its own system
+prompt, which is part of why the same task finished there in half an hour.)
+
+The guideline names the exception as loudly as the rule, because "always batch" would have an agent
+editing a file it has not read: serialise on a *real* dependency — needing the first result to
+decide the second call — and not because one-at-a-time reads more tidily.
+
+There is no settings block. It is six lines of prompt describing how the tool loop already works,
+and a kill switch would be more code than the feature.
+
+Reaching a subagent needs a second copy: workflow agents and `task` subagents spawn with
+`--no-extensions`, so no extension can touch their system prompt and the rule travels in their
+`--append-system-prompt` preamble instead — in `ultracode/description.ts` and `subagents/tool.ts`.
+Duplicated text rather than a shared import, per this repo's no-cross-extension-imports rule, so
+both copies are pinned by assertions in their own suites.
+
+| File | Role |
+| --- | --- |
+| `guideline.ts` | **The rule, and the measurement that justifies it** (pure) |
+| `index.ts` | One `before_agent_start` append — chained, never replacing |
+| `tool-batching.test.ts` | The text, the short subagent variant, and that the append does not clobber |
+
 **`agent/extensions/compact-tools/`** — one-line rows for the noisy tools; detail on demand.
 
 pi already collapses tool output and expands it with **ctrl+o** ("Toggle tool output"), but the
@@ -1299,6 +1471,65 @@ which is expected here.
 | `render.ts` | The per-tool call/result summary strings, collapsed and expanded (pure) |
 | `config.ts` | Settings and the tool list (write/edit excluded) |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
+
+**`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
+
+When a provider finishes a response having produced no content and reports `stopReason: "stop"`, pi
+ends the turn — correctly, because "stop" means the assistant is done. But the assistant never said
+anything, so the work halts mid-task with no error, no explanation, and nothing distinguishing it
+from a genuine finish. That is the "it terminated halfway" failure.
+
+The known offender is **`pi-provider-qoder` 0.2.9**, whose stream finalisation ends with:
+
+```js
+if (toolCallsState.length > 0) output.stopReason = "toolUse";
+else output.stopReason = "stop";
+```
+
+run unconditionally, **overwriting the real `finish_reason`** captured forty lines earlier. Any
+stream ending without tool calls — a dropped connection, a truncated SSE, a `length` cap, a content
+filter — is reported as a clean finish. Every local qoder session ends with `content: []`,
+`stopReason: "stop"` after four to eight successful tool calls. The bug also destroys the evidence
+needed to diagnose it: the discarded `finish_reason` is the field that would say which of those it
+was. (Its other defect is unrelated but worth knowing: `usage` is initialised to zeros and never
+populated, so qoder spend is invisible to `/usage`. That does *not* break compaction — pi's
+`getAssistantUsage` rejects all-zero usage and falls back to a chars/4 estimate.)
+
+Nothing in the extension is qoder-specific, because nothing needs to be: an assistant message with
+no content at all is never a legitimate reply, whoever produced it. Thinking blocks don't count as
+content — reasoning with no reply is still no reply, and it's a shape qoder produces. `aborted` and
+`error` are excluded: the first is the user pressing escape, and resuming would fight them; the
+second is already reported, and resuming would loop on a real fault.
+
+**Recovery has to re-enter the loop.** No hook can make pi continue — `message_end` can replace a
+message but the loop only continues on tool calls, and forcing `stopReason` to `error` would just
+end the turn with an error instead. So the extension sends one message saying the reply was lost and
+to carry on from the existing tool results, phrased as a transport fact rather than a reprimand (the
+model didn't choose to stop; telling it to "continue as instructed" invites it to apologise and
+re-plan).
+
+**The cap is the load-bearing part.** A provider stuck returning empty completions would otherwise
+loop forever, spending real money producing nothing and looking like a hang. Two resumes per *human*
+turn — counted per human turn, not per loop iteration, because the resume itself triggers a turn and
+a turn-based reset would refill the budget every time and make the cap meaningless. Only an
+interactive prompt refills it. When the cap is spent the extension says so; giving up silently would
+reproduce the exact symptom it exists to remove.
+
+```jsonc
+{
+  "stalledTurn": {
+    "enabled": true,    // optional
+    "maxResumes": 2     // optional; 0 detects and reports without ever resuming
+  }
+}
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Settings, the `message_end` hook, the per-human-turn budget |
+| `detect.ts` | What counts as a stall, and the provider bug behind it (pure) |
+| `config.ts` | Settings and the resume prompt |
+| `stalled-turn.test.ts` | Detection, settings, the cap, and the reset guard |
 
 **`agent/extensions/compaction/`** — lets the summary shed as well as accumulate, and compacts before
 the context is enormous.
@@ -1407,7 +1638,22 @@ same format and location.
 tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
 only you can make, rather than guessing.
 
-The model calls `ask_user` with **1-4 questions at once** — the bound is `askUser`'s `maxQuestions`,
+**The guidance was written against one failure mode and caused the other.** Asking permission
+instead of doing the work is the noisy failure, and every line pushed against it: *only* when,
+*genuinely* blocked, *cannot* resolve, *do NOT*, *prefer acting on a reasonable default*. Nothing
+said when asking was right, so the tool went unused where it mattered and the model guessed on
+things it had no way to guess — surfacing at the end as work built on the wrong premise. That
+failure is the worse one precisely because it is invisible: a needless question costs one
+interruption, a wrong assumption can cost the whole task.
+
+So the positive case now comes first and concretely — ask when two readings lead to *materially
+different work*, when the choice gets baked into a schema or an API that later work depends on, when
+the answer is a preference or business rule that exists nowhere in the repo, or when a long piece of
+work is about to rest on an assumption. The prohibitions keep their force but come after, scoped to
+what they were always about: permission, verification, and handing back judgment the task already
+settles. The dividing line is stated once — *is this information only the user has?*
+
+The model calls `ask_user` with **1-4 questions at once** — the bound is `CONFIG.maxQuestions`,
 interpolated into the guidance and into the schema's `maxItems` from the same constant so the prompt
 and the validator cannot drift apart. The guidance asks for the decisions it is *already* blocked on
 and explicitly excludes any question another answer could invalidate: everything is shown at once
@@ -1467,31 +1713,64 @@ dialog, so Tab-to-annotate, arrow-key navigation and typing straight into a row 
 expressible that way. The component (`prompt.ts`) is a thin renderer over a pure state machine
 (`interaction.ts`), so the whole interaction is testable without a TUI.
 
-The tool is offered only in an interactive session (it needs a real user) and only while enabled —
-active-tool sync, like the advisor — so a headless run (`-p`) or a disabled setting adds nothing to
-the prompt; if the model somehow calls it headless it gets a graceful "no user available, proceed"
-result instead of hanging. `/ask-user` shows status; `/ask-user off` / `on` toggles it for the
-session; `/ask-user test` runs two sample questions — one of them recommended — so you can try the
-arrows, the badge, Tab notes and review live.
+**This one has no settings block and no off switch.** Every other extension here is configurable;
+this one is not, deliberately. An agent that asks when the decision is genuinely yours is not a
+preference to be tuned, it is how the agent is meant to behave — and a knob for it is only ever a
+route back to a tool that exists and never gets used. A stray `askUser` block left in
+`settings.json` is inert, and `/ask-user off` does nothing.
 
-```jsonc
-{
-  "askUser": {
-    "enabled": true,     // optional; master switch (also /ask-user off|on per session)
-    "allowNotes": true   // optional; whether Tab attaches a note to the focused answer
-  }
-}
-```
+The one condition is that somebody is there to answer, which is a fact about the session rather than
+a choice about it: in a headless run (`-p`, an `--mode json` subagent) `ctx.hasUI` is false, the tool
+is not offered by active-tool sync, and the opening nudge below stays quiet. If the model somehow
+calls it headless anyway it gets a graceful "no user available, proceed" result instead of hanging.
+`/ask-user` reports that state and `/ask-user test` runs two sample questions — one of them
+recommended — so you can try the arrows, the badge, Tab notes and review live.
+
+### Getting it used at all
+
+Offering the tool turned out not to be the same as getting it used, and the gap is **timing, not
+wording**. The description, the prompt snippet and the guidelines all live in the cached prefix:
+read once, above twenty other tools, long before there is a request to weigh them against. By the
+time a request lands with three unresolved decisions in it, the only thing in recent context is the
+request — and a model trained to be autonomous starts working. Rewriting the description to name the
+cases where asking is right changed nothing, because none of it was being read at the moment it
+mattered.
+
+The agents that do ask — Claude Code, Qoder — ask at turn zero, before the first file is touched,
+because that is the only cheap moment. So `nudge.ts` fires exactly there. When a human prompt looks
+like it **opens new work**, a hidden reminder rides into that turn alongside the request: settle the
+decisions that are the user's to make now, in one `ask_user` call, before building on a guess.
+
+The detector is narrow and biased toward silence. A continuation (`also…`, `now do the other one`)
+is work already framed, and its decisions were settled on the turn that opened it. An informational
+lead (`why does…`, `check whether…`) asks about the code, and the answer is to go and look, never to
+ask back. Anything under six words is a follow-up — real task statements are not four words. What
+survives is the shape that carries expensive decisions: `build…`, `implement…`, `refactor…`, and the
+verbless intent openers (`I want the agent to…`, `we need something that…`) that most substantial
+requests actually use.
+
+The reminder's second half is as load-bearing as the first. "Consider asking" on its own reads as
+"ask", which is the opposite bug and the one the tool description spends four lines warning about —
+so the same reminder says, in as many words, that finding nothing is the common case and the correct
+response to it is to state the assumption in one line and get on with the work.
+
+A cooldown (`CONFIG.nudgeCooldownTurns`, 8) keeps a session of successive task statements from
+pulling the same reminder in over and over; the previous one is still in context and still applies.
+And it never fires headless, because telling an agent to ask when nobody is there spends the turn
+waiting on no one. Like the tool itself, neither of those is a setting — the cooldown is a tunable in
+`config.ts`, next to the option cap and the badge text.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Settings, tool registration, active-tool sync, `/ask-user [status\|on\|off\|test]` |
+| `index.ts` | Tool registration, active-tool sync, the nudge hooks, `/ask-user [status\|test]` |
 | `tool.ts` | The `ask_user` tool: normalize questions/options, run the prompt, graceful headless path |
 | `interaction.ts` | The interaction as a pure state machine — selection, free text, notes, review |
 | `prompt.ts` | The focused TUI component that stands in for the editor: layout, scrolling, key handling |
 | `guidance.ts` | Tool description, prompt snippet, and the guideline bullets appended when active |
-| `config.ts` | Settings and tunables |
-| `ask-user.test.ts` | Normalization, the full flow, rendering, settings, and wiring coverage |
+| `nudge.ts` | **Whether a prompt opens new work, and what the model is told when it does** (pure) |
+| `config.ts` | Tunables — caps, the badge, the nudge cooldown. No settings; nothing here is a switch |
+| `ask-user.test.ts` | Normalization, the full flow, rendering, and wiring — including that there is no off switch |
+| `nudge.test.ts` | The detector against real prompts, the cooldown, and every path that must stay silent |
 
 **`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
 built-in dotenv support.

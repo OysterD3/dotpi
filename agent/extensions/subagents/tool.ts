@@ -50,10 +50,27 @@ export function buildTaskDescription(settings: SubagentsSettings): string {
 	return lines.join("\n");
 }
 
+/**
+ * The batching rule, appended to whatever role the subagent runs under.
+ *
+ * A subagent spawns with --no-extensions, so nothing can reach its system
+ * prompt except this string. The line is therefore duplicated from
+ * tool-batching/guideline.ts rather than imported, which is this repo's rule
+ * for anything crossing an extension boundary.
+ *
+ * It is appended even to a custom `prompt`: a configured role says what the
+ * agent is for, not how the tool loop works, and one-tool-call-per-turn is the
+ * single largest avoidable cost in a long subagent run.
+ */
+const BATCHING_LINE =
+	"Make independent tool calls in the same message rather than one per message — several reads, several greps, or edits to files that do not overlap all go together, and they run concurrently. Only wait for a result when the next call genuinely depends on it.";
+
 /** The role prompt the subagent runs under: its own prompt, else its purpose. */
-function rolePrompt(agent: { name: string; purpose: string; prompt?: string }): string {
-	if (agent.prompt) return agent.prompt;
-	return `You are the "${agent.name}" subagent. Your role: ${agent.purpose}. Do only what the task asks, then report back concisely.`;
+export function rolePrompt(agent: { name: string; purpose: string; prompt?: string }): string {
+	const role =
+		agent.prompt ??
+		`You are the "${agent.name}" subagent. Your role: ${agent.purpose}. Do only what the task asks, then report back concisely.`;
+	return `${role}\n\n${BATCHING_LINE}`;
 }
 
 export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): void {

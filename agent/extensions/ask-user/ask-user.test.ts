@@ -1,8 +1,12 @@
 /**
  * Tests for the ask-user extension: param normalization, the interaction state
  * machine (selection, the free-text row, Tab notes, ← / → navigation, review),
- * the prompt component's key handling and layout, outcome rendering, settings,
- * and the wiring against a fake pi.
+ * the prompt component's key handling and layout, outcome rendering, and the
+ * wiring against a fake pi.
+ *
+ * There is no settings section because there are no settings: ask_user is not
+ * configurable, and the tests below pin that — a stray `askUser` block on disk
+ * is inert, and `/ask-user off` does nothing.
  *
  * The component is driven with real terminal byte sequences ("\x1b[C" and so on)
  * rather than synthetic key names, so pi-tui's own key parsing is under test too
@@ -12,7 +16,7 @@
  *
  * Run: jiti agent/extensions/ask-user/ask-user.test.ts
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,7 +34,6 @@ const { AskSession, CUSTOM_KEY, renderOutcomeText } = await import("./interactio
 const { AskPrompt, extractPaste, flattenPaste, isPrintable, showAsk, windowBlocks, wrap } = await import("./prompt.ts");
 const { normalizeOptions, normalizeQuestions, registerAskUserTool } = await import("./tool.ts");
 const { ASK_CHANNEL, CONFIG } = await import("./config.ts");
-const { loadSettings } = await import("./index.ts");
 const extension = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -59,8 +62,8 @@ const KEY = {
 const theme = { fg: (_key: string, text: string) => text, bold: (text: string) => text } as never;
 
 /** Build the prompt over a session and return both plus the captured outcome. */
-function drive(questions: any[], allowNotes = true, rows = 40) {
-	const session = new AskSession(questions, allowNotes);
+function drive(questions: any[], rows = 40) {
+	const session = new AskSession(questions);
 	let outcome: any;
 	const prompt = new AskPrompt(session, theme, (value) => (outcome = value), () => {}, () => rows);
 	const send = (...keys: string[]) => {
@@ -292,13 +295,6 @@ console.log("\n--- Tab notes ---");
 	check("empty note is dropped", session.state.notes["Looks good"], undefined);
 }
 {
-	const { session, send, type } = drive([Q()], false);
-	send(KEY.tab);
-	check("allowNotes:false makes Tab inert", session.editing, null);
-	type("x");
-	check("and nothing is recorded", session.state.notes, {});
-}
-{
 	// Arrow keys must not navigate away mid-note, or a stray key loses the text.
 	const { session, send, type } = drive([Q(), Q({ question: "Second?" })]);
 	send(KEY.tab);
@@ -522,7 +518,7 @@ console.log("\n--- prompt render ---");
 	// A tall question on a short terminal scrolls its options instead of pushing
 	// the whole conversation off the screen.
 	const many = Array.from({ length: 8 }, (_, n) => ({ label: `Option ${n}`, description: "why you might pick it" }));
-	const { prompt, send } = drive([Q({ options: many })], true, 20);
+	const { prompt, send } = drive([Q({ options: many })], 20);
 	const top = prompt.render(60);
 	checkTrue("the prompt stays within the terminal", top.length <= 20);
 	checkTrue("and says what is out of view", top.join("\n").includes("more"));
@@ -537,23 +533,12 @@ console.log("\n--- prompt render ---");
 	// A wordy question on a tiny terminal still leaves room to answer it, and
 	// says how much of itself it had to cut.
 	const wordy = Q({ question: `${"how does this look ".repeat(20)}?` });
-	const { prompt } = drive([wordy], true, 12);
+	const { prompt } = drive([wordy], 12);
 	const lines = prompt.render(40);
 	checkTrue("the prompt still fits the terminal", lines.length <= 12);
 	checkTrue("the options survive the squeeze", lines.join("\n").includes("Looks good"));
 	checkTrue("and the cut is announced", lines.join("\n").includes("more lines"));
 }
-
-// -------------------------------------------------------------------- settings
-
-console.log("\n--- settings ---");
-const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ askUser: block }));
-writeSettings({});
-check("defaults", loadSettings(AGENT), { enabled: true, allowNotes: true });
-writeSettings({ enabled: false, allowNotes: false });
-check("overrides", loadSettings(AGENT), { enabled: false, allowNotes: false });
-writeSettings({ enabled: "yes", allowNotes: 1 });
-check("bad types fall back to defaults", loadSettings(AGENT), { enabled: true, allowNotes: true });
 
 // --------------------------------------------------------------------- wiring
 
@@ -588,7 +573,6 @@ function makePi(active: string[] = []) {
 const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => undefined };
 
 {
-	writeSettings({});
 	const h = makePi();
 	extension(h.pi as never);
 	checkTrue("registers the ask_user tool", h.tools.has("ask_user"));
@@ -611,30 +595,26 @@ const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => unde
 	checkTrue("active when enabled and interactive", h.active().includes("ask_user"));
 }
 {
-	writeSettings({});
+	// The one condition on the tool, and the only one: somebody to answer.
 	const h = makePi(["ask_user"]);
 	extension(h.pi as never);
 	h.handlers.get("session_start")!({}, { hasUI: false, ui: uiStub });
 	checkTrue("inactive in a headless session", !h.active().includes("ask_user"));
 }
 {
-	writeSettings({ enabled: false });
-	const h = makePi(["ask_user"]);
-	extension(h.pi as never);
-	h.handlers.get("session_start")!({}, { hasUI: true, ui: uiStub });
-	checkTrue("inactive when disabled", !h.active().includes("ask_user"));
-}
-{
-	writeSettings({});
+	// There is no off switch, so the command must not grow one back by accident:
+	// every argument it does not recognise falls through to reporting status.
 	const h = makePi();
 	extension(h.pi as never);
 	const ctx = { hasUI: true, ui: uiStub };
 	h.handlers.get("session_start")!({}, ctx);
 	const cmd = h.commands.get("ask-user");
 	await cmd.handler("off", ctx);
-	checkTrue("/ask-user off deactivates", !h.active().includes("ask_user"));
-	await cmd.handler("on", ctx);
-	checkTrue("/ask-user on reactivates", h.active().includes("ask_user"));
+	checkTrue("/ask-user off cannot deactivate it", h.active().includes("ask_user"));
+	await cmd.handler("disable", ctx);
+	checkTrue("nor can any other argument", h.active().includes("ask_user"));
+	const completions = cmd.getArgumentCompletions("");
+	check("and off/on are not even offered", completions.map((c: any) => c.value), ["status", "test"]);
 }
 
 // ---------------------------------------------------------------- tool.execute
@@ -642,7 +622,7 @@ const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => unde
 console.log("\n--- tool.execute ---");
 {
 	const h = makePi();
-	registerAskUserTool(h.pi as never, { settings: () => ({ enabled: true, allowNotes: true }) });
+	registerAskUserTool(h.pi as never);
 	const tool = h.tools.get("ask_user");
 
 	const headless = await tool.execute("t1", { questions: [Q()] }, undefined, undefined, { hasUI: false, ui: uiStub });

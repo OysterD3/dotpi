@@ -27,7 +27,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 const { parseSubagents, effective, loadSubagents, saveSubagents, storePath } = await import("./registry.ts");
 const { formatReasoning, tableLines } = await import("./panel.ts");
 const { resolveModelReference, modelRef } = await import("./models.ts");
-const { buildTaskDescription, registerTaskTool, toPiUsage } = await import("./tool.ts");
+const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
 const STORE = storePath(AGENT);
@@ -141,6 +141,25 @@ check("SpawnUsage -> pi Usage", toPiUsage({ input: 5, output: 7, cacheRead: 1, c
 	input: 5, output: 7, cacheRead: 1, cacheWrite: 2, totalTokens: 12,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
 });
+
+// ------------------------------------------------------- the role preamble
+
+console.log("\n--- the spawn preamble ---");
+{
+	// A subagent runs with --no-extensions, so tool-batching cannot reach it and
+	// this string is the only channel. The text is duplicated from
+	// tool-batching/guideline.ts on purpose (no cross-extension imports here),
+	// which is exactly the kind of copy that drifts — hence an assertion.
+	const generated = rolePrompt({ name: "explorer", purpose: "look around" });
+	checkTrue("the generated role still describes the role", generated.includes('the "explorer" subagent'));
+	checkTrue("and carries the batching rule", generated.includes("independent tool calls in the same message"));
+
+	// A configured prompt says what the agent is FOR, not how the tool loop
+	// works, so the rule is appended to it rather than replaced by it.
+	const custom = rolePrompt({ name: "x", purpose: "y", prompt: "You are a specialist." });
+	checkTrue("a custom prompt is preserved", custom.startsWith("You are a specialist."));
+	checkTrue("and still gets the batching rule", custom.includes("independent tool calls in the same message"));
+}
 
 // --------------------------------------------- task tool pre-spawn branches
 

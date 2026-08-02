@@ -45,15 +45,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, resolveLimits, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
+import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
-import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir } from "./store.ts";
-import { registerWorkflowTool } from "./tool.ts";
+import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir, unresumedInterrupted } from "./store.ts";
+import { registerWorkflowTool, usableModels } from "./tool.ts";
 import { showWorkflows } from "./tui.ts";
 
 const BADGE = "✦ ultracode";
@@ -71,7 +71,6 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 		return {
 			keywordTrigger: typeof block?.keywordTrigger === "boolean" ? block.keywordTrigger : DEFAULT_SETTINGS.keywordTrigger,
 			model: typeof block?.model === "string" ? block.model : undefined,
-			limits: resolveLimits(block?.limits),
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -138,6 +137,12 @@ export default function (pi: ExtensionAPI) {
 	 * handed only a prefix — there is no ctx to read it from at that point.
 	 */
 	let sessionId: string | undefined;
+	/**
+	 * This session's project directory, captured at session_start rather than
+	 * read from a ctx later. The panel can be opened from a context pi has since
+	 * retired, and reading ctx.cwd on a dead runtime throws.
+	 */
+	let sessionCwd: string | undefined;
 
 	// ------------------------------------------------------------ status panel
 
@@ -187,6 +192,7 @@ export default function (pi: ExtensionAPI) {
 			agentDir,
 			registry,
 			sessionId,
+			cwd: sessionCwd,
 			notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
 		});
 		drawPanel();
@@ -222,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 		keywordThisTurn = false;
 		try {
 			sessionId = ctx.sessionManager.getSessionId() ?? undefined;
+			sessionCwd = ctx.cwd;
 		} catch {
 			sessionId = undefined;
 		}
@@ -232,7 +239,17 @@ export default function (pi: ExtensionAPI) {
 		// which ones died with their process, so the correction can be said out
 		// loud — and, unlike before, each one names a resumable run id.
 		ensureStore(agentDir);
-		interruptedNote = interruptedNotice(reconcile(agentDir));
+		// reconcile() only reports what it just marked, so on its own the notice
+		// fired exactly once per death: a run not resumed in the very next
+		// session was never mentioned again. Runs still owed from earlier
+		// sessions are gathered separately and repeated, quietly, until
+		// something resumes them or they are pruned.
+		const freshlyDead = reconcile(agentDir);
+		const freshIds = new Set(freshlyDead.map((meta) => meta.runId));
+		// Scoped to this project: the run store is global, and a resume would run
+		// the old run's agents in whatever tree the current session is sitting in.
+		const stillOwed = unresumedInterrupted(listRuns(agentDir), sessionCwd).filter((meta) => !freshIds.has(meta.runId));
+		interruptedNote = interruptedNotice(freshlyDead, stillOwed);
 		setBadge(ctx);
 		drawPanel();
 	});
@@ -279,7 +296,10 @@ export default function (pi: ExtensionAPI) {
 		// on turns that actually reach for a workflow — otherwise mentioning a
 		// model in ordinary conversation would look like an instruction.
 		if (triggered || mode.isOn()) {
-			const mentions = findModelMentions(event.prompt, modelVocabulary(ctx.modelRegistry.getAll()));
+			// Usable models only. A word that names a provider with no
+			// credentials is not a routing instruction — following it sends the
+			// whole fleet somewhere it cannot authenticate.
+			const mentions = findModelMentions(event.prompt, modelVocabulary(usableModels(ctx)));
 			if (mentions.length > 0) parts.push(routingReminder(mentions));
 		}
 		if (interruptedNote) {
@@ -372,7 +392,8 @@ export default function (pi: ExtensionAPI) {
 	const liveRuns = () => new Map(registry.all().map((run) => [run.progress.runId, run]));
 
 	/** The runs the browsing surfaces show: this session's, newest first. */
-	const listedRuns = () => sessionRuns(listRuns(agentDir), sessionId, (runId) => registry.get(runId) !== undefined);
+	const listedRuns = () =>
+		sessionRuns(listRuns(agentDir), sessionId, (runId) => registry.get(runId) !== undefined, sessionCwd);
 
 	pi.registerCommand("workflows", {
 		description: "Open the workflow control panel, or act on a run (/workflows pause|resume|cancel|show <id>)",

@@ -4,11 +4,20 @@
  * Everything here is documented in README.md; the comments say what each number
  * is protecting against.
  *
- * Everything under `limits` is a DEFAULT: the `ultracode` settings block can
- * override each one, so a workflow's shape is configurable without editing the
- * engine (resolveLimits below).
+ * There used to be a `limits` settings block over most of this — a concurrency
+ * cap, an agent cap, a per-agent wall-clock ceiling, context truncation — and it
+ * is gone on purpose. Measured on this machine, the caps never bound anything
+ * that was going well: the runs that hurt were one agent deep for an hour, which
+ * no ceiling shortens, and the ceiling itself had been raised to ten hours to
+ * stop it killing work in progress. What is left here is plumbing (how many run
+ * directories to keep, how many times to re-ask for malformed JSON), not a
+ * budget, and none of it is configurable.
+ *
+ * Concurrency is now unbounded: parallel() and pipeline() start every agent they
+ * are given at once. A script that fans out to fifty items launches fifty pi
+ * processes, so breadth is the script's decision to make and its consequence to
+ * carry.
  */
-import { cpus } from "node:os";
 
 export const ENTRY_TYPE = "ultracode";
 
@@ -95,22 +104,14 @@ export const USAGE_PERSIST_MS = 5_000;
 export const CONFIG = {
 	/** Sparse "still on" reminder cadence, in user turns. */
 	turnsBetweenMaintenance: 10,
-	/** Cap on concurrent workflow agents. */
-	maxConcurrency: Math.max(1, Math.min(16, cpus().length - 2)),
-	/** Runaway-loop backstop: total agents per workflow run. */
-	maxAgentsPerRun: 1000,
-	/** Per-call item cap for parallel()/pipeline(). */
-	maxItemsPerCall: 4096,
-	/** Wall-clock ceiling for one subagent, so a hung spawn cannot wedge a run. */
-	agentTimeoutMs: 10 * 60_000,
 	/** Retries when a schema-constrained agent returns unparsable output. */
 	schemaRetries: 1,
-	/** Run directories kept on disk; the oldest settled ones are pruned past this. */
+	/**
+	 * Run directories kept on disk; the oldest settled ones are pruned past this.
+	 * Disk housekeeping, not a limit on a run: without it the store grows without
+	 * bound, and no workflow is made worse by an old run being swept up.
+	 */
 	retainRuns: 50,
-	/** Characters of forked context one agent may be seeded with. */
-	contextBudgetChars: 60_000,
-	/** Characters of a single forked file before it is truncated. */
-	fileBudgetChars: 20_000,
 	/** Log lines kept in memory per run (the journal on disk keeps them all). */
 	memoryLogLines: 200,
 	/**
@@ -123,29 +124,6 @@ export const CONFIG = {
 	assumedRows: 24,
 } as const;
 
-/** The subset of CONFIG a workflow run reads, after settings are applied. */
-export interface Limits {
-	maxConcurrency: number;
-	maxAgentsPerRun: number;
-	maxItemsPerCall: number;
-	agentTimeoutMs: number;
-	schemaRetries: number;
-	retainRuns: number;
-	contextBudgetChars: number;
-	fileBudgetChars: number;
-}
-
-export const DEFAULT_LIMITS: Limits = {
-	maxConcurrency: CONFIG.maxConcurrency,
-	maxAgentsPerRun: CONFIG.maxAgentsPerRun,
-	maxItemsPerCall: CONFIG.maxItemsPerCall,
-	agentTimeoutMs: CONFIG.agentTimeoutMs,
-	schemaRetries: CONFIG.schemaRetries,
-	retainRuns: CONFIG.retainRuns,
-	contextBudgetChars: CONFIG.contextBudgetChars,
-	fileBudgetChars: CONFIG.fileBudgetChars,
-};
-
 export interface UltracodeSettings {
 	/** Whether the "ultracode" keyword opts a turn in; default true. */
 	keywordTrigger: boolean;
@@ -155,29 +133,8 @@ export interface UltracodeSettings {
 	 * in the triggering request, not configured here — see routing.ts.
 	 */
 	model?: string;
-	/** Overrides for DEFAULT_LIMITS; absent keys keep the default. */
-	limits: Limits;
 }
 
 export const DEFAULT_SETTINGS: UltracodeSettings = {
 	keywordTrigger: true,
-	limits: DEFAULT_LIMITS,
 };
-
-/**
- * Apply a settings `limits` block over the defaults. A value that is not a
- * positive finite number is ignored rather than fatal — one bad key should not
- * disable workflows.
- */
-export function resolveLimits(raw: unknown): Limits {
-	const limits: Limits = { ...DEFAULT_LIMITS };
-	if (!raw || typeof raw !== "object") return limits;
-	const block = raw as Record<string, unknown>;
-	for (const key of Object.keys(limits) as Array<keyof Limits>) {
-		const value = block[key];
-		if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-			limits[key] = Math.floor(value);
-		}
-	}
-	return limits;
-}

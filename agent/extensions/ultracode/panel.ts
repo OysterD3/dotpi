@@ -7,7 +7,7 @@
  */
 import { isAgentRecord, type JournalRecord } from "./journal.ts";
 import { newProgress, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
-import { isSettled, type RunMeta } from "./store.ts";
+import { isSettled, unresumedInterrupted, type RunMeta } from "./store.ts";
 
 /**
  * Rebuild a run's view from its journal, for runs this process is not driving
@@ -89,8 +89,25 @@ export function startedLabel(startedAt: number, now: number): string {
  * watch its own fleet vanish from the panel the moment it started, since a run
  * with no sessionId can never match one.
  */
-export function sessionRuns(metas: RunMeta[], sessionId: string | undefined, isLive: (runId: string) => boolean): RunMeta[] {
-	return metas.filter((meta) => isLive(meta.runId) || (sessionId !== undefined && meta.sessionId === sessionId));
+export function sessionRuns(
+	metas: RunMeta[],
+	sessionId: string | undefined,
+	isLive: (runId: string) => boolean,
+	cwd?: string,
+): RunMeta[] {
+	// Unresumed interrupted runs cross the session boundary. Scoping the panel
+	// is a browsing convenience, but applied to these it hid the one row that
+	// still had work owed on it — and `R resume run` is in this panel, so the
+	// filter was removing the only way to reach the thing the notice was
+	// telling the model to resume. Anything already resumed drops out again.
+	//
+	// They do NOT cross the PROJECT boundary. The store is global, so without a
+	// cwd every repository's abandoned runs showed up in every other one, and
+	// resuming one would have run its agents in the wrong tree.
+	const owed = new Set(unresumedInterrupted(metas, cwd).map((meta) => meta.runId));
+	return metas.filter(
+		(meta) => isLive(meta.runId) || owed.has(meta.runId) || (sessionId !== undefined && meta.sessionId === sessionId),
+	);
 }
 
 export function formatElapsed(ms: number): string {
@@ -202,12 +219,46 @@ export function statusReport(metas: RunMeta[], live: Map<string, WorkflowRun>, n
  * run.json whose owning pid is gone), so the model can be told precisely which
  * ids are dead and that each is resumable.
  */
-export function interruptedNotice(interrupted: RunMeta[]): string | undefined {
-	if (interrupted.length === 0) return undefined;
-	const one = interrupted.length === 1;
-	const ids = interrupted.map((meta) => meta.runId).join(", ");
-	return [
-		`The background workflow${one ? "" : "s"} ${ids} did not survive the end of the previous session, so ${one ? "its result message will" : "their result messages will"} never arrive.`,
-		`Do not keep waiting. ${one ? "It is" : "They are"} resumable: call workflow with resumeFromRunId: "${interrupted[0]!.runId}" to continue without re-running the agents that already succeeded, or start the work again if it is no longer needed.`,
-	].join(" ");
+export const NOTICE_MAX_STALE = 3;
+
+export function interruptedNotice(interrupted: RunMeta[], stale: RunMeta[] = []): string | undefined {
+	if (interrupted.length === 0 && stale.length === 0) return undefined;
+	const parts: string[] = [];
+
+	if (interrupted.length > 0) {
+		const one = interrupted.length === 1;
+		const ids = interrupted.map((meta) => meta.runId).join(", ");
+		// Every id gets its own resume call. The previous wording listed all the
+		// dead runs but only ever offered resumeFromRunId for the first, so a
+		// session that lost three runs was told how to recover one of them.
+		const calls = interrupted.map((meta) => `resumeFromRunId: "${meta.runId}"`).join(", then ");
+		parts.push(
+			`The background workflow${one ? "" : "s"} ${ids} did not survive the end of the previous session, so ${one ? "its result message will" : "their result messages will"} never arrive.`,
+			`Do not keep waiting, and do NOT write a new workflow for the same work — resuming replays every agent that already succeeded and re-runs only the ones that failed, so it is both faster and cheaper than starting again.`,
+			`Call workflow with ${calls}.`,
+			// The escape hatch is kept, because a run for work the user has since
+			// abandoned should not be resumed out of obedience — but it is stated
+			// last and narrowly, where it was previously an equal-weight option and
+			// the easier of the two to take.
+			`Start over only if the work itself is no longer wanted.`,
+		);
+	}
+
+	if (stale.length > 0) {
+		// Capped, because this repeats every session until the run is resumed or
+		// pruned, and an unbounded list would eventually be the longest thing in
+		// the turn. The overflow is counted rather than dropped silently — a
+		// truncated list that looks complete is worse than a long one.
+		const shown = stale.slice(0, NOTICE_MAX_STALE);
+		const calls = shown.map((meta) => `resumeFromRunId: "${meta.runId}"`).join(", ");
+		const more = stale.length - shown.length;
+		parts.push(
+			`${interrupted.length > 0 ? "Also still" : "Still"} unresumed from an earlier session: ${shown
+				.map((meta) => `${meta.name} (${meta.runId})`)
+				.join(", ")}${more > 0 ? `, and ${more} older one${more === 1 ? "" : "s"} — see /workflows` : ""}.`,
+			`${shown.length === 1 ? "It is" : "They are"} still resumable with ${calls}. Mention ${shown.length === 1 ? "it" : "them"} to the user only if it bears on what they are asking for now; otherwise leave ${shown.length === 1 ? "it" : "them"} alone.`,
+		);
+	}
+
+	return parts.join(" ");
 }

@@ -25,7 +25,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { SessionManager, type NewSessionOptions } from "@earendil-works/pi-coding-agent";
-import type { Limits } from "./config.ts";
 import type { AgentContext } from "./engine.ts";
 
 type ContentBlock = { type?: string; text?: string; name?: string; arguments?: unknown };
@@ -117,27 +116,27 @@ export interface BundleInput {
 	context: AgentContext;
 	branch: BranchEntry[];
 	cwd: string;
-	limits: Pick<Limits, "contextBudgetChars" | "fileBudgetChars">;
 }
 
 /**
  * The seed text for one agent, or undefined when nothing was asked for. Order
- * is text → files → parent conversation, and the parent section absorbs
- * whatever budget the first two leave.
+ * is text → files → parent conversation.
+ *
+ * Nothing is truncated. The character budgets that used to cap this are gone:
+ * a seed silently cut at 60k is an agent working from half a file and no way to
+ * tell, which is a worse failure than a large prompt. The helpers still TAKE a
+ * budget — they are pure and independently useful — so Infinity is passed
+ * rather than deleting a parameter that has its own tests.
  */
 export function buildContextBundle(input: BundleInput): string | undefined {
-	const { context, branch, cwd, limits } = input;
+	const { context, branch, cwd } = input;
 	const parts: string[] = [];
-	let used = 0;
 
 	const literal = typeof context.text === "string" ? context.text.trim() : "";
-	if (literal) {
-		parts.push(`## Context\n\n${literal}`);
-		used += literal.length;
-	}
+	if (literal) parts.push(`## Context\n\n${literal}`);
 
 	if (Array.isArray(context.files) && context.files.length > 0) {
-		const files = readContextFiles(context.files, cwd, limits.fileBudgetChars);
+		const files = readContextFiles(context.files, cwd, Number.POSITIVE_INFINITY);
 		const rendered: string[] = [];
 		for (const file of files) {
 			if (file.error) {
@@ -146,26 +145,18 @@ export function buildContextBundle(input: BundleInput): string | undefined {
 			}
 			rendered.push(`### ${file.path}\n\n\`\`\`\n${file.text}\n\`\`\``);
 		}
-		if (rendered.length > 0) {
-			const section = `## Files\n\n${rendered.join("\n\n")}`;
-			parts.push(section);
-			used += section.length;
-		}
+		if (rendered.length > 0) parts.push(`## Files\n\n${rendered.join("\n\n")}`);
 	}
 
 	if (context.parent !== undefined && context.parent !== 0) {
-		const remaining = Math.max(0, limits.contextBudgetChars - used);
-		const conversation = renderParent(branch, context.parent, remaining);
+		const conversation = renderParent(branch, context.parent, Number.POSITIVE_INFINITY);
 		if (conversation) parts.push(`## Conversation so far\n\n${conversation}`);
 	}
 
 	if (parts.length === 0) return undefined;
 	const header =
 		"The following is context forked from the session that started this workflow. Use it as background; the task itself arrives in the next message.";
-	const bundle = `${header}\n\n${parts.join("\n\n")}`;
-	return bundle.length > limits.contextBudgetChars
-		? `${bundle.slice(0, limits.contextBudgetChars)}\n… [context truncated]`
-		: bundle;
+	return `${header}\n\n${parts.join("\n\n")}`;
 }
 
 export const SEED_ACKNOWLEDGEMENT = "Context received. Send the task.";

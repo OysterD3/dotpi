@@ -27,10 +27,6 @@
       }
     }
   },
-  "scratchpad": {
-    "enabled": true,
-    "retainDays": 7
-  },
   "permissions": {
     "defaultMode": "askDestructive",
     "deny": [
@@ -49,7 +45,10 @@
       "Bash(git diff *)",
       "Bash(git log *)",
       "Bash(pnpm test *)",
-      "Bash(pnpm lint *)"
+      "Bash(pnpm lint *)",
+      "Workflow",
+      "Advisor",
+      "Ask_user"
     ],
     "allowDestructive": [],
     "destructiveOverridesAllow": true,
@@ -76,5 +75,14 @@
     "maxWords": 700,
     "compactAtPercent": 80,
     "compactAtTokens": 0
+  },
+  "stalledTurn": {
+    "enabled": true,
+    "maxResumes": 2
+  },
+  "visualReference": {
+    "enabled": true,
+    "readAdvice": true,
+    "guideline": true
   }
 }

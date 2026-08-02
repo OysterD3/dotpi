@@ -83,6 +83,25 @@ export function piInvocation(args: string[]): { command: string; args: string[] 
 	return { command: "pi", args };
 }
 
+/**
+ * Make a string safe to pass as an argv slot.
+ *
+ * Node's spawn rejects any argument containing a NUL outright — "The argument
+ * 'args[12]' must be a string without null bytes" — and kills the call before
+ * the child exists. args[12] is the prompt, and the advisor's prompt embeds the
+ * session transcript, so a single binary byte that ever reached a tool result
+ * (a grep over a compiled file, a curl of an image) travels into the transcript
+ * and disables the advisor for the rest of the session. Nothing upstream
+ * promises a transcript is free of them, so the guard belongs here, at the last
+ * point before the OS.
+ *
+ * Stripped rather than escaped: a NUL in a prompt is debris from binary output,
+ * never content, and there is nothing for the reader to recover.
+ */
+export function scrubArg(text: string): string {
+	return text.replace(/\0/g, "");
+}
+
 export function buildArgs(request: ReviewerRequest): string[] {
 	const args = [
 		"--mode",
@@ -95,9 +114,9 @@ export function buildArgs(request: ReviewerRequest): string[] {
 		"--no-tools",
 		"--no-approve",
 		"--model",
-		request.model,
+		scrubArg(request.model),
 	];
-	args.push(request.prompt);
+	args.push(scrubArg(request.prompt));
 	return args;
 }
 

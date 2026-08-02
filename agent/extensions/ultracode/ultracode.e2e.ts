@@ -30,7 +30,8 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
 const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
-const { createRun } = await import("./store.ts");
+const { SUBAGENT_PREAMBLE } = await import("./description.ts");
+const { createRun, readMeta } = await import("./store.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
 type SpendEvent = { source: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
@@ -102,6 +103,8 @@ function makeCtx(
 		branch?: any[];
 		trusted?: boolean;
 		registryModels?: any[];
+		/** Models the session has credentials for; defaults to all of them. */
+		authedModels?: any[];
 		idle?: boolean;
 		dead?: () => boolean;
 		/** Make ui.custom reject, to check the panel hands the footer back anyway. */
@@ -151,7 +154,13 @@ function makeCtx(
 			// scoping assertions pass without exercising the comparison.
 			getSessionId: () => options.sessionId ?? E2E_SESSION,
 		},
-		modelRegistry: { getAll: () => options.registryModels ?? [] },
+		modelRegistry: {
+			getAll: () => options.registryModels ?? [],
+			// Everything is authenticated unless a test says otherwise, so the
+			// existing cases keep exercising the path they were written for.
+			hasConfiguredAuth: (model: any) =>
+				options.authedModels === undefined || options.authedModels.some((m) => m.provider === model.provider && m.id === model.id),
+		},
 		ui: {
 			notify: (message: string, type = "info") => notices.push({ message, type }),
 			setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
@@ -212,9 +221,70 @@ check("description explains background runs", tools.get("workflow")?.description
 check("description routes models from the request", tools.get("workflow")?.description.includes("**Model routing.**"), true);
 check(
 	"routing section points at the triggering request",
-	tools.get("workflow")?.description.includes("in the request that triggers the workflow"),
+	tools.get("workflow")?.description.includes("triggering request"),
 	true,
 );
+// The posture assertions below are the point of the description, not decoration.
+// The costly runs measured on this machine were four agents deep, not wide, and
+// they were produced by a description that told the model to workflow every
+// substantive task with cost no object. If either phrasing comes back, so does
+// the spend — so both the absence of the old text and the presence of the
+// depth-bounding section are asserted.
+const description = tools.get("workflow")?.description ?? "";
+check("description bounds agent depth", description.includes("**Bounding an agent.**"), true);
+check("depth section says the prompt is the budget", description.includes("the prompt is the only budget"), true);
+check("no standing instruction to always workflow", description.includes("for every substantive task"), false);
+check("cost is not declared a non-constraint", description.toLowerCase().includes("cost is not a constraint"), false);
+check(
+	"ultracode section reads as permission, not instruction",
+	description.includes("That is permission, not an instruction"),
+	true,
+);
+check("subagents are told to stop when done", SUBAGENT_PREAMBLE.includes("Do what the task asks and then stop."), true);
+// Measured: 142 of 151 assistant turns in a 53-minute workflow agent made
+// exactly one tool call, and every turn re-read ~92k tokens of context. pi has
+// always run batched calls concurrently; nothing told the model to batch. The
+// line is duplicated from tool-batching/guideline.ts because a subagent spawns
+// with --no-extensions and no extension can reach its system prompt.
+check("and to batch independent tool calls", SUBAGENT_PREAMBLE.includes("independent tool calls in the same message"), true);
+// This preamble once said "do not verify beyond what was asked", which was
+// written to bound a research agent and read, to an implementer, as permission
+// to ship unrun code. It did exactly that: an agent reported "pnpm check
+// passes" for an application that never started. Self-verification is now
+// carved out of the stop-early rule explicitly, and the old phrasing is
+// asserted absent because its return would bring the behaviour back.
+check("no instruction to skip verification", SUBAGENT_PREAMBLE.includes("do not verify beyond what was asked"), false);
+check("checking your own work is not scope creep", SUBAGENT_PREAMBLE.includes("is NOT widening the scope"), true);
+check("and observation beats intention", SUBAGENT_PREAMBLE.includes("Report what you observed, not what you intended"), true);
+
+// The other half: the SCRIPT has to name a check the agent cannot satisfy by
+// writing the checker.
+check("description demands a real finish line", description.includes("**Name a finish line the agent cannot move.**"), true);
+check("and names the closed loop by name", description.includes("that is a closed loop"), true);
+check("a typecheck is called out as insufficient", description.includes("A typecheck is not a finish line"), true);
+// The other half of the same measurement. Bounding depth stops one agent
+// grinding; it does not by itself make the run wide, and on this machine every
+// implement phase came out one agent deep — 53 minutes and 177 turns for a
+// prompt whose own bullet list was the fan-out — while discovery and review
+// phases fanned out to three or four. Every pattern in the description reads or
+// judges, so "workflow" read as "a way to review things". These assert the
+// implementation half is present and says how to keep concurrent writers apart.
+check("description says building fans out too", description.includes("**Implementing is fan-out too.**"), true);
+check("and splits by file ownership", description.includes("ONE AGENT PER DELIVERABLE"), true);
+check("ownership is stated in the prompt, not just the script", description.includes("Stating the ownership IN THE PROMPT"), true);
+check("a bulleted prompt is named as the fan-out", description.includes("that list IS the fan-out"), true);
+// The fan-out guidance briefly told the model to pass isolation: 'worktree' for
+// agents sharing a file. No such option exists — AgentOptions has no isolation
+// field, nothing reads one, and an unknown key is silently ignored rather than
+// rejected — so two agents "isolated" that way would overwrite each other while
+// the run reported done.
+check("no invented isolation option", description.includes("isolation: 'worktree'"), false);
+check("and the real constraint is stated", description.includes("There is NO worktree isolation"), true);
+// Context budgeting was removed; buildContextBundle passes Infinity everywhere.
+// The forking section promised trimming that no longer happens, which would have
+// a script seed a 2MB bundle and fail every agent on the first request.
+check("no promise of context budgeting", description.includes("Context is budgeted"), false);
+check("and the absence is stated", description.includes("Nothing here is truncated"), true);
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
 check("shift+down registered", shortcuts.has("shift+down"), true);
@@ -524,21 +594,34 @@ console.log("\n--- workflow tool: wait mode ---");
 	check("circular result still succeeds", circular.details.status, "done");
 	check("circular marker in content", circular.content[0].text.includes('"self": "[circular]"'), true);
 
-	// An unresolvable model reference fails that agent (before any spawn), not
-	// the run — and the failure reason lands in the logs.
+	// An unresolvable model reference fails that agent before any spawn, and the
+	// script is free to return anyway — here it returns the null that agent()
+	// handed back. This used to be reported as a successful run with a null
+	// result, which is how five runs in the real store recorded total failure as
+	// "done": the script returning says nothing about the work happening. With
+	// no agent left standing the run is now a failure, and the reason travels
+	// with it instead of sitting only in the logs.
 	const badModelScript = [
 		"export const meta = { name: 'routing', description: 'bad model reference' }",
 		"return await agent('x', { model: 'nope' })",
 	].join("\n");
-	const routed = await tool.execute(
-		"t5",
-		{ script: badModelScript, wait: true },
-		undefined,
-		undefined,
-		makeCtx({ model: MODEL, registryModels: [MODEL] }).ctx,
-	);
-	check("unresolvable reference -> agent null", routed.content[0].text.includes("Result:\nnull"), true);
-	check("resolution error logged", routed.details.logs.some((l: string) => l.includes('"nope" matched no available model')), true);
+	let routedError = "";
+	try {
+		await tool.execute(
+			"t5",
+			{ script: badModelScript, wait: true },
+			undefined,
+			undefined,
+			makeCtx({ model: MODEL, registryModels: [MODEL] }).ctx,
+		);
+	} catch (error) {
+		routedError = error instanceof Error ? error.message : String(error);
+	}
+	check("unresolvable reference -> the run fails", routedError.includes("produced nothing"), true);
+	check("resolution error reaches the caller", routedError.includes('"nope" matched no available model'), true);
+	check("and it is offered a resume rather than a rewrite", routedError.includes("rather than writing a new workflow"), true);
+	const routedId = /\(([a-z0-9-]+)\)/.exec(routedError)?.[1];
+	check("recorded on disk as a failure", readMeta(AGENT, routedId ?? "")?.status, "error");
 }
 
 console.log("\n--- workflow tool: background ---");
@@ -934,20 +1017,56 @@ console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
 	writeSettings({});
 
 	// A non-string model option is rejected with a routing-specific message.
+	// Its only agent dies, so the run is a failure and the message comes back on
+	// the error rather than being left for someone to find in the logs.
 	const guard = makeCtx({ model: MODEL, registryModels: [MODEL] });
 	events.get("session_start")!({}, guard.ctx);
-	const guarded = await tool.execute(
-		"t10",
-		{ script: `export const meta = { name: 'g', description: 'h' }\nreturn await agent('x', { model: 42 })`, wait: true },
-		undefined,
-		undefined,
-		guard.ctx,
-	);
-	check(
-		"non-string model reference is named as such",
-		guarded.details.logs.some((l: string) => l.includes("model must be a string reference, got number")),
-		true,
-	);
+	const guarded = await tool
+		.execute(
+			"t10",
+			{ script: `export const meta = { name: 'g', description: 'h' }\nreturn await agent('x', { model: 42 })`, wait: true },
+			undefined,
+			undefined,
+			guard.ctx,
+		)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("non-string model reference is named as such", guarded.includes("model must be a string reference, got number"), true);
+	check("and the run does not pass as done", guarded.includes("produced nothing"), true);
+
+	// A model that exists but has no credentials. This used to resolve happily,
+	// spawn every agent, and kill each one on "No API key found for kimi-coding"
+	// — the reason buried in per-agent stderr, discovered three deaths later.
+	const KIMI = { provider: "kimi-coding", id: "kimi-for-coding", name: "Kimi for Coding", contextWindow: 1000, maxTokens: 100 };
+	const noKey = makeCtx({ model: MODEL, registryModels: [MODEL, KIMI], authedModels: [MODEL] });
+	events.get("session_start")!({}, noKey.ctx);
+	const unauthed = await tool
+		.execute(
+			"t11",
+			{
+				script: `export const meta = { name: 'k', description: 'k' }\nreturn await agent('x', { model: 'kimi-for-coding' })`,
+				wait: true,
+			},
+			undefined,
+			undefined,
+			noKey.ctx,
+		)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("an unauthenticated provider fails at resolution", unauthed.includes("no credentials for kimi-coding"), true);
+	check("and says how to fix it", unauthed.includes("/login"), true);
+	// The failure must arrive before anything is spawned, not after N deaths.
+	check("without spawning anything", unauthed.includes("produced nothing"), true);
+
+	// An authenticated model still resolves normally through the same path.
+	const fine = await tool
+		.execute(
+			"t12",
+			{ script: `export const meta = { name: 'ok', description: 'ok' }\nreturn 1`, wait: true },
+			undefined,
+			undefined,
+			noKey.ctx,
+		)
+		.then((r: any) => r.details.status, (error: Error) => error.message);
+	check("authenticated models are unaffected", fine, "done");
 }
 
 console.log("\n--- panel survives a dead session ---");
@@ -1030,7 +1149,18 @@ console.log("\n--- resumed session is told about interrupted runs ---");
 	);
 	events.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
 	check("a live run is left alone", JSON.parse(readFileSync(join(liveDir, "run.json"), "utf8")).status, "running");
-	check("and no correction is raised for it", await turn("still there?"), undefined);
+	// This session_start does produce a notice — wf-orphan-1 is still owed from
+	// the block above, and repeating that until something resumes it is the
+	// point. What matters is that the LIVE run is not in it: another session is
+	// working on it, and reporting it dead would send this one to resume a run
+	// that is still going.
+	const liveTurn = await turn("still there?");
+	const liveContent = liveTurn?.message?.content ?? "";
+	check("the live run is not named", liveContent.includes("wf-live-1"), false);
+	check("while the run still owed is", liveContent.includes("wf-orphan-1"), true);
+	// Repeating across sessions, not within one: the note is set at
+	// session_start and cleared once delivered.
+	check("and still only once per session", await turn("anything else?"), undefined);
 }
 
 rmSync(ROOT, { recursive: true, force: true });
@@ -1105,6 +1235,246 @@ console.log("\n--- a question raised over the panel does not orphan it ---");
 	}
 	void resolveCustom;
 	void disposed;
+}
+
+console.log("\n--- a script can return cleanly while every agent died ---");
+{
+	// The most expensive defect in the run store: five runs whose every agent
+	// died on spawn (an ambiguous model reference) were recorded "done", 0
+	// turns, $0.00. agent() returns null on failure and the script is free to
+	// carry on, so the SCRIPT succeeding says nothing about the work happening.
+	// Told a workflow had succeeded, the model wrote a fresh one under a new
+	// name and paid for the same discovery three and four times over.
+	//
+	// The fake pi fails only for prompts carrying BOOM, so one binary drives
+	// both the total and the partial case.
+	// An earlier block removes ROOT to prove the panel survives a dead session,
+	// so this one cannot assume the tree is still there. CWD matters as much as
+	// AGENT: a subagent is spawned with the run's cwd, and a missing one fails
+	// the spawn with ENOENT before the fake pi is ever reached — which looks
+	// exactly like the failure being tested and would have passed for the wrong
+	// reason on two of these assertions.
+	mkdirSync(AGENT, { recursive: true });
+	mkdirSync(CWD, { recursive: true });
+	const pickyPi = join(ROOT, "picky-pi.mjs");
+	writeFileSync(
+		pickyPi,
+		[
+			"const prompt = process.argv[process.argv.length - 1];",
+			"if (prompt.includes('BOOM')) {",
+			'  process.stderr.write(\'model "coding" matches several models — use a more specific id\\n\');',
+			"  process.exit(1);",
+			"}",
+			"const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 15, cost: { total: 0.01 } };",
+			'const message = { role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop" };',
+			'process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");',
+		].join("\n"),
+	);
+	const realArgv1 = process.argv[1];
+	process.argv[1] = pickyPi;
+
+	try {
+		const tool = tools.get("workflow")!;
+		const { ctx } = makeCtx({ model: MODEL });
+
+		// Exactly the shape that used to report success: failures swallowed,
+		// script returns a perfectly valid value.
+		const allFail = [
+			"export const meta = { name: 'allfail', description: 'every agent dies' }",
+			"const out = await parallel([() => agent('BOOM one'), () => agent('BOOM two')])",
+			"return { found: out.filter(Boolean).length }",
+		].join("\n");
+
+		let thrown = "";
+		try {
+			await tool.execute("t-allfail", { script: allFail, wait: true }, undefined, undefined, ctx);
+		} catch (error) {
+			thrown = error instanceof Error ? error.message : String(error);
+		}
+		check("a wholly-failed run is an error, not a result", thrown.length > 0, true);
+		check("it says nothing was produced", thrown.includes("produced nothing"), true);
+		check("it reports the cause once", thrown.includes("matches several models"), true);
+		check("it points at resume", thrown.includes("resumeFromRunId:"), true);
+		check("and rules out re-authoring", thrown.includes("rather than writing a new workflow"), true);
+
+		const failedId = /\(([a-z0-9-]+)\)/.exec(thrown)?.[1];
+		check("the run is on disk as a failure, not done", readMeta(AGENT, failedId ?? "")?.status, "error");
+
+		// One dead verifier out of two has not invalidated the survivor, so the
+		// run stays done — but it must not read as unqualified success either.
+		const partial = [
+			"export const meta = { name: 'partial', description: 'one dies' }",
+			"const out = await parallel([() => agent('BOOM one'), () => agent('fine two')])",
+			"return { found: out.filter(Boolean).length }",
+		].join("\n");
+		const mixed = await tool.execute("t-partial", { script: partial, wait: true }, undefined, undefined, ctx);
+		const text = mixed.content[0].text as string;
+		check("a partial failure still returns its result", text.includes('"found": 1'), true);
+		check("but is not reported as clean", text.includes("1 FAILED"), true);
+		check("it says the result is incomplete", text.includes("of 2 agents failed"), true);
+		check("and offers resume for the dead one", text.includes("resumeFromRunId:"), true);
+		check("the run itself is still done", (mixed.details as { status?: string })?.status, "done");
+	} finally {
+		process.argv[1] = realArgv1;
+	}
+}
+
+console.log("\n--- workflow agents inherit from subagents.json, then the session ---");
+{
+	// agents.ts has always parsed subagents.json's { defaults: { model,
+	// reasoning } }, and tool.ts only ever read `types` — so a configured
+	// default was silently ignored and every agent fell through to whichever
+	// model the human happened to be talking to. Worse for reasoning: with no
+	// --thinking the child pi reads its OWN defaultThinkingLevel, so a session
+	// set to "max" ran every subagent at max.
+	mkdirSync(AGENT, { recursive: true });
+	mkdirSync(CWD, { recursive: true });
+	const FAST = { provider: "openai-codex", id: "gpt-5.6-luna", name: "Luna", contextWindow: 1000, maxTokens: 100 };
+	writeFileSync(
+		join(AGENT, "subagents.json"),
+		JSON.stringify({
+			defaults: { model: "gpt-5.6-luna", reasoning: "low" },
+			agents: [{ name: "explorer", purpose: "look", tools: ["read"] }, { name: "pinned", model: "gpt-5.4-mini", purpose: "x" }],
+		}),
+	);
+
+	const argLog = join(ROOT, "inherit-args.txt");
+	const argPi = join(ROOT, "arg-pi.mjs");
+	writeFileSync(
+		argPi,
+		[
+			'import { appendFileSync } from "node:fs";',
+			"const a = process.argv;",
+			'const pick = (f) => { const i = a.indexOf(f); return i === -1 ? "-" : a[i + 1]; };',
+			`appendFileSync(${JSON.stringify(argLog)}, pick("--model") + " " + pick("--thinking") + "\\n");`,
+			"const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 2, cost: { total: 0 } };",
+			'process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop" } }) + "\\n");',
+		].join("\n"),
+	);
+	const realArgv1 = process.argv[1];
+	process.argv[1] = argPi;
+
+	try {
+		const tool = tools.get("workflow")!;
+		writeSettings({});
+		const { ctx } = makeCtx({ model: MODEL, registryModels: [MODEL, FAST] });
+		events.get("session_start")!({}, ctx);
+		const script = [
+			"export const meta = { name: 'inherit', description: 'i' }",
+			"await agent('a', { agentType: 'explorer' })",
+			"await agent('b', { agentType: 'pinned' })",
+			"await agent('c', { model: 'gpt-5.4-mini', thinking: 'high' })",
+			"return 'done'",
+		].join("\n");
+		await tool.execute("t-inherit", { script, wait: true }, undefined, undefined, ctx);
+		const rows = readFileSync(argLog, "utf8").trim().split("\n");
+
+		// A type with no model of its own now takes the configured default
+		// instead of silently becoming whatever the human is using.
+		check("an unpinned agentType takes the subagents.json default", rows[0], "openai-codex/gpt-5.6-luna low");
+		// A type that pins its own model still wins over the default...
+		check("a pinned agentType still wins", rows[1]?.split(" ")[0], "openai-codex/gpt-5.4-mini");
+		// ...but inherits the default reasoning it did not set.
+		check("while inheriting the default reasoning", rows[1]?.split(" ")[1], "low");
+		// And an explicit agent() option beats everything.
+		check("agent() options beat both", rows[2], "openai-codex/gpt-5.4-mini high");
+	} finally {
+		process.argv[1] = realArgv1;
+		writeFileSync(join(AGENT, "subagents.json"), JSON.stringify({ defaults: {}, agents: [] }));
+	}
+}
+
+console.log("\n--- a shared session is one conversation, continued ---");
+{
+	// The unit tests cover the engine's guard; this covers the wiring, which is
+	// where the claim actually lives: the --session-id the child process is
+	// handed. pi opens an existing session by id (main.js), so two agents given
+	// the same id continue one transcript — and nothing else in the test suite
+	// can see what id was passed.
+	mkdirSync(AGENT, { recursive: true });
+	mkdirSync(CWD, { recursive: true });
+	const idLog = join(ROOT, "session-ids.txt");
+	const spyPi = join(ROOT, "spy-pi.mjs");
+	writeFileSync(
+		spyPi,
+		[
+			'import { appendFileSync, writeFileSync } from "node:fs";',
+			'import { join } from "node:path";',
+			"const argv = process.argv;",
+			'const id = argv[argv.indexOf("--session-id") + 1] ?? "(none)";',
+			`appendFileSync(${JSON.stringify(idLog)}, id + "\\n");`,
+			// Write a transcript the way pi names them, <timestamp>_<id>.jsonl in
+			// the --session-dir. Without this the spy left agents/ empty and the
+			// sessionFile lookup could not be tested at all — which is how it
+			// shipped searching for a filename shared-session agents never have.
+			'const dir = argv[argv.indexOf("--session-dir") + 1];',
+			'if (dir) writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_" + id + ".jsonl"), "{}\\n");',
+			"const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 2, cost: { total: 0 } };",
+			'const message = { role: "assistant", content: [{ type: "text", text: "ok" }], usage, stopReason: "stop" };',
+			'process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");',
+		].join("\n"),
+	);
+	const realArgv1 = process.argv[1];
+	process.argv[1] = spyPi;
+
+	try {
+		const tool = tools.get("workflow")!;
+		const { ctx } = makeCtx({ model: MODEL });
+		const script = [
+			"export const meta = { name: 'chain', description: 'two chained and one alone' }",
+			"await agent('first', { session: 'explore' })",
+			"await agent('second', { session: 'explore', context: { text: 'ignored' } })",
+			"await agent('loner')",
+			"return 'done'",
+		].join("\n");
+		const run = await tool.execute("t-chain", { script, wait: true }, undefined, undefined, ctx);
+		const ids = readFileSync(idLog, "utf8").trim().split("\n");
+		check("every agent was spawned", ids.length, 3);
+		// The whole point: two calls, one conversation.
+		check("the chained pair share one session", ids[0], ids[1]);
+		check("and it is a shared id, not an agent one", /-sexplore-[0-9a-f]{8}$/.test(ids[0]!), true);
+		// The unchained agent keeps its own per-index transcript, so a shared
+		// session never becomes the default.
+		check("the lone agent is on its own", ids[2] !== ids[0], true);
+		check("named by index", /-a\d+$/.test(ids[2]!), true);
+
+		// Seeding creates a file. Doing it twice would leave two files claiming
+		// one id and let a directory scan decide which pi opens — so the second
+		// request is refused, and said out loud rather than silently dropped.
+		//
+		// WHICH refusal matters. Agent one here passes no context, so nothing was
+		// ever seeded; the session holds agent one's own conversation and nothing
+		// forked. Saying "already holds the conversation it would have been seeded
+		// with" was a positive lie, and it was the same lie a chain got when its
+		// first seed FAILED — every later agent was told the context had arrived
+		// while no agent in the run ever saw it.
+		const logs = (run.details as { logs: string[] }).logs;
+		check(
+			"a second seed into the same session is refused",
+			logs.some((line) => line.includes('context NOT delivered — session "explore" was already started without it')),
+			true,
+		);
+		check(
+			"and it does not claim the context is there",
+			logs.some((line) => line.includes("already holds")),
+			false,
+		);
+
+		// Every agent's transcript is findable, including the chained ones. The
+		// lookup used to re-derive `<runId>-a<index>` even for a shared session,
+		// whose id is `<runId>-s<slug>-<hash>` — a filename pi never writes — so
+		// /workflows showed "session none" and refused to open the transcript for
+		// exactly the agents whose accumulated conversation is the point.
+		const agents = (run.details as { phases: { agents: { label: string; sessionFile?: string }[] }[] }).phases.flatMap((p) => p.agents);
+		check("every agent has a transcript", agents.length > 0 && agents.every((a) => typeof a.sessionFile === "string"), true);
+		check(
+			"and the chained ones point at the shared session file",
+			agents.filter((a) => a.sessionFile?.includes("-sexplore-")).length,
+			2,
+		);
+	} finally {
+		process.argv[1] = realArgv1;
+	}
 }
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

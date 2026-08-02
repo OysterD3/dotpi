@@ -14,48 +14,48 @@
  * component stands in for the editor while it is up, so the question arrives
  * where the answer would have been typed.
  *
- * The tool is offered only in an interactive session (it needs a real user) and
- * only while enabled — active-tool sync, like the advisor/subagents extensions —
- * so a headless run or a disabled setting adds nothing to the prompt.
+ * Offering the tool is not enough to get it used: the description, the snippet
+ * and the guidelines all sit in the cached prefix, read long before there is a
+ * request to apply them to. nudge.ts supplies the missing half — on the turn a
+ * request that opens new work arrives, a hidden reminder rides in with it and
+ * says to settle the open decisions now, or to state the assumption and start.
  *
- * Settings (agent settings.json, key "askUser"):
- *   askUser.enabled     boolean, default true. Kill switch.
- *   askUser.allowNotes  boolean, default true. Whether Tab attaches a note.
+ * There is no settings block and no off switch, by design. Asking when the
+ * decision is genuinely the user's is behaviour, not a preference, and a knob
+ * for it is only ever a way back to a tool that exists and goes unused. The one
+ * condition is that somebody is there to answer: in a headless run (`-p`, an
+ * `--mode json` subagent) `ctx.hasUI` is false, the tool is not offered, and the
+ * opening nudge stays quiet — a fact about the session, not a choice about it.
  *
- * Session control: `/ask-user [status | on | off | test]`.
+ * `/ask-user` reports that state and `/ask-user test` demonstrates the prompt.
+ * Neither can turn anything off.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type AskUserSettings, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG, NUDGE_ENTRY_TYPE, TOOL_NAME } from "./config.ts";
 import { type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
+import { OPENING_NUDGE, opensWork, systemReminder } from "./nudge.ts";
 import { showAsk } from "./prompt.ts";
 import { registerAskUserTool } from "./tool.ts";
 
-export function loadSettings(agentDir: string): AskUserSettings {
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
-		return {
-			enabled: typeof block?.enabled === "boolean" ? block.enabled : DEFAULT_SETTINGS.enabled,
-			allowNotes: typeof block?.allowNotes === "boolean" ? block.allowNotes : DEFAULT_SETTINGS.allowNotes,
-		};
-	} catch {
-		return { ...DEFAULT_SETTINGS };
-	}
-}
-
 export default function (pi: ExtensionAPI) {
-	const agentDir = getAgentDir();
-	let settings = loadSettings(agentDir);
-	// Session-scoped off switch from `/ask-user off`, independent of the setting.
-	let sessionOff = false;
+	// Set on the input hook, consumed by before_agent_start on the same turn.
+	let nudgeThisTurn = false;
+	// Interactive turns since the last nudge went out. Infinity so the first
+	// work-opening request of a session is never inside the cooldown.
+	let turnsSinceNudge = Number.POSITIVE_INFINITY;
 
-	registerAskUserTool(pi, { settings: () => settings });
+	registerAskUserTool(pi);
 
-	/** Offer the tool exactly when enabled, not turned off for the session, and a real user is present. */
+	/**
+	 * The only condition on the tool: somebody is there to answer. Not a setting
+	 * and not a toggle — in a headless run there is no user, and a question would
+	 * hang the turn on nobody.
+	 */
+	const isAvailable = (ctx: ExtensionContext): boolean => ctx.hasUI;
+
+	/** Offer the tool exactly when it is available. */
 	const syncActive = (ctx: ExtensionContext): boolean => {
-		const active = settings.enabled && !sessionOff && ctx.hasUI;
+		const active = isAvailable(ctx);
 		const tools = pi.getActiveTools();
 		const has = tools.includes(TOOL_NAME);
 		if (active && !has) pi.setActiveTools([...new Set([...tools, TOOL_NAME])]);
@@ -66,37 +66,50 @@ export default function (pi: ExtensionAPI) {
 		return active;
 	};
 
+	// A block body, not a one-liner: syncActive returns a boolean, and returning
+	// it here makes TypeScript resolve a different `pi.on` overload.
 	pi.on("session_start", (_event, ctx) => {
-		settings = loadSettings(agentDir);
 		syncActive(ctx);
 	});
 
-	const describeStatus = (ctx: ExtensionContext): string => {
-		if (!settings.enabled) return "ask_user is disabled (askUser.enabled is false in settings).";
-		if (sessionOff) return "ask_user is off for this session (/ask-user on to re-enable).";
-		if (!ctx.hasUI) return "ask_user is unavailable: this session has no interactive user.";
-		return `ask_user is on. Notes (Tab) are ${settings.allowNotes ? "on" : "off"}. The agent can ask you when it hits a decision only you can make.`;
-	};
+	// Judged on the text as typed, which is the request itself — after command
+	// expansion a `/`-prefixed shortcut can look like anything. A prompt steered
+	// into a running turn is by definition mid-task and never reaches
+	// before_agent_start anyway, so it must not disturb the counter either.
+	pi.on("input", (event) => {
+		if (event.streamingBehavior !== undefined || event.source !== "interactive") return { action: "continue" };
+		turnsSinceNudge++;
+		// >=, not >: the constant is "at most one nudge in this many turns", so a
+		// nudge on turn N makes turn N+8 eligible, not N+9.
+		nudgeThisTurn = turnsSinceNudge >= CONFIG.nudgeCooldownTurns && opensWork(event.text);
+		return { action: "continue" };
+	});
+
+	// A hidden custom message rather than an addition to the system prompt: the
+	// whole point is that it arrives WITH the request instead of above it, and a
+	// per-turn system prompt would also break the cached prefix for every turn.
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (!nudgeThisTurn) return;
+		nudgeThisTurn = false;
+		// Never tell a headless agent to ask: there is nobody to answer, and the
+		// tool it would reach for is not even offered.
+		if (!isAvailable(ctx)) return;
+		turnsSinceNudge = 0;
+		return { message: { customType: NUDGE_ENTRY_TYPE, content: systemReminder(OPENING_NUDGE), display: false } };
+	});
+
+	const describeStatus = (ctx: ExtensionContext): string =>
+		ctx.hasUI
+			? `ask_user is on, and there is no way to turn it off: asking when a decision is genuinely yours is how the agent is meant to behave. A request that opens new work is reminded to settle its open decisions first, at most once every ${CONFIG.nudgeCooldownTurns} turns. Press Tab on any answer to annotate it.`
+			: "ask_user is unavailable: this session has no interactive user to answer.";
 
 	pi.registerCommand("ask-user", {
-		description: "Show status or toggle the ask_user tool (/ask-user [status | on | off | test])",
+		description: "Show what ask_user is doing, or try the prompt (/ask-user [status | test])",
 		getArgumentCompletions: (prefix: string) =>
-			["status", "on", "off", "test"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
+			["status", "test"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args: string, ctx) => {
 			const arg = args.trim().toLowerCase();
 
-			if (arg === "off") {
-				sessionOff = true;
-				syncActive(ctx);
-				ctx.ui.notify("ask_user off for this session.", "info");
-				return;
-			}
-			if (arg === "on") {
-				sessionOff = false;
-				const active = syncActive(ctx);
-				ctx.ui.notify(active ? "ask_user on." : describeStatus(ctx), active ? "info" : "warning");
-				return;
-			}
 			if (arg === "test") {
 				if (!ctx.hasUI) return void ctx.ui.notify("The test needs the interactive TUI.", "error");
 				// Two questions on purpose: the test should exercise ← / → and the
@@ -127,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 						multiSelect: true,
 					},
 				];
-				const session = new AskSession(questions, settings.allowNotes);
+				const session = new AskSession(questions);
 				// Not blocking: the user opened this themselves and the agent is not
 				// waiting on it, so the turn clock and the cmux bell stay out of it.
 				ctx.ui.notify(renderOutcomeText(await showAsk(pi, ctx, session, false)), "info");

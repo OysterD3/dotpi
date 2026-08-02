@@ -57,6 +57,13 @@ export type Finding = {
 	id: string;
 	/** Plain-language reason, shown in the approval prompt. */
 	reason: string;
+	/**
+	 * Short noun phrase naming the CLASS, for the "allow all of these" menu
+	 * option. Optional: nearly every reason is a verb phrase that already reads
+	 * correctly after "Allow anything that …", so only the ones that do not need
+	 * this. See the option builder in index.ts for what goes wrong without it.
+	 */
+	label?: string;
 	/** The segment that triggered it. */
 	segment: string;
 };
@@ -350,6 +357,9 @@ export function findDestructive(command: string, allow: ReadonlySet<string> = ne
 				findings.push({
 					id: "dynamic-argument",
 					reason: "targets are computed at runtime, so what it affects cannot be checked in advance",
+					// The one reason phrased as an explanation rather than a verb
+					// phrase, so it is the one that needs a label of its own.
+					label: "commands whose targets are computed at runtime",
 					segment: raw,
 				});
 			}

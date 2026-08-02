@@ -29,6 +29,7 @@ const { buildSections, buildTranscript } = await import("./transcript.ts");
 const { buildReviewerPrompt, REVIEWER_PROMPT, ADVISOR_TOOL_GUIDANCE } = await import("./guidance.ts");
 const { resolveModelReference, modelRef, sameModel } = await import("./models.ts");
 const { CONFIG } = await import("./config.ts");
+const { buildArgs, scrubArg } = await import("./spawn.ts");
 const { advisorStatus, compactCount, emptyProgress, formatElapsed, phaseFor, scanBlocks } = await import("./progress.ts");
 
 let failures = 0;
@@ -100,6 +101,26 @@ checkTrue("includes the transcript body", prompt.includes("User:\nhello"));
 checkTrue("ends with the cue", prompt.trimEnd().endsWith("Give your advice now."));
 checkTrue("empty transcript gets a placeholder", buildReviewerPrompt("   ").includes("no prior messages yet"));
 checkTrue("the main-agent guidance carries its load-bearing lines", ADVISOR_TOOL_GUIDANCE.includes("backed by a stronger reviewer model") && ADVISOR_TOOL_GUIDANCE.includes("Orientation is not substantive work"));
+
+// The reviewer runs --no-tools and sees only the transcript, but it is asked to
+// be specific and to produce prioritised next steps — so it invents concrete
+// detail. Observed: "Read ~/.pi/agent/skills/ultracode/SKILL.md", a file that
+// does not exist, as step 1 of a numbered plan the agent is told to weight.
+checkTrue("the reviewer is confined to what it has seen", REVIEWER_PROMPT.includes("STAY INSIDE WHAT YOU HAVE SEEN"));
+checkTrue(
+	"and told not to name unseen files",
+	REVIEWER_PROMPT.includes("must be one that actually appears in the transcript"),
+);
+// Without this it complies by going vague, which loses the value of the tool.
+checkTrue("it is given the alternative to inventing a path", REVIEWER_PROMPT.includes("say what to look FOR"));
+checkTrue("and told to flag what it is inferring", REVIEWER_PROMPT.includes('"if X exists"'));
+// The other half: the agent was told to weight the advice, which is what turns
+// an invented path into an instruction it follows.
+checkTrue("the caller verifies details rather than trusting them", ADVISOR_TOOL_GUIDANCE.includes("Weight the JUDGMENT, verify the DETAILS"));
+checkTrue(
+	"and keeps the point when the detail is wrong",
+	ADVISOR_TOOL_GUIDANCE.includes("a wrong filename does not make the underlying point wrong"),
+);
 
 // -------------------------------------------------------------------- models
 
@@ -507,6 +528,24 @@ console.log("\n--- /advisor command ---");
 	extension(h.pi as never);
 	h.events.get("session_start")!({}, h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" }));
 	checkTrue("disabled keeps the tool off", !h.getActive().includes("advisor"));
+}
+
+console.log("\n--- spawn: a null byte must not disable the advisor ---");
+{
+	// Observed: "The argument 'args[12]' must be a string without null bytes."
+	// args[12] is the prompt (index 11 here, shifted by one because piInvocation
+	// prepends the script path). The advisor prompt embeds the session
+	// transcript, so a single binary byte that ever reached a tool result — a
+	// grep over a compiled file, a fetch of an image — travels into the
+	// transcript and makes every later /advisor call throw before the child
+	// process exists. Nothing upstream promises a transcript is clean, so the
+	// guard sits at the last point before the OS.
+	const args = buildArgs({ prompt: "review\0 this", model: "anthropic/claude-opus-5\0" } as never);
+	check("the prompt survives without its nulls", args.at(-1), "review this");
+	check("no argument carries a null", args.some((a: string) => a.includes("\0")), false);
+	check("clean text is untouched", scrubArg("nothing to strip"), "nothing to strip");
+	// The prompt is the last argv slot, which is what makes it args[12].
+	check("the prompt is still last", args.at(-1), "review this");
 }
 
 rmSync(ROOT, { recursive: true, force: true });

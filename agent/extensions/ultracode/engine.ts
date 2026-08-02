@@ -4,15 +4,15 @@
  * agent(), parallel(), pipeline(), phase(), log(), args, budget.
  *
  * The semantics:
- *   - concurrent agent() calls gated by a semaphore (min(16, cores - 2));
- *   - total agent() calls per run capped (1000) — exceeding fails the run;
+ *   - agent() calls are UNBOUNDED and unqueued: every agent a script starts is
+ *     spawned immediately, and there is no cap on how many run at once or how
+ *     many a run may start in total. Breadth is the script's decision;
  *   - parallel() never rejects for ordinary failures: a thunk that throws
- *     resolves to null. Fatal conditions (abort, the agent cap, invalid
- *     agent() usage) DO propagate — an aborted run must never look successful;
+ *     resolves to null. Fatal conditions (abort, invalid agent() usage) DO
+ *     propagate — an aborted run must never look successful;
  *   - pipeline() has no barrier between stages; a stage that throws drops the
  *     item to null and skips its remaining stages; stages receive
  *     (prevResult, originalItem, index);
- *   - a single parallel()/pipeline() call accepts at most 4096 items;
  *   - budget is a stub ({total: null}) since pi has no token-budget directive,
  *     so budget-guarded loops fall through cleanly;
  *   - Date.now()/Math.random()/argless new Date() throw, so a journal can be
@@ -43,7 +43,7 @@
  * await, never busy-wait).
  */
 import { runInNewContext } from "node:vm";
-import { DEFAULT_LIMITS, type Limits } from "./config.ts";
+import { CONFIG } from "./config.ts";
 import { agentKey } from "./journal.ts";
 
 export interface WorkflowMeta {
@@ -79,6 +79,15 @@ export interface AgentOptions {
 	/** Explicit tool allowlist, overriding the agentType's. */
 	tools?: string[];
 	context?: AgentContext;
+	/**
+	 * Name of a SHARED pi session, scoped to this run. Agents given the same
+	 * name continue one conversation in turn, each seeing what the previous one
+	 * actually did rather than a summary of it.
+	 *
+	 * Sequential by construction — see the guard in runAgent. Two agents holding
+	 * the same name at once is a script error, not a race to be tolerated.
+	 */
+	session?: string;
 }
 
 /** Conditions that must fail the whole run instead of nulling one agent. */
@@ -117,7 +126,6 @@ export interface EngineHooks {
 }
 
 export interface EngineOptions {
-	limits?: Limits;
 	/** Extra sandbox bindings, merged after the built-in globals. */
 	globals?: Record<string, unknown>;
 }
@@ -210,23 +218,6 @@ export function validateScript(script: string): { meta: WorkflowMeta; body: stri
 }
 
 // -------------------------------------------------------------------- engine
-
-class Semaphore {
-	private queue: Array<() => void> = [];
-	private active = 0;
-	constructor(private readonly limit: number) {}
-
-	async run<T>(task: () => Promise<T>): Promise<T> {
-		if (this.active >= this.limit) await new Promise<void>((resolve) => this.queue.push(resolve));
-		this.active++;
-		try {
-			return await task();
-		} finally {
-			this.active--;
-			this.queue.shift()?.();
-		}
-	}
-}
 
 /** Shallow schema check: the payload is an object carrying every required key. */
 export function conformsTo(value: unknown, schema: Record<string, unknown>): boolean {
@@ -336,10 +327,12 @@ export async function runWorkflowScript(
 	engineOptions: EngineOptions = {},
 ): Promise<RunResult> {
 	const { meta, body } = parseMeta(script);
-	const limits = engineOptions.limits ?? DEFAULT_LIMITS;
-	const semaphore = new Semaphore(limits.maxConcurrency);
 	let agentCount = 0;
 	let replayedCount = 0;
+	/** Shared session names currently held by a running agent. */
+	const activeSessions = new Set<string>();
+	/** Shared sessions already explained in the log, so a chain says it once. */
+	const announcedSessions = new Set<string>();
 
 	// Everything spawned runs against this controller so that when the run
 	// settles — normally, fatally, or by external abort — agents the script
@@ -356,79 +349,118 @@ export async function runWorkflowScript(
 			throw new WorkflowFatalError("agent() requires a non-empty prompt string");
 		}
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-		if (agentCount >= limits.maxAgentsPerRun) {
-			throw new WorkflowFatalError(`workflow exceeded the ${limits.maxAgentsPerRun}-agent cap`);
-		}
 		const index = ++agentCount;
 		const label = options.label ?? `agent ${index}`;
 		const key = agentKey(prompt, options as unknown as Record<string, unknown>);
 		const startedAt = Date.now();
 
-		// Pause first: a paused run must not race ahead through cached results
-		// either, or unpausing would find the script somewhere unexpected.
-		if (hooks.waitWhilePaused) await hooks.waitWhilePaused(controller.signal);
-		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-
-		// A replay costs nothing, so it happens outside the concurrency gate.
-		const cached = hooks.replay?.(key);
-		if (cached?.hit) {
-			replayedCount++;
-			hooks.agentStart?.(index, label, options.phase);
-			hooks.agentEnd?.(index, true);
-			hooks.agentSettled?.({
-				index,
-				key,
-				label,
-				phase: options.phase,
-				options,
-				status: "replayed",
-				value: cached.value,
-				startedAt,
-				endedAt: Date.now(),
-				attempts: 0,
-			});
-			return cached.value;
+		// A shared session is one conversation continued by one agent at a time.
+		// Claimed BEFORE the pause so the error is immediate and
+		// deterministic: whichever of two concurrent claimants arrives second
+		// fails, and the run fails with it, rather than both being admitted and
+		// interleaving their turns into a single transcript.
+		const session = options.session;
+		if (session !== undefined) {
+			if (typeof session !== "string" || !session.trim()) {
+				throw new WorkflowFatalError(`agent() session must be a non-empty string, got ${JSON.stringify(session)}`);
+			}
+			if (activeSessions.has(session)) {
+				// Fatal, not a nulled agent. By the time a second agent wants the
+				// session the chain's ordering is already undefined, and every later
+				// link would be reading state assembled in an unknown order — wrong
+				// answers that look right. Better to stop.
+				throw new WorkflowFatalError(
+					`two agents hold the shared session "${session}" at once. A shared session is a single conversation and must be continued sequentially — await one agent before starting the next, or give each its own name (session: \`${session}-\${index}\`) if they were meant to be independent.`,
+				);
+			}
+			activeSessions.add(session);
 		}
 
-		return semaphore.run(async () => {
+		try {
+			// Pause first: a paused run must not race ahead through cached results
+			// either, or unpausing would find the script somewhere unexpected.
+			if (hooks.waitWhilePaused) await hooks.waitWhilePaused(controller.signal);
 			if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-			hooks.agentStart?.(index, label, options.phase);
-			let ok = false;
-			let value: unknown;
-			let failure: string | undefined;
-			// Counted here rather than returned, so a FAILED agent still reports
-			// how many attempts it burned — that is exactly when you want to know.
-			let attempts = 0;
-			const spawnOnce = (request: string, attempt: number) => {
-				attempts++;
-				return hooks.spawn(request, options, index, controller.signal, attempt);
-			};
-			try {
-				value = options.schema ? await runSchemaAgent(prompt, options, label, spawnOnce) : await spawnOnce(prompt, 0);
-				ok = true;
-				return value;
-			} catch (error) {
-				if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
-				failure = error instanceof Error ? error.message : String(error);
-				hooks.log(`agent ${label} failed: ${failure}`);
-				return null;
-			} finally {
-				hooks.agentEnd?.(index, ok);
-				hooks.agentSettled?.({
-					index,
-					key,
-					label,
-					phase: options.phase,
-					options,
-					status: ok ? "done" : "failed",
-					value: ok ? value : undefined,
-					error: failure,
-					startedAt,
-					endedAt: Date.now(),
-					attempts,
-				});
+
+			// Shared-session agents are NEVER replayed. Resume allocates a fresh
+			// runId, so a replayed agent writes no session file into the new run —
+			// a later live agent in the same chain would find nothing, quietly
+			// start a new conversation, and return an answer computed without the
+			// accumulated context. Replaying only when the WHOLE chain replays
+			// cannot be decided in advance (pipeline() has no fixed order), so the
+			// chain re-runs. Correctness over the saving; it is stated in the log
+			// rather than left to be discovered from a bill.
+			if (session === undefined) {
+				// A replay costs nothing, so it happens outside the concurrency gate.
+				const cached = hooks.replay?.(key);
+				if (cached?.hit) {
+					replayedCount++;
+					hooks.agentStart?.(index, label, options.phase);
+					hooks.agentEnd?.(index, true);
+					hooks.agentSettled?.({
+						index,
+						key,
+						label,
+						phase: options.phase,
+						options,
+						status: "replayed",
+						value: cached.value,
+						startedAt,
+						endedAt: Date.now(),
+						attempts: 0,
+					});
+					return cached.value;
+				}
+			} else if (hooks.replay && !announcedSessions.has(session)) {
+				announcedSessions.add(session);
+				hooks.log(`session "${session}" is shared, so its agents re-run instead of replaying`);
 			}
-		});
+
+			return await (async () => {
+				if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+				hooks.agentStart?.(index, label, options.phase);
+				let ok = false;
+				let value: unknown;
+				let failure: string | undefined;
+				// Counted here rather than returned, so a FAILED agent still reports
+				// how many attempts it burned — that is exactly when you want to know.
+				let attempts = 0;
+				const spawnOnce = (request: string, attempt: number) => {
+					attempts++;
+					return hooks.spawn(request, options, index, controller.signal, attempt);
+				};
+				try {
+					value = options.schema ? await runSchemaAgent(prompt, options, label, spawnOnce) : await spawnOnce(prompt, 0);
+					ok = true;
+					return value;
+				} catch (error) {
+					if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+					failure = error instanceof Error ? error.message : String(error);
+					hooks.log(`agent ${label} failed: ${failure}`);
+					return null;
+				} finally {
+					hooks.agentEnd?.(index, ok);
+					hooks.agentSettled?.({
+						index,
+						key,
+						label,
+						phase: options.phase,
+						options,
+						status: ok ? "done" : "failed",
+						value: ok ? value : undefined,
+						error: failure,
+						startedAt,
+						endedAt: Date.now(),
+						attempts,
+					});
+				}
+			})();
+		} finally {
+			// Released on every path — success, failure, abort and the fatal
+			// throws above — or one erroring agent would lock its session for the
+			// rest of the run and turn a single failure into a dead chain.
+			if (session !== undefined) activeSessions.delete(session);
+		}
 	}
 
 	async function runSchemaAgent(
@@ -446,7 +478,7 @@ export async function runWorkflowScript(
 				if (!conformsTo(value, schema)) throw new Error("JSON did not match the schema");
 				return value;
 			} catch (error) {
-				if (attempt >= limits.schemaRetries) throw error;
+				if (attempt >= CONFIG.schemaRetries) throw error;
 				const reason = error instanceof Error ? error.message : String(error);
 				hooks.log(`agent ${label}: retrying, ${reason}`);
 				request = `${prompt}${schemaInstruction(schema)}\n\nYour previous reply could not be used (${reason}). Reply again with ONLY the JSON value.`;
@@ -475,9 +507,6 @@ export async function runWorkflowScript(
 
 	const parallel = async (thunks: unknown): Promise<unknown[]> => {
 		if (!Array.isArray(thunks)) throw new Error("parallel() takes an array of functions");
-		if (thunks.length > limits.maxItemsPerCall) {
-			throw new Error(`parallel() accepts at most ${limits.maxItemsPerCall} items, got ${thunks.length}`);
-		}
 		return guardAll(
 			thunks.map(async (thunk) => {
 				if (typeof thunk !== "function") return null;
@@ -493,9 +522,6 @@ export async function runWorkflowScript(
 
 	const pipeline = async (items: unknown, ...stages: unknown[]): Promise<unknown[]> => {
 		if (!Array.isArray(items)) throw new Error("pipeline() takes an array of items");
-		if (items.length > limits.maxItemsPerCall) {
-			throw new Error(`pipeline() accepts at most ${limits.maxItemsPerCall} items, got ${items.length}`);
-		}
 		const callbacks = stages.filter((s): s is (prev: unknown, item: unknown, index: number) => unknown => typeof s === "function");
 		return guardAll(
 			items.map(async (item, index) => {

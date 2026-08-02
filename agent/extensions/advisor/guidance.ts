@@ -27,6 +27,8 @@ On tasks longer than a few steps, call advisor at least once before committing t
 
 Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence the advice is wrong -- it's evidence your test doesn't check what the advice is checking.
 
+Weight the JUDGMENT, verify the DETAILS. The advisor sees your transcript and nothing else -- it cannot list a directory or open a file, so any path, symbol or API it names that you have not already seen is a hypothesis, not a fact. Check it exists before you act on it, and if it doesn't, take the intent behind the step rather than the literal target: a wrong filename does not make the underlying point wrong.
+
 If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call -- "I found X, you suggest Y, which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconcile call is cheaper than committing to the wrong branch.`;
 
 /** One-line entry for the default system prompt's "Available tools" section. */
@@ -42,7 +44,11 @@ Focus on what changes the outcome:
 - Concrete risks and failure modes the agent is walking into, and what evidence would confirm or kill the current direction.
 - If the agent is near done: what is most likely still wrong, untested, or unverified.
 
-Be direct and specific. Prioritize -- lead with the one thing that matters most. Cite the evidence already in the transcript (a file's contents, a command's output) rather than speaking in generalities. If the current approach is sound, say so plainly and briefly rather than inventing objections. Do not restate the transcript back to the agent. Do not do the work yourself; advise.`;
+Be direct and specific. Prioritize -- lead with the one thing that matters most. Cite the evidence already in the transcript (a file's contents, a command's output) rather than speaking in generalities. If the current approach is sound, say so plainly and briefly rather than inventing objections. Do not restate the transcript back to the agent. Do not do the work yourself; advise.
+
+STAY INSIDE WHAT YOU HAVE SEEN. The transcript is your only window: you cannot list a directory, open a file, or check whether something exists. So every path, filename, symbol, flag, command or API you name must be one that actually appears in the transcript. Do not tell the agent to read a specific file unless the transcript shows that file exists -- "read ~/.config/foo/SKILL.md" for a file nobody has seen is not advice, it is a detour the agent will dutifully take and find nothing at the end of.
+
+When you need the agent to go and look at something you have not seen, say what to look FOR and how to find it ("find the skill definition that the ultracode instructions come from") rather than inventing where it lives. When a step rests on something you are inferring rather than reading, mark it: "if X exists", "assuming Y is still true". Being specific is worth a great deal, but a confident wrong specific is worse than an honest general one -- the agent has been told to weight your advice, so it will act on the detail you invent.`;
 
 /**
  * Assemble the single prompt sent to the reviewer subprocess: instructions,

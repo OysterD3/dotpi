@@ -12,6 +12,8 @@
  * the registry rather than a hardcoded list of families.
  */
 
+import { resolveModelReference } from "./models.ts";
+
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
 /** Segments too generic to signal "the user named a model". */
@@ -33,20 +35,45 @@ const NOISE = new Set([
 	"version",
 ]);
 
-/** Lowercase tokens whose presence in a prompt suggests a model reference. */
+/**
+ * Lowercase tokens whose presence in a prompt suggests a model reference.
+ *
+ * A segment only qualifies if passing it as `model:` would ACTUALLY RESOLVE to
+ * one model. That test is `resolveModelReference` itself, so the vocabulary and
+ * the resolver cannot disagree — a word that would fail as a reference is not
+ * treated as one.
+ *
+ * This is not a refinement; it is the fix for a bug that killed whole fleets.
+ * Splitting ids into segments turns any model called `kimi-for-coding` into the
+ * vocabulary word "coding". The reminder built from that vocabulary then tells
+ * the model, in the imperative, to call `agent(prompt, { model: "coding" })` —
+ * so every prompt about a *coding agent* routed its whole fleet to a reference
+ * that matches two kimi models and resolves to neither. Three agents dead, run
+ * produced nothing, and the instruction came from us, not from the user.
+ *
+ * The NOISE list cannot solve this: "coding" and "agent" are exactly the words
+ * a coding-agent prompt contains, and the next provider brings its own. Asking
+ * whether the word actually names one model is the general form of the rule.
+ */
 export function modelVocabulary(models: readonly ModelLike[]): Set<string> {
 	const vocabulary = new Set<string>();
+	const candidates = new Set<string>();
 	for (const model of models) {
 		const id = model.id.toLowerCase();
+		// A full id is explicit enough to stand on its own.
 		vocabulary.add(id);
 		for (const source of [id, (model.name ?? "").toLowerCase()]) {
 			for (const segment of source.split(/[^a-z0-9.]+/)) {
 				// Words only: bare numbers and version fragments say nothing.
 				if (segment.length < 3 || NOISE.has(segment)) continue;
 				if (!/^[a-z][a-z0-9]*$/.test(segment)) continue;
-				vocabulary.add(segment);
+				candidates.add(segment);
 			}
 		}
+	}
+	for (const segment of candidates) {
+		if (vocabulary.has(segment)) continue;
+		if (resolveModelReference(segment, models).ok) vocabulary.add(segment);
 	}
 	return vocabulary;
 }

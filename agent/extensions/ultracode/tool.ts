@@ -36,21 +36,31 @@ import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { loadAgentTypes, type AgentTypeDef } from "./agents.ts";
+import { loadAgentTypes, type AgentTypeDef, type AgentTypeRegistry } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
 import { CONFIG, SPEND_CHANNEL, SPEND_SOURCE, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import { runWorkflowScript, validateScript, type AgentOptions, type EngineHooks } from "./engine.ts";
 import { ReplayIndex, type JournalInput } from "./journal.ts";
 import { resolveModelReference, resolveRole } from "./models.ts";
-import { newProgress, PauseGate, RunRegistry, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
+import {
+	allAgentsFailed,
+	newProgress,
+	PauseGate,
+	RunRegistry,
+	tallyAgents,
+	type AgentRow,
+	type RunProgress,
+	type WorkflowRun,
+} from "./runs.ts";
 import { startedLabel } from "./panel.ts";
 import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
 import {
 	agentErrorPath,
 	agentsDir,
 	agentSessionId,
-	agentSessionPath,
+	sharedSessionId,
+	sessionPathById,
 	appendJournalLine,
 	createRun,
 	newRunId,
@@ -328,7 +338,6 @@ function startRun(
 ): WorkflowRun {
 	const { registry, agentDir } = options;
 	const settings = options.settings();
-	const limits = settings.limits;
 	const env = snapshotEnv(ctx, settings);
 	const agentTypes = loadAgentTypes(agentDir);
 
@@ -338,6 +347,14 @@ function startRun(
 	const controller = new AbortController();
 	const gate = new PauseGate();
 	const rows = new Map<number, AgentRow>();
+	/** Shared session names whose forked context was successfully written. */
+	const seededSessions = new Set<string>();
+	/**
+	 * Shared session names an agent has already run under, seeded or not. A
+	 * superset of seededSessions: it says a further seed would collide, which is
+	 * a weaker claim than saying the context is there.
+	 */
+	const startedSessions = new Set<string>();
 	let currentPhase: string | undefined;
 	let seq = 0;
 
@@ -509,11 +526,18 @@ function startRun(
 			if (agentOptions.model !== undefined && typeof agentOptions.model !== "string") {
 				throw new Error(`agent() model must be a string reference, got ${typeof agentOptions.model}`);
 			}
-			const model = resolveAgentModel(agentOptions, type, env, ctx);
-			const thinking = resolveThinking(agentOptions, type);
+			const model = resolveAgentModel(agentOptions, type, agentTypes.defaults, env, ctx);
+			const thinking = resolveThinking(agentOptions, type, agentTypes.defaults);
 			const tools = Array.isArray(agentOptions.tools) ? agentOptions.tools : type?.tools;
 
-			const sessionId = agentSessionId(runId, index, attempt);
+			// A shared session is addressed by name, so every agent in the chain
+			// resolves to the same file and pi reopens it (main.js: an existing
+			// --session-id is opened, not recreated). Note the missing `attempt`:
+			// a schema retry continues the same conversation rather than starting a
+			// clean one, which is what makes the retry prompt's "your previous
+			// reply could not be used" mean anything to the agent reading it.
+			const shared = typeof agentOptions.session === "string" && agentOptions.session.trim() ? agentOptions.session : undefined;
+			const sessionId = shared ? sharedSessionId(runId, shared) : agentSessionId(runId, index, attempt);
 			const sessionDir = agentsDir(agentDir, runId);
 
 			const row = rows.get(index);
@@ -526,12 +550,35 @@ function startRun(
 			// which the child then reopens by id. A seeding failure is not fatal:
 			// the agent still runs, just without the background.
 			let sessionFile: string | undefined;
-			if (agentOptions.context) {
+			// Seeding CREATES a session file, so it may only happen once per
+			// session. For a chain the first agent seeds and the rest inherit;
+			// seeding again would build a second file claiming the same id and
+			// leave which one pi opens up to a directory scan. A later agent that
+			// asks for context is told its request was dropped rather than left to
+			// assume the background arrived.
+			// Two different states, and conflating them told a positive lie. A
+			// session that was SEEDED holds the context; a session that has merely
+			// been STARTED (pi created it for an unseeded --session-id, or our seed
+			// failed) does not, and can no longer be seeded because a second file
+			// claiming that id would leave which one pi opens to a directory scan.
+			// Reporting the second case as the first meant a chain whose very first
+			// seed failed logged "already holds the conversation" for every later
+			// agent, while no agent in it ever saw the context.
+			const alreadySeeded = shared !== undefined && seededSessions.has(shared);
+			const alreadyStarted = shared !== undefined && startedSessions.has(shared);
+			if (agentOptions.context && alreadySeeded) {
+				hooks.log(
+					`agent ${agentOptions.label ?? index}: context ignored — session "${shared}" already holds the conversation it would have been seeded with`,
+				);
+			} else if (agentOptions.context && alreadyStarted) {
+				hooks.log(
+					`agent ${agentOptions.label ?? index}: context NOT delivered — session "${shared}" was already started without it, and seeding it now would collide. No agent in this chain has the forked context.`,
+				);
+			} else if (agentOptions.context) {
 				const bundle = buildContextBundle({
 					context: agentOptions.context,
 					branch: env.branch,
 					cwd: env.cwd,
-					limits,
 				});
 				if (bundle) {
 					sessionFile = seedAgentSession({
@@ -544,8 +591,14 @@ function startRun(
 						parentSession: env.parentSession,
 					});
 					if (!sessionFile) hooks.log(`agent ${agentOptions.label ?? index}: context could not be seeded, running without it`);
+					else if (shared !== undefined) seededSessions.add(shared);
 				}
 			}
+			// Started, not seeded. pi creates the session itself for an unseeded
+			// --session-id, so from the second agent onward a further seed would
+			// collide either way — but only a seed that actually succeeded above
+			// gets to claim the context is present.
+			if (shared !== undefined) startedSessions.add(shared);
 
 			// Every agent leaves a transcript, seeded or not — pi creates the
 			// session for an unseeded --session-id itself, under a name only it
@@ -553,7 +606,10 @@ function startRun(
 			// either way; a failed agent's transcript is the interesting one.
 			const recordTranscript = () => {
 				if (!row) return;
-				row.sessionFile = sessionFile ?? agentSessionPath(agentDir, runId, index, attempt) ?? row.sessionFile;
+				// Looked up by the id this agent actually ran under. Deriving it from
+				// (index, attempt) missed every shared-session agent, whose id is
+				// `<runId>-s<slug>-<hash>`.
+				row.sessionFile = sessionFile ?? sessionPathById(agentDir, runId, sessionId) ?? row.sessionFile;
 			};
 
 			// Spend is applied per turn as the child reports it, not in one lump
@@ -582,7 +638,6 @@ function startRun(
 					stderrPath: agentErrorPath(agentDir, runId, index),
 					approved: env.approved,
 					signal: spawnSignal,
-					timeoutMs: limits.agentTimeoutMs,
 					onUsage,
 				});
 				recordTranscript();
@@ -617,16 +672,47 @@ function startRun(
 
 	journal({ kind: "run", event: "start" });
 
-	run.settled = runWorkflowScript(params.script, params.args, hooks, controller.signal, { limits }).then(
+	run.settled = runWorkflowScript(params.script, params.args, hooks, controller.signal).then(
 		(result) => {
-			progress.status = "done";
+			// The script returning is not the same as the work happening. Judge the
+			// run on its agents — see tallyAgents for what this is protecting.
+			const tally = tallyAgents(progress);
 			const replayed = result.replayedCount > 0 ? `, ${result.replayedCount} replayed` : "";
+			const resumeHint = `Pass resumeFromRunId: "${runId}" to retry the failed agents without re-running the ones that succeeded — do that rather than writing a new workflow for the same work.`;
+
+			if (allAgentsFailed(tally)) {
+				// A script that swallowed every failure and returned cleanly still
+				// produced nothing. Reported as an error so the panel says so, the
+				// `wait: true` path throws, and the model is pointed at resume
+				// instead of re-authoring.
+				progress.status = "error";
+				progress.error = `all ${tally.failed} agent${tally.failed === 1 ? "" : "s"} failed`;
+				run.outcome = {
+					text: [
+						`Workflow "${name}" (${runId}) produced nothing: all ${tally.failed} agent${tally.failed === 1 ? "" : "s"} failed. The script completed, but no agent did.`,
+						`First failure: ${firstAgentError(progress) ?? "no error recorded"}`,
+						resumeHint,
+					].join("\n"),
+					isError: true,
+				};
+				return;
+			}
+
+			progress.status = "done";
 			// No cost in what the model is told either: a summary carrying a dollar
 			// figure is a summary the model repeats back, which would put the number
 			// in the transcript by another door. Spend still reaches run.json and
 			// `/usage`.
-			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}, ${progress.usage.turns} turns.`;
-			run.outcome = { text: `${summary}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
+			const failures = tally.failed > 0 ? `, ${tally.failed} FAILED` : "";
+			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}${failures}, ${progress.usage.turns} turns.`;
+			// A partial failure stays "done" — the surviving agents did their work —
+			// but it must not read as unqualified success, or the gap is silently
+			// inherited by whatever is built on the result.
+			const partial =
+				tally.failed > 0
+					? `\n\n${tally.failed} of ${tally.total} agents failed, so this result is incomplete. First failure: ${firstAgentError(progress) ?? "no error recorded"}\n${resumeHint}`
+					: "";
+			run.outcome = { text: `${summary}${partial}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
 		},
 		(error) => {
 			const message = error instanceof Error ? error.message : String(error);
@@ -636,7 +722,7 @@ function startRun(
 			run.outcome = {
 				text: [
 					`Workflow "${name}" (${runId}) ${verb} after ${progress.agentCount} agent${progress.agentCount === 1 ? "" : "s"}: ${message}`,
-					`Its journal is kept: pass resumeFromRunId: "${runId}" to continue without re-running the agents that already succeeded.`,
+					`Its journal is kept: pass resumeFromRunId: "${runId}" to continue without re-running the agents that already succeeded — do that rather than writing a new workflow for the same work.`,
 				].join("\n"),
 				isError: true,
 			};
@@ -646,7 +732,7 @@ function startRun(
 		meta.endedAt = Date.now();
 		journal({ kind: "run", event: "end", status: progress.status, error: progress.error });
 		persist();
-		pruneRuns(agentDir, limits.retainRuns);
+		pruneRuns(agentDir, CONFIG.retainRuns);
 		changed();
 		if (!wait) deliverResult(pi, ctx, run);
 	});
@@ -662,26 +748,103 @@ function addedUsage(current: SpawnUsage | undefined, part: SpawnUsage): SpawnUsa
 	return total;
 }
 
+/**
+ * What a workflow agent inherits, most specific first:
+ *
+ *   agent(…, { model })  →  the agentType's own model  →  subagents.json
+ *   `defaults.model`  →  the run default (ultracode.model, else the SESSION's
+ *   model)
+ *
+ * The `defaults` link was missing: agents.ts has always parsed
+ * `subagents.json`'s `{ defaults: { model, reasoning } }`, and tool.ts only ever
+ * read `types`. So a configured default was silently ignored, and every agent
+ * without an explicit model fell straight through to the session model. That is
+ * a reasonable last resort but a poor second choice — the whole point of
+ * declaring a default is that subagents should not all run on the model you
+ * happen to be talking to.
+ */
 function resolveAgentModel(
 	agentOptions: AgentOptions,
 	type: AgentTypeDef | undefined,
+	defaults: AgentTypeRegistry["defaults"],
 	env: RunEnv,
 	ctx: ExtensionContext,
 ): string | undefined {
-	// agent()'s own model wins, then the agent type's, then the run default.
-	const reference = agentOptions.model ?? type?.model;
+	const reference = agentOptions.model ?? type?.model ?? defaults.model;
 	return reference ? resolveReference(reference, ctx) : env.defaultModel;
 }
 
-function resolveThinking(agentOptions: AgentOptions, type: AgentTypeDef | undefined): string | undefined {
-	const level = typeof agentOptions.thinking === "string" ? agentOptions.thinking : type?.thinking;
-	return level && THINKING_LEVELS.has(level) ? level : undefined;
+/**
+ * The same chain for the reasoning level, and the same missing link.
+ *
+ * When nothing supplies a level, `--thinking` is omitted and the child pi falls
+ * back to its OWN `defaultThinkingLevel` from settings.json — so a session
+ * configured for "max" was quietly running every subagent at max reasoning,
+ * which is a third to two thirds of the output tokens in the measured runs.
+ * Honouring `defaults.reasoning` is what makes that configurable at all.
+ */
+export function resolveThinking(
+	agentOptions: AgentOptions,
+	type: AgentTypeDef | undefined,
+	defaults: AgentTypeRegistry["defaults"],
+): string | undefined {
+	// Normalised, and each source tried in turn rather than the first one
+	// present winning outright. Testing `typeof agentOptions.thinking ===
+	// "string"` short-circuited the whole chain, so a script that wrote "High"
+	// or "xHigh" — one capital letter — failed THINKING_LEVELS, returned
+	// undefined, and dropped both the agent type's level and the registry
+	// default. `--thinking` was then omitted and the child fell back to its own
+	// settings.json defaultThinkingLevel, which is the max-reasoning cost blowup
+	// that reading defaults.thinking was added to prevent.
+	const normalise = (value: unknown): string | undefined => {
+		if (typeof value !== "string") return undefined;
+		const level = value.trim().toLowerCase();
+		return THINKING_LEVELS.has(level) ? level : undefined;
+	};
+	return normalise(agentOptions.thinking) ?? normalise(type?.thinking) ?? normalise(defaults.thinking);
+}
+
+/**
+ * The models this session could actually run.
+ *
+ * Routing against every KNOWN model sends fleets to providers there are no
+ * credentials for: a run here resolved "coding" to kimi-coding and every agent
+ * died on "No API key found for kimi-coding" — after spawning, one by one, with
+ * the reason buried in each subagent's stderr. An unusable model is not a
+ * candidate.
+ *
+ * Falls back to the full list if the filter leaves nothing, so an unexpected
+ * auth representation degrades to the old behaviour rather than making every
+ * model unresolvable.
+ */
+export function usableModels(ctx: ExtensionContext): ReturnType<ExtensionContext["modelRegistry"]["getAll"]> {
+	const all = ctx.modelRegistry.getAll();
+	try {
+		const usable = all.filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
+		return usable.length > 0 ? usable : all;
+	} catch {
+		return all;
+	}
 }
 
 function resolveReference(reference: string, ctx: ExtensionContext): string {
-	const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
-	if (!resolved.ok) throw new Error(resolved.error);
-	return `${resolved.model.provider}/${resolved.model.id}`;
+	const mapped = resolveRole(reference, getAgentDir());
+	const usable = usableModels(ctx);
+	const resolved = resolveModelReference(mapped, usable);
+	if (resolved.ok) return `${resolved.model.provider}/${resolved.model.id}`;
+
+	// Resolvable only among models we cannot run: say THAT, at resolution time,
+	// instead of letting every agent spawn and die on a missing key.
+	const all = ctx.modelRegistry.getAll();
+	if (all.length !== usable.length) {
+		const anywhere = resolveModelReference(mapped, all);
+		if (anywhere.ok) {
+			throw new Error(
+				`model "${reference}" resolves to ${anywhere.model.provider}/${anywhere.model.id}, but there are no credentials for ${anywhere.model.provider} — run /login for it, or name a model from a provider you are signed in to`,
+			);
+		}
+	}
+	throw new Error(resolved.error);
 }
 
 /** Hand a finished background run's outcome back to the main agent. */
@@ -702,6 +865,23 @@ function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun
 	} catch {
 		/* a dead session cannot receive results; /workflows still shows them */
 	}
+}
+
+/**
+ * The first agent error in the run, for the outcome the model reads.
+ *
+ * One is enough and more is worse: when a whole fleet dies it is almost always
+ * the same cause repeated (an ambiguous model reference killed all five agents
+ * of every run it touched), and pasting it five times buries the fact that
+ * there is one thing to fix. The rest are in the journal.
+ */
+function firstAgentError(progress: RunProgress): string | undefined {
+	for (const phase of progress.phases) {
+		for (const agent of phase.agents) {
+			if (agent.status === "failed" && agent.error) return agent.error;
+		}
+	}
+	return undefined;
 }
 
 function phaseText(progress: RunProgress): string {

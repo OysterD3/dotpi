@@ -41,6 +41,50 @@ export interface RunProgress {
 	resumedFrom?: string;
 }
 
+export interface AgentTally {
+	total: number;
+	done: number;
+	failed: number;
+	replayed: number;
+}
+
+/**
+ * Count how the agents actually ended, across every phase.
+ *
+ * A script decides for itself what a failed agent means — agent() returns null
+ * and the script may legitimately carry on — so the SCRIPT completing says
+ * nothing about whether the work happened. Five runs in this store finished
+ * with every one of their agents dead (an ambiguous model reference killed each
+ * on spawn) and were reported as "done", 0 turns, $0.00. The model, told a
+ * workflow had succeeded, wrote a fresh one under a new name and paid for the
+ * whole phase again — three and four times over for the same discovery.
+ *
+ * So the outcome is judged on the agents, not on the script returning.
+ */
+export function tallyAgents(progress: RunProgress): AgentTally {
+	const tally: AgentTally = { total: 0, done: 0, failed: 0, replayed: 0 };
+	for (const phase of progress.phases) {
+		for (const agent of phase.agents) {
+			tally.total++;
+			if (agent.status === "failed") tally.failed++;
+			else if (agent.status === "replayed") tally.replayed++;
+			else if (agent.status === "done") tally.done++;
+		}
+	}
+	return tally;
+}
+
+/**
+ * True when the run had agents and every one of them failed.
+ *
+ * Deliberately not "any agent failed": a fan-out where one verifier of five
+ * dies has still done its job, and failing the whole run would throw away four
+ * good results. Total failure is the case that cannot be anything but a defect.
+ */
+export function allAgentsFailed(tally: AgentTally): boolean {
+	return tally.total > 0 && tally.failed === tally.total;
+}
+
 export interface WorkflowRun {
 	progress: RunProgress;
 	controller: AbortController;

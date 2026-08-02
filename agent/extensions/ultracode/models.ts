@@ -80,20 +80,51 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
  * resolves even when its provider has no key yet — the spawn that follows
  * will produce the clearer auth error.
  */
+/**
+ * Name the models a reference could have meant.
+ *
+ * An unresolvable reference fails EVERY agent that uses it, so the message is
+ * the only thing standing between one bad word in a script and a dead fleet.
+ * "matches several models — use a more specific id" does not say which ones, so
+ * the next attempt is another guess: the local run store holds five runs killed
+ * outright by `model "agent"` and `model "coding"`, re-authored under new names
+ * rather than corrected. Listing the candidates turns that into a single fix.
+ */
+function nameCandidates<M extends ModelLike>(matches: readonly M[], limit = 6): string {
+	const shown = matches.slice(0, limit).map((m) => `${m.provider}/${m.id}`);
+	const more = matches.length - shown.length;
+	return `${shown.join(", ")}${more > 0 ? `, and ${more} more` : ""}`;
+}
+
 export function resolveModelReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
 	const exact = exactMatch(reference, models);
 	if (exact === "ambiguous") {
-		return { ok: false, error: `model "${reference}" matches more than one model — qualify it as provider/id` };
+		const canonical = models.filter((m) => `${m.provider}/${m.id}`.toLowerCase() === reference.trim().toLowerCase());
+		const byId = models.filter((m) => m.id.toLowerCase() === reference.trim().toLowerCase());
+		const matches = canonical.length > 1 ? canonical : byId;
+		return {
+			ok: false,
+			error: `model "${reference}" matches more than one model (${nameCandidates(matches)}) — qualify it as provider/id`,
+		};
 	}
 	if (exact) return { ok: true, model: exact };
 
 	const partial = partialMatch(reference, models);
 	if (partial === "ambiguous") {
-		return { ok: false, error: `model "${reference}" matches several models — use a more specific id` };
+		const needle = reference.trim().toLowerCase();
+		const matches = models.filter(
+			(m) => m.id.toLowerCase().includes(needle) || (m.name?.toLowerCase().includes(needle) ?? false),
+		);
+		return {
+			ok: false,
+			error: `model "${reference}" matches several models (${nameCandidates(matches)}) — use one of those ids instead`,
+		};
 	}
 	if (partial) return { ok: true, model: partial };
 
-	return { ok: false, error: `model "${reference}" matched no available model` };
+	// The unknown case is worth candidates too: "agent" and "coding" are not
+	// model names at all, and seeing the real list is what stops the next guess.
+	return { ok: false, error: `model "${reference}" matched no available model (available: ${nameCandidates(models, 8)})` };
 }
 
 /**

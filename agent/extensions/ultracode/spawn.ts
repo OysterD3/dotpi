@@ -25,7 +25,6 @@ import { spawn } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { basename } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { CONFIG } from "./config.ts";
 
 export interface SpawnRequest {
 	prompt: string;
@@ -46,7 +45,6 @@ export interface SpawnRequest {
 	stderrPath?: string;
 	approved: boolean;
 	signal?: AbortSignal;
-	timeoutMs?: number;
 	/**
 	 * Called with the INCREMENT for each assistant turn, as the child reports it.
 	 *
@@ -169,6 +167,23 @@ export function piInvocation(args: string[]): { command: string; args: string[] 
 	return { command: "pi", args };
 }
 
+/**
+ * Make a string safe to pass as an argv slot.
+ *
+ * Node's spawn rejects an argument containing a NUL outright, killing the call
+ * before the child exists. A subagent's prompt carries forked context and
+ * earlier stages' results, so one binary byte that reached a tool result
+ * anywhere upstream would fail every agent that inherits it — a whole fleet,
+ * for a reason that names an argv index rather than the cause.
+ *
+ * A COPY of the same guard in advisor/spawn.ts. Extensions here install
+ * independently and do not import across boundaries, so the four lines are
+ * duplicated rather than shared.
+ */
+export function scrubArg(text: string): string {
+	return text.replace(/\0/g, "");
+}
+
 export function buildArgs(request: SpawnRequest): string[] {
 	const args = ["--mode", "json", "-p", "--no-extensions", "--no-skills", "--offline"];
 	// A session dir plus an exact id is how an agent both inherits its forked
@@ -178,12 +193,15 @@ export function buildArgs(request: SpawnRequest): string[] {
 	} else {
 		args.push("--no-session");
 	}
-	if (request.model) args.push("--model", request.model);
-	if (request.thinking) args.push("--thinking", request.thinking);
-	if (request.tools && request.tools.length > 0) args.push("--tools", request.tools.join(","));
-	if (request.appendSystemPrompt) args.push("--append-system-prompt", request.appendSystemPrompt);
+	if (request.model) args.push("--model", scrubArg(request.model));
+	if (request.thinking) args.push("--thinking", scrubArg(request.thinking));
+	if (request.tools && request.tools.length > 0) args.push("--tools", scrubArg(request.tools.join(",")));
+	// The role prompt comes from subagents.json and the task prompt carries
+	// forked context and earlier results — both are arbitrary text from
+	// elsewhere, so both are scrubbed.
+	if (request.appendSystemPrompt) args.push("--append-system-prompt", scrubArg(request.appendSystemPrompt));
 	args.push(request.approved ? "--approve" : "--no-approve");
-	args.push(request.prompt);
+	args.push(scrubArg(request.prompt));
 	return args;
 }
 
@@ -192,13 +210,40 @@ export function buildArgs(request: SpawnRequest): string[] {
  * an agent without forked context, so it must not become the reported cause of
  * an unrelated failure.
  */
-export function stderrDetail(stderr: string): string {
-	const lines = stderr
+/** A line that is nothing but a file path or URL — a pointer, not a reason. */
+function isBarePointer(line: string): boolean {
+	return /^\S+$/.test(line) && /[/\\]/.test(line);
+}
+
+export function stderrDetail(stderr: string, maxChars = 300): string {
+	// Two different filters. The session notice is benign ALWAYS — it must never
+	// come back, even as a last resort, or an agent that only announced its new
+	// session id reports that announcement as its cause of death. A bare pointer
+	// is merely uninformative, so it is only set aside while something better
+	// survives.
+	//
+	// pi's own errors often END with a documentation path on its own line:
+	// "…use a more specific id" then "…/docs/models.md". Returning the last
+	// line, as this used to, reported the PATH — every model-resolution failure
+	// read `subagent failed: /Users/…/docs/models.md`, naming no cause at all
+	// and sending the reader to a file instead of the sentence above it.
+	//
+	// Up to three surviving lines are kept rather than one, because the message
+	// is frequently split ("No model matched X." / "Available: …").
+	const all = stderr
 		.trim()
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line && !/^Warning: No project session found with id/.test(line));
-	return lines.at(-1) ?? "";
+	const meaningful = all.filter((line) => !isBarePointer(line));
+	const chosen = meaningful.length > 0 ? meaningful.slice(-3) : all.slice(-1);
+	// Dropping the pointer can leave the words that introduced it: "…Use /login
+	// to log into a provider. See:" reads as though something was lost. Trim the
+	// dangling connector rather than the sentence before it.
+	// The colon is required: it is what makes this a connector introducing the
+	// path rather than the last word of a sentence ("nothing left to see").
+	const detail = chosen.join(" ").replace(/\s+see:\s*$/i, "");
+	return detail.length > maxChars ? `${detail.slice(0, maxChars)}…` : detail;
 }
 
 export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
@@ -209,7 +254,6 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 	let stopReason: string | undefined;
 	let errorMessage: string | undefined;
 	let stderr = "";
-	let timedOut = false;
 	let aborted = false;
 	let killSignal: NodeJS.Signals | null = null;
 
@@ -291,12 +335,9 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 			hardKill.unref?.();
 		};
 
-		const timer = setTimeout(() => {
-			timedOut = true;
-			kill();
-		}, request.timeoutMs ?? CONFIG.agentTimeoutMs);
-		timer.unref?.();
-
+		// No wall-clock timer. A subagent runs until it finishes, the user aborts,
+		// or the child dies; a long agent is a slow agent, not a stuck one, and
+		// the ceiling that used to be here only ever killed work in progress.
 		const onAbort = () => {
 			aborted = true;
 			kill();
@@ -307,7 +348,6 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 		}
 
 		child.on("close", (code, signal) => {
-			clearTimeout(timer);
 			request.signal?.removeEventListener("abort", onAbort);
 			buffer += decoder.end();
 			if (buffer.trim()) handleLine(buffer);
@@ -321,9 +361,6 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 	});
 
 	if (aborted) throw new SubagentError("aborted", usage);
-	if (timedOut) {
-		throw new SubagentError(`subagent timed out after ${Math.round((request.timeoutMs ?? CONFIG.agentTimeoutMs) / 1000)}s`, usage);
-	}
 	// A signal-terminated child reports exit code null — that is a failure, not
 	// a zero. And JSON mode exits 0 even when the model errored, so stopReason
 	// is checked as well.

@@ -11,13 +11,25 @@
  * select/input/confirm dialogs cannot bind keys inside themselves, so this uses
  * `ctx.ui.custom()` — a real focused component (prompt.ts) driving a pure state
  * machine (interaction.ts).
+ *
+ * There is deliberately NO settings block and no off switch. An agent that asks
+ * when a decision is genuinely the user's is not a preference to be tuned, it is
+ * how the agent is supposed to behave, and every knob here was a way to end up
+ * back where this started: a tool that exists and never gets used. The only
+ * condition on it is a real user being present to answer, which is a fact about
+ * the session rather than a choice. Everything below is a tunable — a cap, a
+ * placeholder, a badge — not a switch.
  */
 
 /** The tool name the model calls. Snake_case, as requested. */
 export const TOOL_NAME = "ask_user";
 
-/** settings.json key for the ask-user block. */
-export const SETTINGS_KEY = "askUser";
+/**
+ * customType on the hidden message carrying the opening nudge. It marks the
+ * entry in the session file, which is how a resumed session can tell that the
+ * reminder already went out on an earlier turn.
+ */
+export const NUDGE_ENTRY_TYPE = "ask-user-nudge";
 
 /**
  * pi.events channel announcing that a question owns the prompt. Payload:
@@ -69,20 +81,10 @@ export const CONFIG = {
 	screenReserve: 8,
 	/** Row count assumed when the host cannot report one (tests, odd terminals). */
 	assumedRows: 24,
-} as const;
-
-export interface AskUserSettings {
-	/** Kill switch. Default true. When false the tool is not offered at all. */
-	enabled: boolean;
 	/**
-	 * Whether Tab attaches a note to the focused answer. Default true. A note no
-	 * longer costs an extra prompt — it is typed inline — so turning this off
-	 * only removes the affordance, it does not shorten the flow.
+	 * The opening nudge fires at most once in this many interactive turns.
+	 * Guards against a session of successive task statements each pulling the
+	 * same reminder in; the previous one is still in context and still applies.
 	 */
-	allowNotes: boolean;
-}
-
-export const DEFAULT_SETTINGS: AskUserSettings = {
-	enabled: true,
-	allowNotes: true,
-};
+	nudgeCooldownTurns: 8,
+} as const;

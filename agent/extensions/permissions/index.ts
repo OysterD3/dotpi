@@ -575,12 +575,17 @@ export function buildOptions(tool: string, target: string, decision: Decision): 
 
 	const findings = decision.findings ?? [];
 	if (findings.length > 0) {
-		const reasons = [...new Set(findings.map((finding) => finding.reason))];
-		const described =
-			reasons.length === 1
-				? `anything that ${reasons[0]}`
-				: `anything that ${reasons.slice(0, 2).join(" or ")}${reasons.length > 2 ? ` (+${reasons.length - 2} more)` : ""}`;
-		options.push({ label: `Allow ${described} for the rest of this session`, grant: "pattern" });
+		// This is the only STICKY option for a command whose text changes every
+		// time, so it has to read like one. Interpolating the raw reason gave
+		// "Allow anything that targets are computed at runtime, so what it
+		// affects cannot be checked in advance for the rest of this session" —
+		// a run-on that nobody recognises as "allow this whole class", so the
+		// same class got approved once, over and over. A finding may carry a
+		// short noun-phrase label for exactly this; the reason is the fallback,
+		// and reads correctly for every other pattern.
+		const described = [...new Set(findings.map((finding) => finding.label ?? `anything that ${finding.reason}`))];
+		const shown = described.length === 1 ? described[0] : `${described.slice(0, 2).join(" or ")}${described.length > 2 ? ` (+${described.length - 2} more)` : ""}`;
+		options.push({ label: `Allow ${shown} for the rest of this session`, grant: "pattern" });
 	} else if (decision.rule !== undefined) {
 		options.push({
 			label: `Allow anything matching ${decision.rule} for the rest of this session`,

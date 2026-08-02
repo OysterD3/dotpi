@@ -29,7 +29,6 @@ process.argv[1] =
 
 const { registerWorkflowTool } = await import("./tool.ts");
 const { RunRegistry } = await import("./runs.ts");
-const { DEFAULT_LIMITS } = await import("./config.ts");
 const { listRuns, readJournalLines } = await import("./store.ts");
 
 const CWD = mkdtempSync(join(tmpdir(), "ultracode-live-"));
@@ -55,7 +54,7 @@ const fakePi = {
 registerWorkflowTool(fakePi as any, {
 	registry,
 	agentDir: AGENT_DIR,
-	settings: () => ({ keywordTrigger: true, limits: DEFAULT_LIMITS }),
+	settings: () => ({ keywordTrigger: true }),
 });
 const tool = tools.get("workflow")!;
 
