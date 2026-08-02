@@ -535,7 +535,7 @@ So a setting names a **role**, and roles are defined per provider:
 "models": {
   "active": "openai",
   "providers": {
-    "openai":    { "session": "openai-codex/gpt-5.6-sol", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-luna", "cheap": "openai-codex/gpt-5.4-mini" },
+    "openai":    { "session": "openai-codex/gpt-5.6-sol", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-terra", "cheap": "openai-codex/gpt-5.6-luna" },
     "anthropic": { "session": "anthropic/claude-opus-5",  "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" }
   }
 },
@@ -932,7 +932,7 @@ instruction holds for later workflows until you change it.
 {
   "ultracode": {
     "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
-    "model": "gpt-5.4-mini",  // optional default for agents no request routes (a resolved reference)
+    "model": "fast",          // optional default for agents no request routes; a role or a reference
     "limits": {               // all optional; anything absent keeps its default
       "maxConcurrency": 8,    // default min(16, cores − 2)
       "maxAgentsPerRun": 1000,
@@ -1170,11 +1170,11 @@ runs in its own context and reports back.
 ```
 Subagent           Model         Reasoning  Purpose
 ───────────────────────────────────────────────────
-code-explorer      gpt-5.6-luna  High       Read-only codebase discovery and investigation
-quick-implementer  gpt-5.6-luna  High       Small, well-defined changes in one or two files
-implementer        gpt-5.6-luna  High       Features and bug fixes with tests and validation
-code-reviewer      gpt-5.6-sol   Low        Review diffs for correctness, security, and quality
-commit-pusher      gpt-5.4-mini  Low        Stage, commit, and push completed changes
+code-explorer      gpt-5.6-terra  High      Read-only codebase discovery and investigation
+quick-implementer  gpt-5.6-terra  High      Small, well-defined changes in one or two files
+implementer        gpt-5.6-terra  High      Features and bug fixes with tests and validation
+code-reviewer      gpt-5.6-sol    Low       Review diffs for correctness, security, and quality
+commit-pusher      gpt-5.6-luna   Low       Stage, commit, and push completed changes
 ```
 
 The shipped config names **roles** rather than models (see the `provider` extension): `fast` for

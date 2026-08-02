@@ -10,8 +10,8 @@
       "openai": {
         "session": "openai-codex/gpt-5.6-sol",
         "frontier": "openai-codex/gpt-5.6-sol",
-        "fast": "openai-codex/gpt-5.6-luna",
-        "cheap": "openai-codex/gpt-5.4-mini"
+        "fast": "openai-codex/gpt-5.6-terra",
+        "cheap": "openai-codex/gpt-5.6-luna"
       },
       "anthropic": {
         "session": "anthropic/claude-opus-5",
@@ -68,21 +68,7 @@
     "steer": true,
     "thinking": "low",
     "maxWords": 700,
-    "compactAtPercent": 70,
+    "compactAtPercent": 80,
     "compactAtTokens": 0
-  },
-  "contextBudget": {
-    "enabled": true,
-    "maxChars": 60000,
-    "headShare": 0.6,
-    "tools": [
-      "bash",
-      "grep",
-      "find",
-      "ls",
-      "read",
-      "web_fetch",
-      "web_search"
-    ]
   }
 }
