@@ -24,13 +24,14 @@
     },
     {
       "name": "code-reviewer",
-      "model": "session",
+      "model": "frontier",
       "reasoning": "low",
       "purpose": "Review diffs for correctness, security, and quality",
       "tools": ["read", "grep", "find", "ls", "bash"]
     },
     {
       "name": "commit-pusher",
+      "model": "cheap",
       "reasoning": "low",
       "purpose": "Stage, commit, and push completed changes",
       "tools": ["read", "bash"]

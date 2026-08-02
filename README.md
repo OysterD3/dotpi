@@ -1174,8 +1174,14 @@ code-explorer      gpt-5.6-luna  High       Read-only codebase discovery and inv
 quick-implementer  gpt-5.6-luna  High       Small, well-defined changes in one or two files
 implementer        gpt-5.6-luna  High       Features and bug fixes with tests and validation
 code-reviewer      gpt-5.6-sol   Low        Review diffs for correctness, security, and quality
-commit-pusher      gpt-5.6-luna  Low        Stage, commit, and push completed changes
+commit-pusher      gpt-5.4-mini  Low        Stage, commit, and push completed changes
 ```
+
+The shipped config names **roles** rather than models (see the `provider` extension): `fast` for
+the three that do the engineering, `frontier` for the reviewer, `cheap` for the one that only runs
+git. `code-reviewer` names `frontier` and not `session` deliberately — reviewing diffs wants the
+best model available, so tying it to whatever you happen to be chatting with would quietly downgrade
+it the moment you moved the session to something quicker.
 
 Each subagent runs as a headless `pi` subprocess with its `--model`, `--thinking` (the reasoning
 level), and `--tools` (the allowlist), plus its role prompt via `--append-system-prompt` — the same
@@ -1292,50 +1298,6 @@ which is expected here.
 | `config.ts` | Settings and the tool list (write/edit excluded) |
 | `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
 
-**`agent/extensions/context-budget/`** — caps what one tool result contributes to the context window.
-
-Easy to confuse with `compact-tools`, and worth keeping straight: **compact-tools changes what you
-see, this changes what the model receives.** A `bash` that returns a whole build log is one row on
-screen either way, but without this it is still tens of thousands of tokens in every subsequent
-request. Over budget, the result is replaced by its head and tail with a marker between them naming
-the way to the rest.
-
-**The timing is the whole design.** The obvious way to shrink a context is to walk it on the
-`context` event and drop what has gone stale — which fights the prompt cache, because the cached
-prefix is only valid up to the first changed token. Editing a message that is already in context
-re-bills everything after it as fresh input. Measured on this machine, cached reads run $0.5/M
-against $5/M fresh, so invalidating a 100k prefix costs about **$0.45 once to save $0.0025 a turn** —
-it pays back after roughly 180 turns. Eager trimming loses money.
-
-Capping at `tool_result`, before the message has ever been sent, has none of that: the result enters
-context already capped and is never rewritten, so no prefix is ever invalidated and the saving is
-pure. A result that already fits returns `undefined` — pi's signal for "nothing to change" — rather
-than an identical copy, and that distinction is asserted in the tests, because a version that
-returned a copy every time would look correct while throwing away the property the extension exists
-for.
-
-Head **and** tail, because the two tools that produce enormous output put the answer at opposite
-ends: a test run fails at the bottom, a listing is most informative at the top. `write` and `edit`
-are not capped — their results are short and their inputs are the change itself.
-
-```jsonc
-{
-  "contextBudget": {
-    "enabled": true,      // optional; false sends every result in full
-    "maxChars": 60000,    // optional; ~15k tokens per result
-    "headShare": 0.6,     // optional; 0..1, the rest is taken from the tail
-    "tools": ["bash", "grep", "find", "ls", "read", "web_fetch", "web_search"]
-  }
-}
-```
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Settings, tool filter, the `tool_result` hook |
-| `budget.ts` | The capping and the elision marker; why it happens at creation (pure) |
-| `config.ts` | Settings and defaults |
-| `context-budget.test.ts` | Capping, edges, settings, and the returns-nothing-when-it-fits property |
-
 **`agent/extensions/compaction/`** — lets the summary shed as well as accumulate, and compacts before
 the context is enormous.
 
@@ -1382,7 +1344,7 @@ a separate trigger, expressed the two ways the question actually gets asked:
     "steer": true,             // optional; false leaves pi's summary prompt alone
     "thinking": "low",         // optional; the summarizer's level, NOT the session's
     "maxWords": 700,           // optional; the budget given to the summary
-    "compactAtPercent": 70,    // optional; 0 disables
+    "compactAtPercent": 80,    // optional; 0 disables
     "compactAtTokens": 0       // optional; hard ceiling whatever the window. 0 disables
   }
 }
