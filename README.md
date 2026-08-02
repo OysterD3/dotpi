@@ -536,7 +536,8 @@ So a setting names a **role**, and roles are defined per provider:
   "active": "openai",
   "providers": {
     "openai":    { "session": "openai-codex/gpt-5.6-sol", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-terra", "cheap": "openai-codex/gpt-5.6-luna" },
-    "anthropic": { "session": "anthropic/claude-opus-5",  "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" }
+    "anthropic": { "session": "anthropic/claude-opus-5",  "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" },
+    "qoder":     { "session": "qoder/ultimate",           "frontier": "qoder/ultimate",           "fast": "qoder/auto",                "cheap": "qoder/lite" }
   }
 },
 
@@ -1177,9 +1178,10 @@ code-reviewer      gpt-5.6-sol    Low       Review diffs for correctness, securi
 commit-pusher      gpt-5.6-luna   Low       Stage, commit, and push completed changes
 ```
 
-The shipped config names **roles** rather than models (see the `provider` extension): `fast` for
-the three that do the engineering, `frontier` for the reviewer, `cheap` for the one that only runs
-git. `code-reviewer` names `frontier` and not `session` deliberately — reviewing diffs wants the
+Every subagent names a **role** rather than a model (see the `provider` extension): `fast` for the
+three that do the engineering, `frontier` for the reviewer, `cheap` for the one that only runs git.
+Each says its own role even where `defaults` would supply the same one — a subagent's tier is part
+of what it is, and reading it off the agent beats inferring it from a default three entries up. `code-reviewer` names `frontier` and not `session` deliberately — reviewing diffs wants the
 best model available, so tying it to whatever you happen to be chatting with would quietly downgrade
 it the moment you moved the session to something quicker.
 

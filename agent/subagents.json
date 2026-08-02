@@ -6,18 +6,21 @@
   "agents": [
     {
       "name": "code-explorer",
+      "model": "fast",
       "reasoning": "high",
       "purpose": "Read-only codebase discovery and investigation",
       "tools": ["read", "grep", "find", "ls"]
     },
     {
       "name": "quick-implementer",
+      "model": "fast",
       "reasoning": "high",
       "purpose": "Small, well-defined changes in one or two files",
       "tools": ["read", "grep", "find", "ls", "edit", "write", "bash"]
     },
     {
       "name": "implementer",
+      "model": "fast",
       "reasoning": "high",
       "purpose": "Features and bug fixes with tests and validation",
       "tools": ["read", "grep", "find", "ls", "edit", "write", "bash"]

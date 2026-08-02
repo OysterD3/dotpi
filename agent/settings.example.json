@@ -18,6 +18,12 @@
         "frontier": "anthropic/claude-opus-5",
         "fast": "anthropic/claude-sonnet-5",
         "cheap": "anthropic/claude-haiku-4-5"
+      },
+      "qoder": {
+        "session": "qoder/ultimate",
+        "frontier": "qoder/ultimate",
+        "fast": "qoder/auto",
+        "cheap": "qoder/lite"
       }
     }
   },
