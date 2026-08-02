@@ -7,6 +7,9 @@
  * installable.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 export type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
 export type Resolution<M> = { ok: true; model: M } | { ok: false; error: string };
@@ -78,4 +81,34 @@ export function resolveModelReference<M extends ModelLike>(reference: string, mo
 /** Canonical "provider/id" reference for a resolved model, for pi's --model flag. */
 export function modelRef(model: ModelLike): string {
 	return `${model.provider}/${model.id}`;
+}
+
+/**
+ * Map a model reference through the active provider profile in settings.json.
+ *
+ * A COPY. The `models` block is a data contract shared by string, not a module —
+ * extensions here install independently and may not import across boundaries —
+ * so this fifteen-line reader is duplicated into every extension that resolves a
+ * model. See agent/extensions/provider/roles.ts for the original and the shape.
+ *
+ * Roles are checked before any matching, so a role always beats a model whose id
+ * merely contains the same text. Every failure returns the reference unchanged:
+ * no block, a malformed one, an unreadable file, or an undefined role all mean
+ * "this was a literal model reference", which is what it meant before roles.
+ */
+export function resolveRole(reference: string, agentDir: string): string {
+	try {
+		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
+		const block = raw.models as { active?: unknown; providers?: unknown } | undefined;
+		if (!block || typeof block !== "object") return reference;
+		const active = typeof block.active === "string" ? block.active : undefined;
+		const providers = block.providers as Record<string, Record<string, unknown>> | undefined;
+		if (!active || !providers || typeof providers !== "object") return reference;
+		const profile = providers[active];
+		if (!profile || typeof profile !== "object") return reference;
+		const mapped = profile[reference];
+		return typeof mapped === "string" && mapped.trim().length > 0 ? mapped.trim() : reference;
+	} catch {
+		return reference;
+	}
 }

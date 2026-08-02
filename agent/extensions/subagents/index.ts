@@ -26,7 +26,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { type SubagentsSettings, TOOL_NAME } from "./config.ts";
 import { pickName, runWizard, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
-import { modelRef, resolveModelReference } from "./models.ts";
+import { modelRef, resolveModelReference, resolveRole } from "./models.ts";
 import { effective, findAgent, loadSubagents, type ParseResult, saveSubagents, storePath } from "./registry.ts";
 import { registerTaskTool } from "./tool.ts";
 
@@ -62,7 +62,7 @@ export default function (pi: ExtensionAPI) {
 			const eff = effective(agent, settings.defaults);
 			let model: string;
 			if (eff.model) {
-				const resolved = resolveModelReference(eff.model, models);
+				const resolved = resolveModelReference(resolveRole(eff.model, getAgentDir()), models);
 				model = resolved.ok ? resolved.model.id : `⚠ ${eff.model}`;
 			} else {
 				model = "(session default)";

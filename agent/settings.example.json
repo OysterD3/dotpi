@@ -4,14 +4,27 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "medium",
   "externalEditor": "nvim",
+  "models": {
+    "active": "openai",
+    "providers": {
+      "openai": {
+        "session": "openai-codex/gpt-5.6-sol",
+        "fast": "openai-codex/gpt-5.6-luna",
+        "cheap": "openai-codex/gpt-5.4-mini"
+      },
+      "anthropic": {
+        "session": "anthropic/claude-opus-5",
+        "fast": "anthropic/claude-sonnet-5",
+        "cheap": "anthropic/claude-haiku-4-5"
+      }
+    }
+  },
   "scratchpad": {
     "enabled": true,
     "retainDays": 7
   },
-
   "permissions": {
     "defaultMode": "askDestructive",
-
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.*)",
@@ -22,9 +35,7 @@
       "Write(**/.env)",
       "Edit(**/.env)"
     ],
-
     "ask": [],
-
     "allow": [
       "Bash(git status *)",
       "Bash(git diff *)",
@@ -32,17 +43,20 @@
       "Bash(pnpm test *)",
       "Bash(pnpm lint *)"
     ],
-
     "allowDestructive": [],
-
     "destructiveOverridesAllow": true,
     "askWithoutUi": "deny",
-
     "auto": {
-      "model": "openai-codex/gpt-5.4-mini",
+      "model": "cheap",
       "skipReadOnly": true,
       "onError": "allow",
       "timeoutMs": 10000
     }
+  },
+  "advisor": {
+    "model": "session"
+  },
+  "goal": {
+    "model": "cheap"
   }
 }

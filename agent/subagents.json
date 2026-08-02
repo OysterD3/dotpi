@@ -1,6 +1,6 @@
 {
   "defaults": {
-    "model": "openai-codex/gpt-5.6-luna",
+    "model": "fast",
     "reasoning": "high"
   },
   "agents": [
@@ -24,7 +24,7 @@
     },
     {
       "name": "code-reviewer",
-      "model": "openai-codex/gpt-5.6-sol",
+      "model": "session",
       "reasoning": "low",
       "purpose": "Review diffs for correctness, security, and quality",
       "tools": ["read", "grep", "find", "ls", "bash"]

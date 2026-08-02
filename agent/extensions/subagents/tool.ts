@@ -11,10 +11,11 @@
  * schema enum, so the set can change with config without a schema rebuild.
  */
 import { Type } from "typebox";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
 import { TOOL_NAME } from "./config.ts";
-import { modelRef, resolveModelReference } from "./models.ts";
+import { modelRef, resolveModelReference, resolveRole } from "./models.ts";
 import { effective, findAgent } from "./registry.ts";
 import type { SubagentsSettings } from "./config.ts";
 import { runSubagent, type SpawnUsage, SubagentError } from "./spawn.ts";
@@ -84,7 +85,7 @@ export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): vo
 			const { model: modelReference, reasoning } = effective(agent, settings.defaults);
 			let model: string | undefined;
 			if (modelReference) {
-				const resolved = resolveModelReference(modelReference, ctx.modelRegistry.getAll());
+				const resolved = resolveModelReference(resolveRole(modelReference, getAgentDir()), ctx.modelRegistry.getAll());
 				if (!resolved.ok) {
 					throw new Error(`Subagent "${name}" model "${modelReference}" could not be used: ${resolved.error}.`);
 				}

@@ -15,11 +15,12 @@
  * See progress.ts.
  */
 import { Type } from "typebox";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
 import { CONFIG, TOOL_NAME } from "./config.ts";
 import { ADVISOR_PROMPT_SNIPPET, ADVISOR_TOOL_GUIDANCE, buildReviewerPrompt } from "./guidance.ts";
-import { modelRef, resolveModelReference } from "./models.ts";
+import { modelRef, resolveModelReference, resolveRole } from "./models.ts";
 import { advisorStatus, emptyProgress, type ReviewerProgress } from "./progress.ts";
 import { runReviewer, type SpawnUsage, SubagentError } from "./spawn.ts";
 import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
@@ -63,7 +64,7 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 			}
 
 			const models = ctx.modelRegistry.getAll();
-			const resolved = resolveModelReference(reference, models);
+			const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), models);
 			if (!resolved.ok) {
 				throw new Error(`Advisor model "${reference}" could not be used: ${resolved.error}.`);
 			}

@@ -47,9 +47,10 @@
  * in a cache file that accumulates invisibly.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { classify, selectModel, type Spend } from "./classify.ts";
 import { AUTO } from "./config.ts";
+import { resolveRole } from "./model.ts";
 import { buildQuestion } from "./prompt.ts";
 import type { AutoSettings } from "./settings.ts";
 import type { Verdict } from "./verdict.ts";
@@ -113,8 +114,15 @@ export class AutoClassifier {
 
 	/** Which model to ask, resolving `permissions.auto.model` at most once. */
 	private modelFor(ctx: ExtensionContext, settings: AutoSettings): { model: NonNullable<ExtensionContext["model"]> } | { error: string } {
-		const reference = settings.model;
-		if (!reference) return ctx.model ? { model: ctx.model } : { error: "no model selected" };
+		if (!settings.model) return ctx.model ? { model: ctx.model } : { error: "no model selected" };
+
+		// The role is mapped on every call, and the expensive part — walking the
+		// registry — is what gets memoised, keyed on the mapped reference. That
+		// ordering is what lets `/provider` take effect mid-session: caching the
+		// role name instead would keep answering from the old provider's model
+		// until the next reload, which is exactly the half-applied state that
+		// gets blamed on the model rather than on the config.
+		const reference = resolveRole(settings.model, getAgentDir());
 		if (this.resolved?.reference === reference) return { model: this.resolved.model };
 
 		const picked = selectModel(ctx, reference);

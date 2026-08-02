@@ -35,9 +35,10 @@
  */
 
 import { completeSimple, isContextOverflow } from "@earendil-works/pi-ai/compat";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
-import { resolveModel } from "./model.ts";
+import { resolveModel, resolveRole } from "./model.ts";
 import { JUDGE_SYSTEM, judgeQuestion } from "./prompts.ts";
 import { buildSections, fitSections, type TranscriptEntry } from "./transcript.ts";
 
@@ -121,7 +122,7 @@ export function selectModel(
 	reference: string | undefined,
 ): { model: NonNullable<ExtensionContext["model"]> } | { error: string } {
 	if (reference) {
-		const resolved = resolveModel(reference, ctx.modelRegistry.getAll());
+		const resolved = resolveModel(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
 		if (resolved.ok) return { model: resolved.model };
 		return { error: resolved.error };
 	}

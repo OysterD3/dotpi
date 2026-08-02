@@ -34,6 +34,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { loadAgentTypes, type AgentTypeDef } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
@@ -41,7 +42,7 @@ import { CONFIG, SPEND_CHANNEL, SPEND_SOURCE, USAGE_PERSIST_MS, WORKFLOW_DIR, ty
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import { runWorkflowScript, validateScript, type AgentOptions, type EngineHooks } from "./engine.ts";
 import { ReplayIndex, type JournalInput } from "./journal.ts";
-import { resolveModelReference } from "./models.ts";
+import { resolveModelReference, resolveRole } from "./models.ts";
 import { newProgress, PauseGate, RunRegistry, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
 import { startedLabel } from "./panel.ts";
 import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
@@ -678,7 +679,7 @@ function resolveThinking(agentOptions: AgentOptions, type: AgentTypeDef | undefi
 }
 
 function resolveReference(reference: string, ctx: ExtensionContext): string {
-	const resolved = resolveModelReference(reference, ctx.modelRegistry.getAll());
+	const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
 	if (!resolved.ok) throw new Error(resolved.error);
 	return `${resolved.model.provider}/${resolved.model.id}`;
 }

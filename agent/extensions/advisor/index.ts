@@ -35,7 +35,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AdvisorSettings, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
-import { modelRef, resolveModelReference, sameModel } from "./models.ts";
+import { modelRef, resolveModelReference, sameModel, resolveRole } from "./models.ts";
 import { registerAdvisorTool } from "./tool.ts";
 
 export function loadSettings(agentDir: string): AdvisorSettings {
@@ -83,7 +83,7 @@ export default function (pi: ExtensionAPI) {
 		const reference = effectiveReference();
 		let activeId: string | undefined;
 		if (reference) {
-			const resolved = resolveModelReference(reference, ctx.modelRegistry.getAll());
+			const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
 			if (resolved.ok) activeId = resolved.model.id;
 		}
 		const active = pi.getActiveTools();
@@ -113,7 +113,7 @@ export default function (pi: ExtensionAPI) {
 		if (!settings.enabled) return "Advisor is disabled (advisor.enabled is false in settings).";
 		const reference = effectiveReference();
 		if (!reference) return "Advisor is off. Set a reviewer model with /advisor <model>, or advisor.model in settings.";
-		const resolved = resolveModelReference(reference, ctx.modelRegistry.getAll());
+		const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
 		if (!resolved.ok) return `Advisor model "${reference}" is not available: ${resolved.error}.`;
 		const source = sessionModel ? "session override" : pi.getFlag("advisor") ? "--advisor flag" : "advisor.model setting";
 		const selfNote = sameModel(resolved.model, ctx.model)
@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Otherwise the argument is a model reference to set for the session.
-			const resolved = resolveModelReference(arg, ctx.modelRegistry.getAll());
+			const resolved = resolveModelReference(resolveRole(arg, getAgentDir()), ctx.modelRegistry.getAll());
 			if (!resolved.ok) {
 				ctx.ui.notify(`Cannot use "${arg}" as an advisor: ${resolved.error}.`, "error");
 				return;

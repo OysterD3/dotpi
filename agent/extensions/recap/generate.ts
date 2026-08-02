@@ -8,9 +8,10 @@
  */
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
-import { resolveModel } from "./model.ts";
+import { resolveModel, resolveRole } from "./model.ts";
 import { RECAP_SYSTEM, recapRequest } from "./prompts.ts";
 import { loadSettings } from "./settings.ts";
 import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
@@ -51,7 +52,7 @@ export async function generateRecap(ctx: ExtensionContext, options: GenerateOpti
 	let model = ctx.model as ModelLike | undefined;
 	if (settings.model) {
 		const all = ctx.modelRegistry.getAll() as unknown as ModelLike[];
-		const resolved = resolveModel(settings.model, all);
+		const resolved = resolveModel(resolveRole(settings.model, getAgentDir()), all);
 		if (!resolved.ok) return { kind: "failed", reason: resolved.error };
 		model = resolved.model;
 	}

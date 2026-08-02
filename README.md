@@ -521,6 +521,59 @@ nor, in auto mode, anything a model was talked out of naming.
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
+**`agent/extensions/provider/`** — adds `/provider`: switch every model this config uses, at once.
+
+Six extensions here resolve a model reference of their own — advisor, goal, permissions' auto
+classifier, recap, subagents, ultracode — and pi has `defaultProvider`/`defaultModel` on top.
+Written out concretely, changing provider means finding eight fully-qualified `provider/id` strings
+across two files, and every one you miss goes on quietly billing the old provider.
+
+So a setting names a **role**, and roles are defined per provider:
+
+```jsonc
+// agent/settings.json
+"models": {
+  "active": "openai",
+  "providers": {
+    "openai":    { "session": "openai-codex/gpt-5.6-sol",  "fast": "openai-codex/gpt-5.6-luna", "cheap": "openai-codex/gpt-5.4-mini" },
+    "anthropic": { "session": "anthropic/claude-opus-5",   "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" }
+  }
+},
+
+"advisor":     { "model": "session" },
+"permissions": { "auto": { "model": "cheap" } }
+```
+
+`/provider anthropic` then moves all of it, including the live session model, and prints what each
+role became. `/provider` on its own shows where things stand. Role names are yours — `session` is
+the only reserved one, and it is what `/provider` writes into pi's `defaultProvider`/`defaultModel`
+and pushes into the running session with `setModel`. Those two keys can't be roles themselves: pi
+resolves them before any extension runs.
+
+**The map is a data contract, not a module.** Every extension here installs independently and may
+not import across boundaries, so each carries its own fifteen-line reader — the same arrangement as
+the `usage:spend` channel. Consequences worth knowing: this extension is optional (roles work
+without it; you just edit `models.active` by hand), and `provider.test.ts` asserts the six copies
+have not drifted from the original, so a fix in one is not silently missing from the others.
+
+Every failure returns the reference untouched — no block, a malformed one, an unreadable
+settings.json, a role nobody defined. So the feature can be absent, broken, or half-configured and
+model resolution behaves exactly as it did before roles existed. A concrete `provider/id` still
+works everywhere, for the settings you want pinned regardless of provider.
+
+Two things the switch report says out loud, because both are how you would otherwise find out from
+a bill: a role the new profile does **not** define stops being a role and starts being read as a
+literal model reference, and a `session` role whose provider has no API key leaves the live model
+where it was. `setModel` returns false in that case, so that is reported rather than guessed.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | The `/provider` command |
+| `roles.ts` | Reading the block; **`resolveRole` is the copied part** |
+| `settings.ts` | Rewriting settings.json — atomically, preserving every key it does not own |
+| `config.ts` | The contract and the reserved `session` role |
+| `provider.test.ts` | Fallbacks, the switch plan, the writer, and copy drift |
+
 **`agent/extensions/scratchpad/`** — gives the agent somewhere to put files that are not your work.
 
 An agent constantly needs a file that is not part of the project: a script to check a hypothesis,
