@@ -1911,6 +1911,17 @@ console.log("\n--- tool: the reasoning-level chain ---");
 	);
 }
 
+console.log("\n--- runs: the shape measures ---");
+{
+	const p = newProgress("wf-x", "demo");
+	check("peak starts at zero", p.peakConcurrency, 0);
+	check("depth starts at zero", p.deepestAgentTurns, 0);
+	// These are the two numbers that separate a fleet from a queue and a split
+	// task from one agent grinding. Both were previously unrecoverable from
+	// run.json — only by hand-parsing journal timestamps.
+	check("both are persisted fields on progress", "peakConcurrency" in p && "deepestAgentTurns" in p, true);
+}
+
 console.log("\n--- journal: the key covers what options only NAME ---");
 {
 	const opts = { agentType: "explorer", context: { files: ["a.ts"] } };

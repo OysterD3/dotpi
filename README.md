@@ -1708,6 +1708,29 @@ at plain `vim` — and changing `$EDITOR` to suit pi would change it for git, cr
 else too. Keep it as strict JSON: pi parses settings with `JSON.parse`, so a `//` comment silently
 breaks the whole file.
 
+## Run shape
+
+`run.json` records two numbers beyond the totals, and the workflow result reports them back to the
+model that wrote the script:
+
+- **`peakConcurrency`** — the most agents ever in flight at once.
+- **`deepestAgentTurns`** — the turn count of the single deepest agent.
+
+They exist because they are what separates a fleet from a queue, and a split task from one agent
+grinding, and neither was recoverable from `run.json` before — only by hand-parsing timestamps out
+of `journal.jsonl`. That is precisely why a 53-minute run that was **one agent deep against a
+10-slot scheduler** went unnoticed: every other field looked like a healthy run.
+
+Two diagnostics ride on them, and only fire when earned:
+
+```
+Every one of the 4 agents ran alone: peak concurrency was 1, so this was a queue, not a fleet.
+One agent used 90 turns. Past ~40 that is a decomposition failure showing up as wall-clock.
+```
+
+The model sees these in its own result, which is the only feedback channel that reaches it without
+someone noticing first and saying so.
+
 ## Gating a workflow on facts
 
 `shell(command, opts?)` runs a command in the **host** process and returns

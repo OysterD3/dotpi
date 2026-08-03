@@ -569,6 +569,14 @@ console.log("\n--- workflow tool: wait mode ---");
 	const result = await tool.execute("t1", { script, args: { n: 21 }, wait: true }, undefined, undefined, ctx);
 	const text = result.content[0].text as string;
 	check("summary line", /^Workflow "demo" \(wf-[a-z0-9]+-\d+\) finished: 0 agents/.test(text), true);
+	// The shape of the run is reported back to the script's author. Peak
+	// concurrency was previously recoverable only by hand-parsing journal
+	// timestamps, which is why a 53-minute one-agent-deep run went unnoticed.
+	check("summary reports peak concurrency", /peak concurrency \d+/.test(text), true);
+	// No agents here, so neither diagnostic should fire — they must not nag on a
+	// run that has nothing wrong with its shape.
+	check("no queue warning on a 0-agent run", text.includes("was a queue, not a fleet"), false);
+	check("no depth warning either", text.includes("decomposition failure"), false);
 	check("result JSON in content", text.includes('"answer": 42'), true);
 	check("details status done", result.details.status, "done");
 	check("phase recorded in details", result.details.phases.map((p: any) => p.title), ["Go"]);

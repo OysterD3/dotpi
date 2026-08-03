@@ -36,6 +36,19 @@ export interface RunProgress {
 	logs: string[];
 	agentCount: number;
 	replayedCount: number;
+	/**
+	 * The most agents that were ever in flight at once.
+	 *
+	 * Recorded because it is the number that distinguishes a fleet from a queue,
+	 * and until now it could only be recovered by hand-parsing journal
+	 * timestamps. A run with eight agents and a peak of 1 is eight agents that
+	 * ran one after another — the shape that turned a 15-minute job into 53
+	 * minutes here, and which looks identical to a healthy run in every other
+	 * field we record.
+	 */
+	peakConcurrency: number;
+	/** Turns used by the single deepest agent; a proxy for "one agent ground". */
+	deepestAgentTurns: number;
 	usage: SpawnUsage;
 	error?: string;
 	resumedFrom?: string;
@@ -106,6 +119,8 @@ export function newProgress(runId: string, name: string): RunProgress {
 		logs: [],
 		agentCount: 0,
 		replayedCount: 0,
+		peakConcurrency: 0,
+		deepestAgentTurns: 0,
 		usage: emptyUsage(),
 	};
 }

@@ -476,6 +476,8 @@ function startRun(
 		meta.usage = progress.usage;
 		meta.error = progress.error;
 		meta.replayedCount = progress.replayedCount;
+		meta.peakConcurrency = progress.peakConcurrency;
+		meta.deepestAgentTurns = progress.deepestAgentTurns;
 		lastPersist = Date.now();
 		writeMeta(agentDir, meta);
 	};
@@ -548,8 +550,13 @@ function startRun(
 		return entry.agents;
 	};
 
+	/** In-flight agents, so peakConcurrency is measured rather than inferred. */
+	let inFlight = 0;
+
 	const hooks: EngineHooks = {
 		agentStart: (index, label, phase) => {
+			inFlight++;
+			progress.peakConcurrency = Math.max(progress.peakConcurrency, inFlight);
 			const row: AgentRow = { index, label, status: "running", phase: phase ?? currentPhase, startedAt: Date.now() };
 			rows.set(index, row);
 			phaseRows(row.phase ?? "Agents").push(row);
@@ -557,6 +564,7 @@ function startRun(
 			changed();
 		},
 		agentEnd: (index, ok) => {
+			inFlight = Math.max(0, inFlight - 1);
 			const row = rows.get(index);
 			if (row) row.status = ok ? "done" : "failed";
 			changed();
@@ -569,6 +577,10 @@ function startRun(
 				row.error = outcome.error;
 				row.options = outcome.options;
 				row.agentType = outcome.options.agentType;
+				// The deepest single agent, not the sum. A run's total turns rise
+				// with breadth, which is fine; one agent at 90 turns is the shape
+				// that means the work was never split.
+				progress.deepestAgentTurns = Math.max(progress.deepestAgentTurns, row.usage?.turns ?? 0);
 			}
 			if (outcome.status === "replayed") progress.replayedCount++;
 			journal({
@@ -846,7 +858,28 @@ function startRun(
 			// in the transcript by another door. Spend still reaches run.json and
 			// `/usage`.
 			const failures = tally.failed > 0 ? `, ${tally.failed} FAILED` : "";
-			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}${failures}, ${progress.usage.turns} turns.`;
+			const summary = `Workflow "${name}" (${runId}) finished: ${result.agentCount} agent${result.agentCount === 1 ? "" : "s"}${replayed}${failures}, ${progress.usage.turns} turns, peak concurrency ${progress.peakConcurrency}.`;
+			// The shape of the run, told back to the author of the script.
+			//
+			// Everything else here reports what happened; this reports HOW, and it
+			// is the only channel that reaches the model unprompted. Peak 1 across
+			// several agents is a queue, not a fleet — the shape that made a
+			// 15-minute job take 53 — and one agent past ~40 turns is a task that
+			// was never split. Both were previously invisible unless someone
+			// hand-parsed journal timestamps, which is how they went unnoticed for
+			// as long as they did.
+			const shape: string[] = [];
+			if (tally.total > 1 && progress.peakConcurrency <= 1) {
+				shape.push(
+					`Every one of the ${tally.total} agents ran alone: peak concurrency was 1, so this was a queue, not a fleet. Independent agents belong in one parallel() or pipeline() call — see "Implementing is fan-out too".`,
+				);
+			}
+			if (progress.deepestAgentTurns >= 40) {
+				shape.push(
+					`One agent used ${progress.deepestAgentTurns} turns. Past ~40 that is a decomposition failure showing up as wall-clock, not diligence — split it by what each agent owns.`,
+				);
+			}
+			const shapeNote = shape.length > 0 ? `\n\n${shape.join("\n")}` : "";
 			// A partial failure stays "done" — the surviving agents did their work —
 			// but it must not read as unqualified success, or the gap is silently
 			// inherited by whatever is built on the result.
@@ -854,7 +887,7 @@ function startRun(
 				tally.failed > 0
 					? `\n\n${tally.failed} of ${tally.total} agents failed, so this result is incomplete. First failure: ${firstAgentError(progress) ?? "no error recorded"}\n${resumeHint}`
 					: "";
-			run.outcome = { text: `${summary}${partial}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
+			run.outcome = { text: `${summary}${shapeNote}${partial}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
 		},
 		(error) => {
 			const message = error instanceof Error ? error.message : String(error);

@@ -59,6 +59,15 @@ export interface RunMeta {
 	resumedFrom?: string;
 	/** Agents whose results were replayed from the journal rather than spawned. */
 	replayedCount?: number;
+	/**
+	 * The most agents in flight at once, and the turn count of the deepest
+	 * single agent. Persisted because they are the two numbers that separate a
+	 * fleet from a queue and a decomposed task from one agent grinding, and
+	 * neither was recoverable from run.json before — only by hand-parsing
+	 * journal timestamps. Absent on runs written before they were recorded.
+	 */
+	peakConcurrency?: number;
+	deepestAgentTurns?: number;
 	args?: unknown;
 }
 
