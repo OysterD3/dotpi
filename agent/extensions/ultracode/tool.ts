@@ -904,10 +904,16 @@ function startRun(
 
 			// Every agent leaves a transcript, seeded or not — pi creates the
 			// session for an unseeded --session-id itself, under a name only it
-			// knows. Look it up once the child is done so the TUI can offer it
-			// either way; a failed agent's transcript is the interesting one.
+			// knows. A failed agent's transcript is the interesting one, so this
+			// runs on both exits.
+			//
+			// It also runs on the first streamed turn, because resolving the path
+			// only at exit is what made a RUNNING agent unwatchable: the panel had
+			// no file to tail and reported "none" for the entire time the agent was
+			// actually doing something. The lookup is a readdir, so it stops once
+			// it has an answer.
 			const recordTranscript = () => {
-				if (!row) return;
+				if (!row || row.sessionFile) return;
 				// Looked up by the id this agent actually ran under. Deriving it from
 				// (index, attempt) missed every shared-session agent, whose id is
 				// `<runId>-s<slug>-<hash>`.
@@ -920,6 +926,9 @@ function startRun(
 			// the fleet keep running. The deltas already cover a dead agent's spend
 			// too, so neither branch below adds the total a second time.
 			const onUsage = (delta: SpawnUsage) => {
+				// Cheap after the first hit: recordTranscript short-circuits once
+				// row.sessionFile is set.
+				recordTranscript();
 				addUsage(progress.usage, delta);
 				if (row) row.usage = addedUsage(row.usage, delta);
 				announceSpend(delta);

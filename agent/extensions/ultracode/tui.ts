@@ -34,7 +34,8 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
 import type { AgentRow, RunProgress, RunRegistry } from "./runs.ts";
 import { formatElapsed, progressFromJournal, sessionRuns, startedLabel, statusMark } from "./panel.ts";
-import { agentErrorPath, listRuns, readJournalLines, runDir, type RunMeta } from "./store.ts";
+import { statSync } from "node:fs";
+import { agentErrorPath, listRuns, readJournalLines, runDir, sessionActivity, type RunMeta, type SessionEvent } from "./store.ts";
 import { piInvocation } from "./spawn.ts";
 
 export interface TuiHost {
@@ -86,7 +87,7 @@ type View = "runs" | "run" | "agent";
 const HINTS: Record<View, string[]> = {
 	runs: ["q close", "↑↓ select", "→ open", "p pause/resume", "c cancel", "R resume run"],
 	run: ["q close", "↑↓ select", "→ open", "← back", "p pause/resume", "c cancel", "g logs", "x export", "e stderr path"],
-	agent: ["q close", "↑↓ agent", "← back", "x export transcript", "e stderr path"],
+	agent: ["q close", "↑↓ agent", "← back", "live tail below", "x export transcript", "e stderr path"],
 };
 
 /**
@@ -659,6 +660,30 @@ export class WorkflowsPanel {
 		return lines;
 	}
 
+	/**
+	 * Session activity, re-parsed only when the file has grown.
+	 *
+	 * The panel re-renders on every run event, and an agent's transcript reaches
+	 * megabytes, so re-reading unconditionally would make the cost of watching
+	 * grow with how long you have watched. Size is enough of a version: these
+	 * files are append-only.
+	 */
+	private activityCache?: { file: string; size: number; limit: number; events: SessionEvent[] };
+
+	private activityFor(file: string, limit: number): SessionEvent[] {
+		let size = -1;
+		try {
+			size = statSync(file).size;
+		} catch {
+			return [];
+		}
+		const cached = this.activityCache;
+		if (cached && cached.file === file && cached.size === size && cached.limit === limit) return cached.events;
+		const events = sessionActivity(file, limit);
+		this.activityCache = { file, size, limit, events };
+		return events;
+	}
+
 	private agentBody(budget: number): string[] {
 		const theme = this.theme;
 		const agent = this.selectedAgent();
@@ -681,6 +706,28 @@ export class WorkflowsPanel {
 		}
 		lines.push(field("session", agent.sessionFile ?? theme.fg("muted", "none")));
 		if (agent.error) lines.push(theme.fg("error", field("error", agent.error)));
+
+		// What the agent is doing RIGHT NOW, tailed from its live pi session.
+		//
+		// Everything above this is what the orchestrator knows — status, turns,
+		// spend — which tells you an agent is busy and never what it is busy with.
+		// A run that looks wedged and a run that is grinding through a build are
+		// identical up there. The session file is a real transcript the child
+		// appends to as it works, so the tail is the difference between a spinner
+		// and a monitor.
+		if (agent.sessionFile) {
+			const activity = this.activityFor(agent.sessionFile, Math.max(3, budget - lines.length - 2));
+			if (activity.length > 0) {
+				lines.push(theme.fg("muted", agent.endedAt ? "─ last activity ─" : "─ live ─"));
+				for (const event of activity) {
+					const label =
+						event.kind === "tool"
+							? theme.fg("accent", event.name.padEnd(8))
+							: theme.fg("muted", (event.kind === "thinking" ? "think" : event.kind).padEnd(8));
+					lines.push(`  ${label} ${event.detail}`);
+				}
+			}
+		}
 
 		// Bounded, but not by much: tools and context can each be long. ← goes back
 		// to the list, so the tail is the safe end to clip.

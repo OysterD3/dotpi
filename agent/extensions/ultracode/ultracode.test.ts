@@ -8,7 +8,7 @@
  * installed, or pi's own package dir):
  *     jiti agent/extensions/ultracode/ultracode.test.ts
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -45,6 +45,7 @@ import {
 	sharedSessionId,
 	unresumedInterrupted,
 	type RunMeta,
+	sessionActivity,
 } from "./store.ts";
 import { resolveScript, resolveThinking, safeStringify } from "./tool.ts";
 import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
@@ -1909,6 +1910,38 @@ console.log("\n--- tool: the reasoning-level chain ---");
 		resolveThinking({ thinking: "maximum" } as never, { thinking: "nonsense" } as never, defaults),
 		"low",
 	);
+}
+
+console.log("\n--- store: tailing a live agent session ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "sess-"));
+	const file = join(dir, "live.jsonl");
+	const entry = (o: unknown) => `${JSON.stringify(o)}\n`;
+	writeFileSync(
+		file,
+		entry({ type: "session", id: "x" }) +
+			entry({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "let me\n  look" }] } }) +
+			entry({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "pnpm test" } }] } }) +
+			entry({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "17 passed" }] } }) +
+			entry({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Tests   are   green" }] } }),
+	);
+	const events = sessionActivity(file);
+	check("tool calls are surfaced with their subject", events.filter((e) => e.kind === "tool").map((e) => [e.name, e.detail]), [["bash", "pnpm test"]]);
+	check("assistant text is surfaced", events.at(-1), { kind: "text", name: "", detail: "Tests are green" });
+	// Whitespace is collapsed because these render as one line each.
+	check("multi-line thinking becomes one line", events[0], { kind: "thinking", name: "", detail: "let me look" });
+	// A tool RESULT is not the agent acting; showing it would drown the view in
+	// build output, which is the thing the agent is reading, not doing.
+	check("tool results are not activity", events.some((e) => e.kind === "result"), false);
+
+	// The case a live tail always hits: the child is mid-write.
+	appendFileSync(file, '{"type":"message","message":{"role":"assist');
+	const torn = sessionActivity(file);
+	check("a half-written final line is skipped, not thrown on", torn.at(-1)?.detail, "Tests are green");
+
+	check("a missing file is empty, not an error", sessionActivity(join(dir, "nope.jsonl")), []);
+	check("the limit is honoured", sessionActivity(file, 1).length, 1);
+	rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("\n--- runs: the shape measures ---");

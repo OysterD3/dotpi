@@ -321,6 +321,77 @@ export function appendJournalLine(agentDir: string, runId: string, record: unkno
 	}
 }
 
+/** One thing an agent did, flattened for the live view. */
+export interface SessionEvent {
+	kind: "text" | "thinking" | "tool" | "result";
+	/** Tool name for "tool", otherwise empty. */
+	name: string;
+	/** A single line, already collapsed — the caller only truncates to width. */
+	detail: string;
+}
+
+/**
+ * The last few things an agent did, read from its live pi session file.
+ *
+ * This is what makes a running agent watchable. `/workflows` could previously
+ * show only what the orchestrator knew — status, turn count, spend — which says
+ * an agent is busy but never what it is busy WITH. The session file is a real
+ * pi transcript being appended to as the child works, so tailing it is the
+ * difference between a spinner and a monitor.
+ *
+ * Only the tail is parsed. These files reach megabytes on a long agent and the
+ * panel re-renders on every turn, so parsing the whole thing would put the cost
+ * of watching in proportion to how long you have been watching.
+ */
+export function sessionActivity(sessionFile: string, limit = 12): SessionEvent[] {
+	let raw: string;
+	try {
+		raw = readFileSync(sessionFile, "utf8");
+	} catch {
+		return [];
+	}
+	const lines = raw.split("\n");
+	// Generous relative to `limit`: one assistant message can carry several
+	// blocks, and a run of tool results can push the interesting text back.
+	const tail = lines.slice(Math.max(0, lines.length - limit * 8));
+	const events: SessionEvent[] = [];
+	const flat = (text: unknown) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+	for (const line of tail) {
+		if (!line.trim()) continue;
+		let entry: { type?: string; message?: { role?: string; content?: unknown } };
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			// A torn final line is expected: the child is appending as we read.
+			continue;
+		}
+		const message = entry?.message;
+		if (entry?.type !== "message" || !message) continue;
+		const content = message.content;
+		if (typeof content === "string") {
+			if (message.role === "assistant" && flat(content)) events.push({ kind: "text", name: "", detail: flat(content) });
+			continue;
+		}
+		if (!Array.isArray(content)) continue;
+		for (const part of content as Array<Record<string, unknown>>) {
+			if (!part || typeof part !== "object") continue;
+			if (part.type === "text" && flat(part.text)) events.push({ kind: "text", name: "", detail: flat(part.text) });
+			else if (part.type === "thinking" && flat(part.thinking)) events.push({ kind: "thinking", name: "", detail: flat(part.thinking) });
+			else if (part.type === "toolCall") {
+				const args = (part.arguments ?? part.input) as Record<string, unknown> | undefined;
+				// The one field that says what the call is ABOUT. A command or a
+				// path is the whole story for the tools an agent spends its time in.
+				const subject = args
+					? flat(args.command ?? args.path ?? args.file_path ?? args.pattern ?? args.query ?? "")
+					: "";
+				events.push({ kind: "tool", name: String(part.name ?? "?"), detail: subject });
+			}
+		}
+	}
+	return events.slice(-limit);
+}
+
 export function readJournalLines(agentDir: string, runId: string): unknown[] {
 	let raw: string;
 	try {

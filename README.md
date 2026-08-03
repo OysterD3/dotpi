@@ -1732,6 +1732,40 @@ Which means scope branches accumulate until you deal with them. They are recorde
 rather than at run end, so a crash cannot leave committed work with nothing pointing at it.
 `git branch --list 'pi/wf/*'` finds the lot.
 
+## Watching an agent work
+
+Open `/workflows` (or **shift+↓**), pick a run with **→**, pick an agent, and the detail view tails
+that agent's live pi session:
+
+```
+status   ● running
+model    openai-codex/gpt-5.6-sol
+elapsed  4m 12s (running)
+tokens   82.1k in / 6.3k out · 31 turn(s)
+session  …/workflow-runs/wf-…/agents/2026-…_wf-…-a2.jsonl
+─ live ─
+  think    the transport needs the framing fixed before the tests will pass
+  read     src/rpc/transport.ts
+  edit     src/rpc/transport.ts
+  bash     pnpm test
+  text     Framing fixed; two tests still fail on the cursor case
+```
+
+Everything above the rule is what the orchestrator knows — status, turns, spend. That says an agent
+is busy and never what it is busy *with*, so a wedged run and a grinding one look identical. The
+lines below come from the agent's own transcript as it is written.
+
+Two things had to change for this to work at all. The session path used to be resolved only when
+the child **exited**, so a running agent showed `session none` — the panel had no file to tail for
+exactly the window you care about. It is now resolved on the first streamed turn instead. And the
+tail is parsed from the end of the file with a size-keyed cache, because these transcripts reach
+megabytes and the panel re-renders on every turn; re-reading whole files would make the cost of
+watching grow with how long you had been watching.
+
+Tool *results* are deliberately not shown — that is the build output the agent is reading, not
+something it did, and it would drown the view. A half-written final line is skipped rather than
+thrown on, which is the normal state of a file a child process is appending to.
+
 ## Run shape
 
 `run.json` records two numbers beyond the totals, and the workflow result reports them back to the
