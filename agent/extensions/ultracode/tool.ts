@@ -33,6 +33,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -83,6 +84,7 @@ import {
 	createRun,
 	newRunId,
 	pruneRuns,
+	rootRunId,
 	runDir,
 	readJournalLines,
 	readScript,
@@ -196,25 +198,55 @@ export function runShellCommand(
 			cwd,
 			env: options.env ? { ...process.env, ...options.env } : process.env,
 			stdio: ["ignore", "pipe", "pipe"],
+			// Its own process GROUP. `shell: true` runs the command under /bin/sh,
+			// and for anything compound sh does not exec — so signalling the child
+			// pid reaches sh alone and leaves the real work running. Worse, the
+			// orphan keeps the stdout/stderr pipes open, so "close" never fires and
+			// the promise below never settles: a timed-out gate wedged the whole
+			// run indefinitely. Killing the negative pid signals the group.
+			detached: true,
 		});
 
-		const collect = (chunk: Buffer, into: "out" | "err") => {
-			const text = chunk.toString("utf8");
-			if (into === "out") {
-				if (stdout.length >= SHELL_OUTPUT_CAP) truncated = true;
-				else stdout += text.slice(0, SHELL_OUTPUT_CAP - stdout.length);
-			} else {
-				if (stderr.length >= SHELL_OUTPUT_CAP) truncated = true;
-				else stderr += text.slice(0, SHELL_OUTPUT_CAP - stderr.length);
-			}
+		// One decoder per stream, not chunk.toString(): a multibyte character
+		// split across two pipe reads decodes as replacement characters, and a
+		// gate that greps its output would silently stop matching. spawn.ts in
+		// this same extension already does it this way.
+		const outDecoder = new StringDecoder("utf8");
+		const errDecoder = new StringDecoder("utf8");
+
+		const collect = (text: string, into: "out" | "err") => {
+			if (!text) return;
+			const current = into === "out" ? stdout : stderr;
+			const room = SHELL_OUTPUT_CAP - current.length;
+			// Flagged when THIS chunk overflows, not on the next one. Setting it
+			// only after the cap was already reached meant a final overflowing
+			// chunk was dropped with truncated still false — so a gate reading the
+			// tail saw a complete-looking buffer with the failure summary (which
+			// pnpm and git print last) missing.
+			const kept = text.length > room ? text.slice(0, Math.max(0, room)) : text;
+			if (text.length > room) truncated = true;
+			if (into === "out") stdout += kept;
+			else stderr += kept;
 		};
-		child.stdout?.on("data", (chunk: Buffer) => collect(chunk, "out"));
-		child.stderr?.on("data", (chunk: Buffer) => collect(chunk, "err"));
+		child.stdout?.on("data", (chunk: Buffer) => collect(outDecoder.write(chunk), "out"));
+		child.stderr?.on("data", (chunk: Buffer) => collect(errDecoder.write(chunk), "err"));
 
 		const kill = () => {
-			child.kill("SIGTERM");
+			// The GROUP, so a compound command's real work dies with its shell.
+			// Falls back to the bare pid if the group is already gone (ESRCH).
+			try {
+				if (child.pid) process.kill(-child.pid, "SIGTERM");
+			} catch {
+				child.kill("SIGTERM");
+			}
 			const hard = setTimeout(() => {
-				if (child.exitCode === null) child.kill("SIGKILL");
+				if (child.exitCode === null) {
+					try {
+						if (child.pid) process.kill(-child.pid, "SIGKILL");
+					} catch {
+						child.kill("SIGKILL");
+					}
+				}
 			}, 5000);
 			hard.unref?.();
 		};
@@ -583,6 +615,8 @@ function startRun(
 	/** Open worktree scopes by script-level name, and what each changed. */
 	const openScopes = new Map<string, WorktreeScope>();
 	const worktreeChanges = new Map<string, WorktreeChange>();
+	/** Open holders per scope name; a scope settles only when the last one exits. */
+	const scopeHolders = new Map<string, number>();
 	/** Serialises `git worktree add`, which is not safe to run concurrently. */
 	let worktreeChain: Promise<unknown> = Promise.resolve();
 	/**
@@ -682,6 +716,12 @@ function startRun(
 		worktree: env.approved
 			? (name) => {
 					const opened = worktreeChain.then(async (): Promise<WorktreeScope> => {
+						// Counted per OPEN, not per name. Two withWorktree() calls with
+						// the same name share one directory, and without this the first
+						// to finish saw an empty scope and ran `worktree remove --force`
+						// plus `branch -D` on the directory the other was still writing
+						// into — destroying live work and reporting done.
+						scopeHolders.set(name, (scopeHolders.get(name) ?? 0) + 1);
 						const already = openScopes.get(name);
 						if (already) return already;
 						rootProbe ??= repoRoot(env.cwd);
@@ -691,7 +731,12 @@ function startRun(
 								`withWorktree("${name}") needs a git repository: ${env.cwd} is not inside one. Give each agent non-overlapping file ownership in its prompt instead.`,
 							);
 						}
-						const scope = await createScope(worktreeRoot, join(runDir(agentDir, runId), "worktrees"), runId, name);
+						// Keyed on the ROOT of the resume chain, not this run's id, so a
+						// resumed run reattaches to the scope it is resuming instead of
+						// opening an empty one beside it. The directory stays under this
+						// run's dir; only the branch and base ref carry the identity.
+						const scopeRunId = params.resumeFromRunId ? rootRunId(agentDir, params.resumeFromRunId) : runId;
+						const scope = await createScope(worktreeRoot, join(runDir(agentDir, runId), "worktrees"), scopeRunId, name);
 						openScopes.set(name, scope);
 						hooks.log(`worktree scope "${name}" -> ${scope.branch}`);
 						return scope;
@@ -703,6 +748,11 @@ function startRun(
 				}
 			: undefined,
 		worktreeSettled: async (name) => {
+			const holders = (scopeHolders.get(name) ?? 1) - 1;
+			scopeHolders.set(name, Math.max(0, holders));
+			// Only the LAST holder commits and measures. An earlier one leaving is
+			// not evidence the scope is finished with.
+			if (holders > 0) return;
 			const scope = openScopes.get(name);
 			if (!scope || !worktreeRoot) return;
 			try {
@@ -731,7 +781,7 @@ function startRun(
 		// with a reason rather than resolve to something harmless — a gate that
 		// stops gating without saying so is exactly the failure this removes.
 		shell: env.approved
-			? (command, shellOptions, signal) => runShellCommand(command, env.cwd, shellOptions, signal)
+			? (command, shellOptions, signal, shellCwd) => runShellCommand(command, shellCwd || env.cwd, shellOptions, signal)
 			: undefined,
 		shellSettled: (outcome) => {
 			journal({
@@ -825,11 +875,16 @@ function startRun(
 				const bundle = buildContextBundle({
 					context: agentOptions.context,
 					branch: env.branch,
-					cwd: env.cwd,
+					// The scope's directory when this agent is in one. Resolving
+					// context.files against the project instead forked the PRE-change
+					// copy of a file the scope had already rewritten, so a reviewer
+					// read one version in its seeded context and a different one on
+					// disk.
+					cwd: agentOptions.cwd ?? env.cwd,
 				});
 				if (bundle) {
 					sessionFile = seedAgentSession({
-						cwd: env.cwd,
+						cwd: agentOptions.cwd ?? env.cwd,
 						sessionDir,
 						sessionId,
 						bundle,
@@ -876,7 +931,9 @@ function startRun(
 				// The ceiling is taken HERE, around the child process only — not
 				// around the validation and model resolution above, which are
 				// synchronous and would hold a slot for no reason.
-				const result = await scheduler.run(runId, () =>
+				const result = await scheduler.run(
+					runId,
+					() =>
 					runSubagent({
 						prompt: SUBAGENT_PREAMBLE + prompt,
 						// The scope's directory when this agent is inside a
@@ -894,6 +951,7 @@ function startRun(
 						signal: spawnSignal,
 						onUsage,
 					}),
+					spawnSignal,
 				);
 				recordTranscript();
 				return result.text;

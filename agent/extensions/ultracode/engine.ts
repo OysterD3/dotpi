@@ -72,8 +72,9 @@ export interface AgentContext {
 export interface AgentOptions {
 	/**
 	 * Where this agent runs. Never written by a script — withWorktree() sets it
-	 * on every agent() inside its callback. Part of the replay key, so the same
-	 * prompt in two scopes is two results.
+	 * on every agent() inside its callback. Part of the replay key (see
+	 * agentKey's `significant`), so the same prompt in two scopes is two
+	 * results rather than one served twice.
 	 */
 	cwd?: string;
 	label?: string;
@@ -143,7 +144,7 @@ export interface EngineHooks {
 	 * rather than silently doing nothing — a gate that quietly stops gating is
 	 * the failure this whole feature exists to remove.
 	 */
-	shell?: (command: string, options: ShellOptions, signal: AbortSignal) => Promise<ShellResult>;
+	shell?: (command: string, options: ShellOptions, signal: AbortSignal, cwd: string) => Promise<ShellResult>;
 	/** A shell() call settled; what the journal records. */
 	shellSettled?: (outcome: ShellOutcome) => void;
 	/**
@@ -632,7 +633,19 @@ export async function runWorkflowScript(
 		}
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
 
-		const scope = await hooks.worktree(name);
+		let scope: { path: string };
+		try {
+			scope = await hooks.worktree(name);
+		} catch (error) {
+			// Fatal, not an ordinary failure. parallel() nulls anything that is
+			// not a WorkflowFatalError, so a git error here — no commits yet, a
+			// mid-rebase repo, a leftover directory — produced [null, null], zero
+			// agents, and a run reported as "finished: 0 agents". A workflow whose
+			// every scope failed to open has not succeeded.
+			throw new WorkflowFatalError(
+				`withWorktree("${name}") could not open a scope: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		try {
 			return await scopeStore.run({ name, path: scope.path }, async () => await (callback as () => Promise<unknown>)());
 		} finally {
@@ -669,27 +682,50 @@ export async function runWorkflowScript(
 
 		const opts = (options && typeof options === "object" ? options : {}) as ShellOptions;
 		const startedAt = Date.now();
-		const key = shellKey(command, cwd, opts as unknown as Record<string, unknown>);
+		// The scope's directory when this call is inside a withWorktree(), so a
+		// gate measures the tree its agents actually wrote to. Reading env.cwd
+		// here meant the isolated work was never the thing being verified.
+		const scope = scopeStore.getStore();
+		const runCwd = scope?.path ?? cwd;
+		const key = shellKey(command, runCwd, opts as unknown as Record<string, unknown>);
 
-		const cached = hooks.replay?.(key);
-		if (cached?.hit) {
-			const value = cached.value as ShellResult;
-			hooks.shellSettled?.({ key, command, cwd, result: value, startedAt, endedAt: Date.now(), replayed: true });
-			return value;
-		}
+		// NOT replayed, deliberately, unlike agent(). A gate's whole value is that
+		// its verdict describes the tree as it is NOW. On a resume the tree has
+		// changed by definition — that is why you are resuming — so a cached exit
+		// code certifies a state that no longer exists: run 1 goes green, an agent
+		// re-runs and breaks the build, and the identical shell() call reports
+		// success without executing anything. A killed or aborted call is worse
+		// still: it recorded exitCode null, and replaying that wedges the gate so
+		// no number of resumes can ever get past it. Re-running is the cheaper
+		// mistake, and the docs already say to keep mutations out of shell().
 
 		await hooks.waitWhilePaused?.(controller.signal);
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
 
-		const result = await hooks.shell(command, opts, controller.signal);
-		hooks.shellSettled?.({ key, command, cwd, result, startedAt, endedAt: Date.now(), replayed: false });
+		const result = await hooks.shell(command, opts, controller.signal, runCwd);
+		hooks.shellSettled?.({ key, command, cwd: runCwd, result, startedAt, endedAt: Date.now(), replayed: false });
 		return result;
 	};
 
+	/**
+	 * Same observer agent() gets: a promise the script drops must not surface as
+	 * a host unhandledRejection, which pi exits the process on. Tracked too, so
+	 * run teardown waits for it. Awaiting the call still rejects normally.
+	 */
+	const tracked =
+		<A extends unknown[]>(fn: (...args: A) => Promise<unknown>) =>
+		(...args: A): Promise<unknown> => {
+			const task = fn(...args);
+			const settle = () => void inFlight.delete(task);
+			inFlight.add(task);
+			task.then(settle, settle);
+			return task;
+		};
+
 	const sandbox: Record<string, unknown> = {
 		agent,
-		shell,
-		withWorktree,
+		shell: tracked(shell),
+		withWorktree: tracked(withWorktree),
 		parallel,
 		pipeline,
 		phase: (title: unknown) => hooks.phase(String(title)),

@@ -126,5 +126,39 @@ console.log("\n--- a single run is not throttled below the ceiling ---");
 	await Promise.all(runs);
 }
 
+console.log("\n--- a queued waiter can be aborted ---");
+{
+	// Without this an aborted run cannot wind down: teardown awaits every
+	// in-flight agent, and one parked in acquire() never settles until an
+	// UNRELATED run frees a slot.
+	const scheduler = new FairScheduler(1);
+	const held = gate();
+	const running = scheduler.run("a", async () => await held.done);
+	await flush();
+
+	const controller = new AbortController();
+	const queued = scheduler.run("b", async () => "should never run", controller.signal);
+	await flush();
+	check("it is queued behind the holder", scheduler.waiting, 1);
+
+	controller.abort();
+	const outcome = await queued.then(() => "ran", (error) => (error as Error).message);
+	check("aborting rejects it", outcome, "aborted while waiting for a subagent slot");
+	check("and it leaves the queue", scheduler.waiting, 0);
+
+	held.release();
+	await running;
+	check("the holder still released normally", scheduler.running, 0);
+}
+{
+	// An already-aborted signal must not join the queue at all.
+	const scheduler = new FairScheduler(1);
+	const controller = new AbortController();
+	controller.abort();
+	const outcome = await scheduler.run("a", async () => "ran", controller.signal).then(() => "ran", () => "rejected");
+	check("an already-aborted call never runs", outcome, "rejected");
+	check("and nothing is left queued", scheduler.waiting, 0);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 if (failures > 0) process.exit(1);

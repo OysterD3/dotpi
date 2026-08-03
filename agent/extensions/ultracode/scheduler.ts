@@ -71,8 +71,8 @@ export class FairScheduler {
 	 * of the process, which would degrade the ceiling into a deadlock one leak
 	 * at a time.
 	 */
-	async run<T>(runId: string, task: () => Promise<T>): Promise<T> {
-		await this.acquire(runId);
+	async run<T>(runId: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		await this.acquire(runId, signal);
 		try {
 			return await task();
 		} finally {
@@ -80,7 +80,11 @@ export class FairScheduler {
 		}
 	}
 
-	private acquire(runId: string): Promise<void> {
+	private acquire(runId: string, signal?: AbortSignal): Promise<void> {
+		// Checked before the fast path, not only on the queued path: an already
+		// aborted call would otherwise be admitted straight through and spawn a
+		// child for a run that is being torn down.
+		if (signal?.aborted) return Promise.reject(new Error("aborted while waiting for a subagent slot"));
 		if (this.active < this.limit && this.waiting === 0) {
 			// Fast path, and the `waiting === 0` half is load-bearing: admitting a
 			// newcomer while others are queued would let a run that keeps starting
@@ -89,11 +93,32 @@ export class FairScheduler {
 			this.peak = Math.max(this.peak, this.active);
 			return Promise.resolve();
 		}
-		return new Promise<void>((resolve) => {
+		return new Promise<void>((resolve, reject) => {
+			// A queued waiter has to be reachable by abort, or cancelling a run
+			// cannot finish until UNRELATED runs release slots: teardown awaits
+			// every in-flight agent, and one parked here never settles. Before the
+			// scheduler existed an aborted agent settled within its own
+			// SIGTERM/SIGKILL window; that has to stay true.
+			const waiter: Waiter = () => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve();
+			};
+			const onAbort = () => {
+				const pending = this.queues.get(runId);
+				const at = pending?.indexOf(waiter) ?? -1;
+				// Only if still queued. Once dispatch() has granted the slot the
+				// task owns it, and release() must be the thing that frees it.
+				if (at >= 0) {
+					pending!.splice(at, 1);
+					reject(new Error("aborted while waiting for a subagent slot"));
+				}
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+
 			const queue = this.queues.get(runId);
-			if (queue) queue.push(resolve);
+			if (queue) queue.push(waiter);
 			else {
-				this.queues.set(runId, [resolve]);
+				this.queues.set(runId, [waiter]);
 				this.order.push(runId);
 			}
 		});

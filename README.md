@@ -1823,9 +1823,17 @@ Three properties worth knowing:
   reach to where the *result* is trustworthy. It is bound only when the project is trusted, and
   throws with a reason otherwise — a gate that silently stops gating is worse than none.
 - **Write `exitCode === 0`, never `!== 0`.** A signal-killed process reports `null`.
+- **It runs in the enclosing scope.** Inside a `withWorktree()` callback the gate measures the
+  scope's tree, not the project's — otherwise it would certify code the agents never touched.
 
-Calls are journaled and replayed on resume like agents, because re-running a build is slow and
-re-running a mutating command is worse. Output is capped per stream at 200KB with `truncated` set.
+Calls are journaled for the audit trail but deliberately **not replayed** on resume, unlike agents.
+A verdict describes the tree at a moment, and a resume is exactly the case where that moment has
+passed: a cached green exit would certify code that has since changed, and a cached `exitCode: null`
+from a killed call would wedge the gate so no resume could ever get past it. Re-running is the
+cheaper mistake — which is also why mutations do not belong in `shell()`.
+
+Output is capped per stream at 200KB, with `truncated` set whenever anything was dropped, including
+when the overflowing chunk is the last one.
 There is no default timeout, matching every other wall-clock decision here; pass `timeoutMs` when a
 specific gate can hang.
 

@@ -262,6 +262,27 @@ export function unresumedInterrupted(metas: RunMeta[], cwd?: string): RunMeta[] 
 	);
 }
 
+/**
+ * The first run in a resume chain, which is the identity a worktree scope
+ * belongs to.
+ *
+ * Every start allocates a fresh runId, resumes included, so scopes keyed on it
+ * could never be reattached: a resumed run opened a brand-new empty scope,
+ * every agent replayed from the journal without writing anything, and the empty
+ * scope was then discarded — while the real work sat on the previous run's
+ * branch with nothing pointing at it. Walking to the root makes a resume land
+ * in the same place its parent did. Bounded, so a corrupted cycle cannot hang.
+ */
+export function rootRunId(agentDir: string, runId: string): string {
+	let current = runId;
+	for (let hops = 0; hops < 64; hops++) {
+		const parent = readMeta(agentDir, current)?.resumedFrom;
+		if (!parent || parent === current) return current;
+		current = parent;
+	}
+	return current;
+}
+
 /** Drop the oldest settled runs past `keep`. Active runs are never pruned. */
 export function pruneRuns(agentDir: string, keep: number): void {
 	const settled = listRuns(agentDir).filter((meta) => isSettled(meta.status));

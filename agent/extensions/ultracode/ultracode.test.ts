@@ -1993,6 +1993,51 @@ return [a.exitCode, b.exitCode, a.stdout]`,
 	check("an empty command is rejected", outcome, "rejected");
 }
 
+console.log("\n--- engine: a gate is never replayed ---");
+{
+	// A verdict describes the tree at a moment; on a resume that moment has
+	// passed. Replaying one certified a state that no longer existed, and
+	// replaying a killed call's exitCode null wedged the gate permanently.
+	let ran = 0;
+	const f = fakeHooks(() => "x");
+	const hooks = {
+		...f.hooks,
+		replay: () => ({ hit: true, value: { exitCode: 0, stdout: "STALE", stderr: "", truncated: false, timedOut: false } }),
+		shell: async () => {
+			ran++;
+			return { exitCode: 1, stdout: "FRESH", stderr: "", truncated: false, timedOut: false };
+		},
+	};
+	const run = await runWorkflowScript(`${META}return await shell('pnpm test')`, undefined, hooks as never, undefined, { cwd: "/p" });
+	check("the command actually ran", ran, 1);
+	check("and the script got the live verdict, not the cached one", (run.result as { stdout: string }).stdout, "FRESH");
+}
+
+console.log("\n--- engine: a scope that cannot open is fatal ---");
+{
+	// parallel() nulls anything that is not a WorkflowFatalError, so a git
+	// failure used to yield [null, null] and a run reported "finished: 0 agents".
+	const f = fakeHooks(() => "x");
+	const hooks = { ...f.hooks, worktree: async () => { throw new Error("fatal: not a git repository"); } };
+	const outcome = await runWorkflowScript(
+		`${META}return await parallel([() => withWorktree('a', () => agent('one'))])`,
+		undefined,
+		hooks as never,
+		undefined,
+		{ cwd: "/p" },
+	).then(() => "no-throw", (error) => (error instanceof Error && error.message.includes("could not open a scope") ? "fatal" : `wrong: ${error}`));
+	check("it fails the run instead of nulling to success", outcome, "fatal");
+}
+
+console.log("\n--- journal: the key separates worktree scopes ---");
+{
+	// Two scopes running the same prompt are two pieces of work. Without cwd in
+	// the key the second was served the first's result and its scope stayed
+	// empty — and was then discarded as having changed nothing.
+	check("same prompt, different scope -> different key", agentKey("build", { cwd: "/a" }) === agentKey("build", { cwd: "/b" }), false);
+	check("no scope is still stable", agentKey("build", {}), agentKey("build", {}));
+}
+
 console.log("\n--- journal: shell keys and replay ---");
 {
 	// Salted, so a shell key can never be served an agent's result or vice versa
@@ -2002,15 +2047,17 @@ console.log("\n--- journal: shell keys and replay ---");
 	check("options are significant", shellKey("t", "/p", {}) === shellKey("t", "/p", { timeoutMs: 5 }), false);
 	check("same call, same key", shellKey("t", "/p", { timeoutMs: 5 }), shellKey("t", "/p", { timeoutMs: 5 }));
 
-	// A non-zero exit IS a result and must replay. Agents differ: a failed agent
-	// is not a result and is re-run.
+	// Shell records are journaled for the audit trail but must NOT be indexed
+	// for replay. A gate's verdict is about the tree at a moment, and a resume
+	// is precisely the case where that moment has passed: replaying a green exit
+	// certifies code that has since changed, and replaying a killed call's
+	// exitCode null wedges the gate so no resume can ever get past it.
 	const key = shellKey("pnpm test", "/p", {});
 	const index = new ReplayIndex([
-		{ kind: "shell", seq: 1, t: 1, key, command: "pnpm test", cwd: "/p", exitCode: 1, startedAt: 0, endedAt: 1, result: { exitCode: 1, stdout: "boom", stderr: "", truncated: false, timedOut: false } },
+		{ kind: "shell", seq: 1, t: 1, key, command: "pnpm test", cwd: "/p", exitCode: 0, startedAt: 0, endedAt: 1, result: { exitCode: 0, stdout: "ok", stderr: "", truncated: false, timedOut: false } },
 	]);
-	const hit = index.take(key);
-	check("a failing shell call still replays", hit.hit && (hit.record.result as { exitCode: number }).exitCode, 1);
-	check("and is consumed once", index.take(key).hit, false);
+	check("a shell record is not replayable", index.take(key).hit, false);
+	check("and does not count as a cached result", index.size, 0);
 }
 
 console.log("\n--- store: work still owed ---");

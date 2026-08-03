@@ -95,17 +95,23 @@ export async function repoRoot(cwd: string): Promise<string | undefined> {
  * commit object at all.
  */
 export async function snapshotCommit(root: string, message: string): Promise<string> {
-	const head = await git(root, ["rev-parse", "HEAD"]);
-	const dirty = await git(root, ["status", "--porcelain"]);
-	if (!dirty) return head;
+	// A freshly `git init`-ed project has no HEAD, and that is the case most
+	// likely to want parallel isolated implementations. Unconditionally
+	// rev-parsing it failed the whole run with a raw git error, so an empty
+	// repository is a supported starting point: the snapshot simply has no
+	// parent.
+	const head = await git(root, ["rev-parse", "HEAD"]).catch(() => undefined);
+	const dirty = await git(root, ["status", "--porcelain", "--untracked-files=all"]);
+	if (!dirty && head) return head;
 
 	const indexDir = mkdtempSync(join(tmpdir(), "pi-wt-index-"));
 	const env = { ...process.env, GIT_INDEX_FILE: join(indexDir, "index") };
 	try {
-		await git(root, ["read-tree", "HEAD"], env);
+		if (head) await git(root, ["read-tree", head], env);
 		await git(root, ["add", "-A"], env);
 		const tree = await git(root, ["write-tree"], env);
-		return await git(root, ["commit-tree", tree, "-p", head, "-m", message], env);
+		const parent = head ? ["-p", head] : [];
+		return await git(root, ["commit-tree", tree, ...parent, "-m", message], env);
 	} finally {
 		rmSync(indexDir, { recursive: true, force: true });
 	}
@@ -164,7 +170,7 @@ export async function createScope(root: string, dir: string, runId: string, name
  * a week. Returns false when there was nothing to commit.
  */
 export async function commitScope(scope: WorktreeScope, message: string): Promise<boolean> {
-	const dirty = await git(scope.path, ["status", "--porcelain"]);
+	const dirty = await git(scope.path, ["status", "--porcelain", "--untracked-files=all"]);
 	if (!dirty) return false;
 	await git(scope.path, ["add", "-A"]);
 	await git(scope.path, ["commit", "--no-verify", "-m", message]);

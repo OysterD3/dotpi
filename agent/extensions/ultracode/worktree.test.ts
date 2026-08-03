@@ -134,6 +134,38 @@ console.log("\n--- long names do not collide ---");
 	check("the readable part survives", long1.path.includes("an-extremely-long-scope"), true);
 }
 
+console.log("\n--- untracked files are never invisible ---");
+{
+	// With status.showUntrackedFiles=no a bare `git status --porcelain` prints
+	// nothing for brand-new files, so a scope whose only output was new files
+	// read as empty and got force-removed with its branch. Verified by setting
+	// the real config.
+	git(["config", "status.showUntrackedFiles", "no"]);
+	const scope = await createScope(REPO, join(ROOT, "untracked-scope"), "wf-8", "newfiles");
+	writeFileSync(join(scope.path, "brand-new.ts"), "export const kept = 1\n");
+	check("the new file is seen as work", await commitScope(scope, "new files"), true);
+	const change = await scopeChange(scope);
+	check("and counted", change.files, 1);
+	check("so the scope is not discarded", git(["branch", "--list", scope.branch]).includes("wf-8"), true);
+	git(["config", "--unset", "status.showUntrackedFiles"]);
+}
+
+console.log("\n--- a repository with no commits ---");
+{
+	// The case most likely to want parallel isolated implementations: a freshly
+	// scaffolded project. rev-parse HEAD used to throw and fail the whole run.
+	const fresh = join(ROOT, "fresh");
+	mkdirSync(fresh, { recursive: true });
+	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: fresh });
+	execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: fresh });
+	execFileSync("git", ["config", "user.name", "T"], { cwd: fresh });
+	writeFileSync(join(fresh, "scaffold.ts"), "export const x = 1\n");
+
+	const scope = await createScope(fresh, join(ROOT, "fresh-scopes"), "wf-fresh", "impl");
+	check("a scope opens with no HEAD", typeof scope.baseCommit, "string");
+	check("and carries the uncommitted scaffold", readFileSync(join(scope.path, "scaffold.ts"), "utf8"), "export const x = 1\n");
+}
+
 console.log("\n--- a deleted run directory leaves git needing a prune ---");
 {
 	// The lifecycle bug. Retention deletes a run directory; any worktrees inside
