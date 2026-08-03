@@ -61,7 +61,8 @@
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615",
     "npm:pi-web-access@0.17.1",
     "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6",
-    "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055"
+    "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055",
+    "npm:@ff-labs/pi-fff@0.10.1"
   ],
   "models": {
     "active": "openai",

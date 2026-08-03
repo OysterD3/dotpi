@@ -1416,48 +1416,6 @@ both copies are pinned by assertions in their own suites.
 | `index.ts` | One `before_agent_start` append — chained, never replacing |
 | `tool-batching.test.ts` | The text, the short subagent variant, and that the append does not clobber |
 
-**`agent/extensions/compact-tools/`** — one-line rows for the noisy tools; detail on demand.
-
-pi already collapses tool output and expands it with **ctrl+o** ("Toggle tool output"), but the
-collapsed view still shows up to ~10 lines per call. This shrinks the **read-only / exec** built-ins
-to a **single summary line** when collapsed, and shows the detail only once the row is expanded:
-
-```
-read src/foo.ts            42 lines
-$ pnpm test                done (18 lines)
-grep TODO in src           7 matches
-ls src                     9 entries
-```
-
-**`write` and `edit` are left alone on purpose** — their whole point is the change they make, so
-pi's own renderers stay in place: a write shows a syntax-highlighted preview of the new file
-(`Wrote 96 lines …`, then `… +86 lines`), and an edit shows its coloured `+`/`-` diff. Compacting is
-only for tools whose output is context to skim, not a change to see.
-
-It re-registers each compacted built-in (`read`, `bash`, `grep`, `find`, `ls`) under its own name,
-**delegates execution unchanged** to the original SDK tool (`create*Tool`), and replaces only the
-rendering — the pattern from pi's own `examples/extensions/built-in-tool-renderer.ts`. Execution,
-diffs, the file-mutation queue: all untouched. Press **ctrl+o** to expand a row (the summaries then
-show up to `expandedLines` of detail). One honest limitation: pi has no mouse handling, so expansion
-is the keypress, not a click; and pi prints a one-time startup warning when a built-in is overridden,
-which is expected here.
-
-```jsonc
-{
-  "compactTools": {
-    "enabled": true,        // optional; false restores pi's default rendering
-    "expandedLines": 100    // optional; lines of detail shown when a row is expanded
-  }
-}
-```
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Re-registers the five compacted built-ins, delegating execute; wires the compact renderers |
-| `render.ts` | The per-tool call/result summary strings, collapsed and expanded (pure) |
-| `config.ts` | Settings and the tool list (write/edit excluded) |
-| `compact-tools.test.ts` | Summary builders, settings, and wiring coverage |
-
 **`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
 
 When a provider finishes a response having produced no content and reports `stopReason: "stop"`, pi
@@ -1868,6 +1826,20 @@ Four third-party packages are pinned in `settings.packages`. `pi install` vendor
 | `pi-openai-server-compaction` | Codex-style **server-side** compaction for OpenAI models: sends `compaction_trigger` through `POST /v1/responses` and gets an encrypted `compaction` item back, instead of a text summary. | `agent/openai-server-compaction.json` — **not** `settings.compaction` |
 | `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
 | `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
+| `@ff-labs/pi-fff` | **Replaces the built-in `find` and `grep`** with FFF, a Rust-native indexed searcher: fuzzy matching, frecency ranking, git-aware, no `fd`/`rg` subprocess per call. Also backs `@` file autocomplete. | `PI_FFF_MODE` env var / `--fff-mode` flag |
+
+**The `compact-tools` extension was removed for this.** It re-registered `read`, `bash`, `grep`,
+`find` and `ls` to give each a one-line collapsed row, and pi-fff in `override` mode re-registers
+`find` and `grep` for real. Two extensions claiming the same tool name is decided by load order —
+`agent/extensions/` loads before installed packages, so pi-fff would have won and the collision
+would have been silent. Deleting the local one makes the ownership explicit. The cost is that
+`read`, `bash` and `ls` go back to pi's default multi-line collapsed rendering.
+
+**`override` mode is set via `PI_FFF_MODE=override` in `~/.zshrc`**, not here. pi has no settings
+key for extension flags — the mode comes from `--fff-mode`, the env var, or `/fff-mode override`,
+and the last of those only persists for one session (it is stored as a session entry). With the
+`env` extension gone there is no `.env` to put it in either, so the shell profile is the only
+durable place left.
 
 **Two of these are unpinned by version** (`pi-web-access`, `codex-fast-mode`) and resolve to whatever
 is latest at install time. The lockfile that would record what actually landed lives in `agent/npm/`,
