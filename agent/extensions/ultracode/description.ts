@@ -44,6 +44,7 @@ Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async c
   - session — a name, scoped to this run. Agents sharing a name continue ONE conversation in turn (see Shared sessions below).
 - parallel(thunks): Promise<any[]> — run tasks concurrently. This is a BARRIER: awaits all thunks. A thunk that throws resolves to null — the call itself never rejects.
 - shell(command, opts?): Promise<{exitCode, stdout, stderr, truncated, timedOut}> — run a command on the HOST and read its real exit code. See **Gating on facts** below; this is the only value in a script an agent cannot author. opts: {timeoutMs?, env?}. Replayed on resume like an agent. Unavailable (throws) when the project is not trusted.
+- withWorktree(name, callback): Promise<any> — run the callback with every agent() inside it writing in its own git worktree. See **Isolating concurrent writers**. Throws when the project is not a trusted git repository.
 - pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Every stage callback receives (prevResult, originalItem, index). A stage that throws drops that item to null and skips its remaining stages.
 - phase(title): void — group subsequent agents under this title in progress output.
 - log(message): void — emit a progress line.
@@ -86,7 +87,7 @@ The canonical multi-stage pattern — each dimension verifies as soon as its rev
   )
   return results.flat().filter(Boolean).filter(f => f.verdict?.isReal)
 
-**Implementing is fan-out too.** Every pattern here reads, judges or verifies, and that is an accident of which patterns got written down — not a claim that building is inherently serial. A request carrying several deliverables (a transport, a session store, an IPC surface, a fixture and its tests) is ONE AGENT PER DELIVERABLE, not one agent handed the list. Split by what each agent OWNS: the files it alone will write. Agents owning disjoint files run concurrently as they are. There is NO worktree isolation and no \`isolation\` option — an unknown option is silently ignored, not rejected — so two agents that would edit the same file must be sequenced with await, or given non-overlapping ownership. Concurrent writers to one file lose whichever edit lands first, and the run still reports done.
+**Implementing is fan-out too.** Every pattern here reads, judges or verifies, and that is an accident of which patterns got written down — not a claim that building is inherently serial. A request carrying several deliverables (a transport, a session store, an IPC surface, a fixture and its tests) is ONE AGENT PER DELIVERABLE, not one agent handed the list. Split by what each agent OWNS: the files it alone will write. Agents owning disjoint files run concurrently as they are. For agents that WOULD collide, see **Isolating concurrent writers** below — there is no per-agent \`isolation\` option, and an unknown option is silently ignored rather than rejected, so passing one buys nothing.
 
   phase('Implement')
   const PARTS = [
@@ -124,6 +125,17 @@ shell() runs in the host process, and agents cannot call it — they have their 
 Prefer a gate that exercises the real artifact — start the binary and see it answer, drive the endpoint, run the PRE-EXISTING suite and not only the new one. Tests the same agent wrote against a fixture it also wrote are a closed loop, and it closes green whatever the code does. Where no such check exists yet, building one is the first agent's job, and it is worth its own agent running in parallel with the parts it will check.
 
 Still say what each agent owns in its prompt. The gate tells you whether the work is good; ownership is what keeps concurrent writers from destroying each other's work.
+
+**Isolating concurrent writers.** \`withWorktree(name, cb)\` gives every agent inside the callback its own git worktree. Isolation is BETWEEN scopes, not between agents: agents in one scope share a directory, so put things that must not collide in different scopes.
+
+  await parallel([
+    () => withWorktree('backend', () => agent('Rewrite the transport in src/rpc/**')),
+    () => withWorktree('renderer', () => agent('Rewrite the panes in src/ui/**')),
+  ])
+
+Three things to know. The scope starts from your UNCOMMITTED tree, not HEAD, so agents see the work in progress. The work is COMMITTED to a retained branch and never merged automatically — the result names the branch and the command to apply it, and until you run that your working tree is untouched. A scope that changed nothing is removed.
+
+Do not reach for it by default. It costs a worktree per scope and the merge is yours to do; stating file ownership in each agent's prompt is cheaper and enough whenever the agents genuinely own different files. Use a scope when they cannot: two implementations of the same module, a risky refactor you want to diff before keeping, or agents that must each run the build in place.
 
 Quality patterns, for when the request justifies the extra agents:
 - Adversarial verify: N independent skeptics per finding, each prompted to REFUTE; kill if a majority refute. Prevents plausible-but-wrong findings from surviving. One verifier is the default; go to three only for claims that are expensive to be wrong about.

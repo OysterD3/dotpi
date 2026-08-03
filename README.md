@@ -1708,6 +1708,48 @@ at plain `vim` — and changing `$EDITOR` to suit pi would change it for git, cr
 else too. Keep it as strict JSON: pi parses settings with `JSON.parse`, so a `//` comment silently
 breaks the whole file.
 
+## Isolating concurrent writers
+
+`withWorktree(name, callback)` runs every `agent()` inside the callback in its own git worktree.
+Isolation is **between scopes**, not between agents — agents in one scope share a directory.
+
+```js
+await parallel([
+  () => withWorktree('backend',  () => agent('Rewrite the transport in src/rpc/**')),
+  () => withWorktree('renderer', () => agent('Rewrite the panes in src/ui/**')),
+])
+```
+
+Three properties, each of which is a deliberate difference from the implementation this was modelled
+against:
+
+- **The scope starts from your uncommitted tree**, not `HEAD`, so agents see work in progress. Built
+  with a throwaway `GIT_INDEX_FILE`, so `git add -A` inside it never stages anything of yours — you
+  can run a workflow on a dirty tree without it rearranging your index.
+- **The branch is retained and nothing is merged automatically.** The run result names the branch,
+  the diffstat, and the commands: `git diff <base>..<branch>` to review, `git merge --no-ff <branch>`
+  to apply. Your working tree is untouched until you run that.
+- **A scope that changed nothing is removed**, branch included. There is provably nothing to lose,
+  and a list of empty scopes is a list you stop reading.
+
+The comparison that produced this is worth recording. `QuintinShaw/pi-dynamic-workflows` offers a
+per-agent `isolation: 'worktree'` flag and then tears the worktree down in an unconditional
+`finally` — `worktree remove --force` followed by `branch -D`, on the success path too; their own
+test asserts the branch is gone. An isolated agent's work is destroyed the moment it returns, and
+only the text of its final message survives. That is worse than having no isolation, because it
+looks like it worked. `vekexasia/pi-extensible-workflows` gets the scope model right but, like
+QuintinShaw, has **no merge-back path at all** — both leave you to discover a branch.
+
+Don't reach for it by default: it costs a worktree per scope and the merge is yours to do. Stating
+file ownership in each agent's prompt is cheaper and enough whenever agents genuinely own different
+files. Use a scope when they cannot — two implementations of one module, a risky refactor you want
+to diff before keeping, agents that each need to build in place.
+
+Worktrees live under `agent/workflow-runs/<runId>/worktrees/`, which is gitignored. Scope branches
+are `pi/wf/<runId>/<slug>-<digest>`; the digest is of the full scope name, because truncating a slug
+alone lets two long names collide on one directory — a bug this repo's own test caught during
+implementation.
+
 ## Run shape
 
 `run.json` records two numbers beyond the totals, and the workflow result reports them back to the

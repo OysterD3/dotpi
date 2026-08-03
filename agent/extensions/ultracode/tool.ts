@@ -64,6 +64,15 @@ import {
 import { startedLabel } from "./panel.ts";
 import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
 import {
+	commitScope,
+	createScope,
+	discardEmptyScope,
+	repoRoot,
+	scopeChange,
+	type WorktreeChange,
+	type WorktreeScope,
+} from "./worktree.ts";
+import {
 	agentErrorPath,
 	agentsDir,
 	agentSessionId,
@@ -73,6 +82,7 @@ import {
 	createRun,
 	newRunId,
 	pruneRuns,
+	runDir,
 	readJournalLines,
 	readScript,
 	writeMeta,
@@ -552,6 +562,18 @@ function startRun(
 
 	/** In-flight agents, so peakConcurrency is measured rather than inferred. */
 	let inFlight = 0;
+	/** Open worktree scopes by script-level name, and what each changed. */
+	const openScopes = new Map<string, WorktreeScope>();
+	const worktreeChanges = new Map<string, WorktreeChange>();
+	/** Serialises `git worktree add`, which is not safe to run concurrently. */
+	let worktreeChain: Promise<unknown> = Promise.resolve();
+	/**
+	 * The repo root, resolved on first use. Lazy because startRun is
+	 * synchronous and `git rev-parse` is not, and because a run that never
+	 * opens a scope should not shell out at all.
+	 */
+	let worktreeRoot: string | undefined;
+	let rootProbe: Promise<string | undefined> | undefined;
 
 	const hooks: EngineHooks = {
 		agentStart: (index, label, phase) => {
@@ -633,6 +655,56 @@ function startRun(
 			if (!replayIndex) return { hit: false };
 			const found = replayIndex.take(key);
 			return found.hit ? { hit: true, value: found.record.result } : { hit: false };
+		},
+		// Worktree scopes. Creation is serialised on one promise chain because
+		// `git worktree add` mutates the repo's worktree list and two concurrent
+		// adds race on it — and concurrent scopes are the normal case here.
+		// Isolation needs a git repo AND trust: a worktree writes to the user's
+		// repository, so it sits behind the same gate as shell().
+		worktree: env.approved
+			? (name) => {
+					const opened = worktreeChain.then(async (): Promise<WorktreeScope> => {
+						const already = openScopes.get(name);
+						if (already) return already;
+						rootProbe ??= repoRoot(env.cwd);
+						worktreeRoot = await rootProbe;
+						if (!worktreeRoot) {
+							throw new Error(
+								`withWorktree("${name}") needs a git repository: ${env.cwd} is not inside one. Give each agent non-overlapping file ownership in its prompt instead.`,
+							);
+						}
+						const scope = await createScope(worktreeRoot, join(runDir(agentDir, runId), "worktrees"), runId, name);
+						openScopes.set(name, scope);
+						hooks.log(`worktree scope "${name}" -> ${scope.branch}`);
+						return scope;
+					});
+					// The chain must survive a failed add, or one bad scope name would
+					// wedge every later scope in the run.
+					worktreeChain = opened.catch(() => undefined);
+					return opened;
+				}
+			: undefined,
+		worktreeSettled: async (name) => {
+			const scope = openScopes.get(name);
+			if (!scope || !worktreeRoot) return;
+			try {
+				await commitScope(scope, `pi workflow ${runId}: scope "${name}"`);
+				const change = await scopeChange(scope);
+				if (change.files === 0) {
+					// Nothing to lose, and an empty entry in the report trains you to
+					// skip the list that will one day hold the entry that matters.
+					await discardEmptyScope(worktreeRoot, scope);
+					openScopes.delete(name);
+					hooks.log(`worktree scope "${name}" changed nothing — removed`);
+					return;
+				}
+				worktreeChanges.set(name, change);
+				hooks.log(`worktree scope "${name}": ${change.files} file(s), +${change.insertions}/-${change.deletions} on ${scope.branch}`);
+			} catch (error) {
+				// A scope we cannot measure is still a scope with work in it. Say so
+				// and keep the branch; never let reporting failure delete anything.
+				hooks.log(`worktree scope "${name}" could not be summarised: ${error instanceof Error ? error.message : String(error)}`);
+			}
 		},
 		// Bound only when the project is trusted. Undefined makes shell() throw
 		// with a reason rather than resolve to something harmless — a gate that
@@ -782,7 +854,10 @@ function startRun(
 			try {
 				const result = await runSubagent({
 					prompt: SUBAGENT_PREAMBLE + prompt,
-					cwd: env.cwd,
+					// The scope's directory when this agent is inside a
+					// withWorktree(), the project otherwise. Set by the engine, never
+					// by the script.
+					cwd: agentOptions.cwd ?? env.cwd,
 					model,
 					thinking,
 					tools,
@@ -880,6 +955,23 @@ function startRun(
 				);
 			}
 			const shapeNote = shape.length > 0 ? `\n\n${shape.join("\n")}` : "";
+			// Where the isolated work actually went.
+			//
+			// Neither peer implementation has any merge-back path: one deletes the
+			// branch outright, the other keeps it and leaves you to find it. Naming
+			// the branch, the size of the change and the command to apply it is the
+			// difference between isolation you can use and a directory you discover
+			// three days later.
+			const scopes = [...worktreeChanges.values()];
+			const worktreeNote =
+				scopes.length > 0
+					? `\n\nWorktree scopes (the work is committed on these branches, NOT in your working tree):\n${scopes
+							.map(
+								(change) =>
+									`  ${change.scope.name}: ${change.files} file(s), +${change.insertions}/-${change.deletions} on ${change.scope.branch}\n    review: git diff ${change.scope.baseCommit}..${change.scope.branch}\n    apply:  git merge --no-ff ${change.scope.branch}`,
+							)
+							.join("\n")}`
+					: "";
 			// A partial failure stays "done" — the surviving agents did their work —
 			// but it must not read as unqualified success, or the gap is silently
 			// inherited by whatever is built on the result.
@@ -887,7 +979,7 @@ function startRun(
 				tally.failed > 0
 					? `\n\n${tally.failed} of ${tally.total} agents failed, so this result is incomplete. First failure: ${firstAgentError(progress) ?? "no error recorded"}\n${resumeHint}`
 					: "";
-			run.outcome = { text: `${summary}${shapeNote}${partial}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
+			run.outcome = { text: `${summary}${shapeNote}${worktreeNote}${partial}\n\nResult:\n${safeStringify(result.result)}`, isError: false };
 		},
 		(error) => {
 			const message = error instanceof Error ? error.message : String(error);

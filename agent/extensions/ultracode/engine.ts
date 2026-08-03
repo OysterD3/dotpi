@@ -42,6 +42,7 @@
  * trust level as extension code; the tool description tells the model to always
  * await, never busy-wait).
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { runInNewContext } from "node:vm";
 import { CONFIG } from "./config.ts";
 import { agentKey, shellKey, type ShellResult } from "./journal.ts";
@@ -69,6 +70,12 @@ export interface AgentContext {
 }
 
 export interface AgentOptions {
+	/**
+	 * Where this agent runs. Never written by a script — withWorktree() sets it
+	 * on every agent() inside its callback. Part of the replay key, so the same
+	 * prompt in two scopes is two results.
+	 */
+	cwd?: string;
 	label?: string;
 	phase?: string;
 	model?: string;
@@ -139,6 +146,14 @@ export interface EngineHooks {
 	shell?: (command: string, options: ShellOptions, signal: AbortSignal) => Promise<ShellResult>;
 	/** A shell() call settled; what the journal records. */
 	shellSettled?: (outcome: ShellOutcome) => void;
+	/**
+	 * Open (or reuse) a named worktree scope and return the directory agents in
+	 * it should run in. Absent when isolation is unavailable — not a git repo,
+	 * or the project is untrusted — in which case withWorktree() throws.
+	 */
+	worktree?: (name: string) => Promise<{ path: string }>;
+	/** The scope's callback finished; commit, measure and report. */
+	worktreeSettled?: (name: string) => Promise<void>;
 }
 
 export interface ShellOptions {
@@ -382,7 +397,11 @@ export async function runWorkflowScript(
 
 	const inFlight = new Set<Promise<unknown>>();
 
-	async function runAgent(prompt: unknown, options: AgentOptions): Promise<unknown> {
+	async function runAgent(prompt: unknown, rawOptions: AgentOptions): Promise<unknown> {
+		// Resolved here, not at the call site: an agent inherits the scope it is
+		// lexically inside, and a script cannot set cwd itself.
+		const scope = scopeStore.getStore();
+		const options: AgentOptions = scope ? { ...rawOptions, cwd: scope.path } : rawOptions;
 		if (typeof prompt !== "string" || !prompt.trim()) {
 			throw new WorkflowFatalError("agent() requires a non-empty prompt string");
 		}
@@ -580,6 +599,51 @@ export async function runWorkflowScript(
 	const cwd = engineOptions.cwd ?? process.cwd();
 
 	/**
+	 * The worktree scope an agent() call is lexically inside.
+	 *
+	 * AsyncLocalStorage rather than a plain variable, because scopes survive
+	 * await boundaries and can legitimately run CONCURRENTLY — two
+	 * withWorktree() callbacks inside one parallel() is the whole point. A
+	 * mutable "current scope" would leak one scope's directory into the other's
+	 * agents, silently, and only under concurrency.
+	 */
+	const scopeStore = new AsyncLocalStorage<{ name: string; path: string }>();
+
+	/**
+	 * Run `callback` with every agent() inside it writing to its own worktree.
+	 *
+	 * Named, not per-agent: the scope is a place that outlives the callback, so
+	 * a later stage can build on what an earlier one left and you can still read
+	 * the branch afterwards. The agents inside share the scope with each other —
+	 * isolation is BETWEEN scopes, so put things that must not collide in
+	 * different ones.
+	 */
+	const withWorktree = async (name: unknown, callback: unknown): Promise<unknown> => {
+		if (typeof name !== "string" || !name.trim()) {
+			throw new WorkflowFatalError("withWorktree() requires a non-empty scope name");
+		}
+		if (typeof callback !== "function") {
+			throw new WorkflowFatalError("withWorktree(name, callback) requires a callback function");
+		}
+		if (!hooks.worktree) {
+			throw new WorkflowFatalError(
+				"withWorktree() is unavailable: this project is not a trusted git repository. Run the agents in the project directory and give each one non-overlapping file ownership in its prompt instead.",
+			);
+		}
+		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+
+		const scope = await hooks.worktree(name);
+		try {
+			return await scopeStore.run({ name, path: scope.path }, async () => await (callback as () => Promise<unknown>)());
+		} finally {
+			// Commit and measure even when the callback threw: half-finished work in
+			// a scope is still work, and losing it on the failure path is the exact
+			// behaviour that makes the other implementation's isolation unusable.
+			await hooks.worktreeSettled?.(name);
+		}
+	};
+
+	/**
 	 * Run a command on the host and hand the script its real exit code.
 	 *
 	 * This is the only thing in the sandbox an agent cannot author. Agents get
@@ -625,6 +689,7 @@ export async function runWorkflowScript(
 	const sandbox: Record<string, unknown> = {
 		agent,
 		shell,
+		withWorktree,
 		parallel,
 		pipeline,
 		phase: (title: unknown) => hooks.phase(String(title)),

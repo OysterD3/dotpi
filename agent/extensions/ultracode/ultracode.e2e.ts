@@ -286,7 +286,12 @@ check("a bulleted prompt is named as the fan-out", description.includes("that li
 // rejected — so two agents "isolated" that way would overwrite each other while
 // the run reported done.
 check("no invented isolation option", description.includes("isolation: 'worktree'"), false);
-check("and the real constraint is stated", description.includes("There is NO worktree isolation"), true);
+check("worktree isolation is offered as a scope", description.includes("**Isolating concurrent writers.**"), true);
+check("and still no per-agent isolation option", description.includes("there is no per-agent"), true);
+check("withWorktree is in the globals list", description.includes("withWorktree(name, callback)"), true);
+// The branch must be described as retained: deleting it is the exact bug in the
+// implementation this was modelled against.
+check("the branch is described as retained", description.includes("retained branch"), true);
 // Context budgeting was removed; buildContextBundle passes Infinity everywhere.
 // The forking section promised trimming that no longer happens, which would have
 // a script seed a 2MB bundle and fail every agent on the first request.
