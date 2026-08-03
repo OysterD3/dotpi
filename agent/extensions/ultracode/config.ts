@@ -112,6 +112,19 @@ export const CONFIG = {
 	 * bound, and no workflow is made worse by an old run being swept up.
 	 */
 	retainRuns: 50,
+	/**
+	 * Process-wide ceiling on concurrent subagents, across ALL runs.
+	 *
+	 * Not the per-run throttle that was removed — that capped one run and made
+	 * breadth expensive; thirty agents in a single fan-out still start together.
+	 * This bounds the aggregate, because /workflows runs several workflows at
+	 * once and N runs × M agents with nothing counting is N×M pi processes.
+	 *
+	 * Set high on purpose. Peers use 8-16, copied from Claude Code with no
+	 * recorded evidence; the number here is a backstop against a fork bomb, not
+	 * an opinion about the right width for a fleet.
+	 */
+	maxConcurrentAgents: 32,
 	/** Log lines kept in memory per run (the journal on disk keeps them all). */
 	memoryLogLines: 200,
 	/**

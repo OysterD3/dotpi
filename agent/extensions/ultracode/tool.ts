@@ -62,6 +62,7 @@ import {
 	type WorkflowRun,
 } from "./runs.ts";
 import { startedLabel } from "./panel.ts";
+import { FairScheduler } from "./scheduler.ts";
 import { addUsage, emptyUsage, runSubagent, type SpawnUsage } from "./spawn.ts";
 import {
 	commitScope,
@@ -249,6 +250,15 @@ export function runShellCommand(
 		});
 	});
 }
+
+/**
+ * One ceiling for the whole process, deliberately module-level.
+ *
+ * Per-run state cannot express this: the thing being bounded is the sum across
+ * concurrent runs, which is exactly what a per-run limiter — and the per-run
+ * peakConcurrency in run.json — cannot see.
+ */
+const scheduler = new FairScheduler(CONFIG.maxConcurrentAgents);
 
 export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOptions): void {
 	pi.registerMessageRenderer<RunProgress>(RESULT_MESSAGE, (message, { expanded }, theme) => {
@@ -863,23 +873,28 @@ function startRun(
 			};
 
 			try {
-				const result = await runSubagent({
-					prompt: SUBAGENT_PREAMBLE + prompt,
-					// The scope's directory when this agent is inside a
-					// withWorktree(), the project otherwise. Set by the engine, never
-					// by the script.
-					cwd: agentOptions.cwd ?? env.cwd,
-					model,
-					thinking,
-					tools,
-					appendSystemPrompt: type?.prompt,
-					sessionDir,
-					sessionId,
-					stderrPath: agentErrorPath(agentDir, runId, index),
-					approved: env.approved,
-					signal: spawnSignal,
-					onUsage,
-				});
+				// The ceiling is taken HERE, around the child process only — not
+				// around the validation and model resolution above, which are
+				// synchronous and would hold a slot for no reason.
+				const result = await scheduler.run(runId, () =>
+					runSubagent({
+						prompt: SUBAGENT_PREAMBLE + prompt,
+						// The scope's directory when this agent is inside a
+						// withWorktree(), the project otherwise. Set by the engine, never
+						// by the script.
+						cwd: agentOptions.cwd ?? env.cwd,
+						model,
+						thinking,
+						tools,
+						appendSystemPrompt: type?.prompt,
+						sessionDir,
+						sessionId,
+						stderrPath: agentErrorPath(agentDir, runId, index),
+						approved: env.approved,
+						signal: spawnSignal,
+						onUsage,
+					}),
+				);
 				recordTranscript();
 				return result.text;
 			} catch (error) {

@@ -737,9 +737,21 @@ hours precisely because at ten minutes it was killing work in progress, which wa
 agent already spent and leaves nothing to resume from. A cap that you have to disable to get correct
 behaviour is not protecting you.
 
-So: **an agent runs until it finishes or you abort it.** There is no timeout. `parallel()` and
-`pipeline()` start every agent they are given at once, with no queue, so a fan-out over fifty items
-launches fifty `pi` processes. Breadth is now free to ask for and entirely the script's
+So: **an agent runs until it finishes or you abort it.** There is no timeout.
+
+One bound survives, and it is a different kind of thing: a **process-wide ceiling of 32 concurrent
+subagents**, shared by every run. Not the per-run throttle that was removed — a single fan-out of
+thirty still starts together — but `/workflows` supports several runs at once, and N runs × M agents
+with nothing counting is N×M `pi` processes, each a node process with a model connection. That is not
+a slow workflow, it is a fork bomb with a progress bar.
+
+The per-run `peakConcurrency` in `run.json` cannot see this: it is measured inside one run, so two
+runs peaking at eight apiece read as "8" twice and the sixteen appears in no field anywhere. There
+was no observation short of the machine falling over — which is why this one is a backstop rather
+than something to wait for evidence on.
+
+Past the ceiling, agents queue and are dispatched **round-robin across runs**, so a hundred-agent
+sweep cannot starve a two-agent workflow queued behind it. Within a run the queue is FIFO. Breadth is now free to ask for and entirely the script's
 responsibility to get right — the tool description says so in as many words, and pairs it with the
 decomposition guidance that makes a wide run the *normal* shape for implementation work rather than a
 special case.
