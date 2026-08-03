@@ -44,7 +44,7 @@
  */
 import { runInNewContext } from "node:vm";
 import { CONFIG } from "./config.ts";
-import { agentKey } from "./journal.ts";
+import { agentKey, shellKey, type ShellResult } from "./journal.ts";
 
 export interface WorkflowMeta {
 	name: string;
@@ -117,17 +117,55 @@ export interface EngineHooks {
 	agentEnd?: (index: number, ok: boolean) => void;
 	/** Full outcome of an agent() call — what the journal records. */
 	agentSettled?: (outcome: AgentOutcome) => void;
+	/**
+	 * Everything that affects an agent's answer but is only NAMED in its
+	 * options — the resolved agentType definition, the content of context
+	 * files. Folded into the replay key so editing either invalidates the cache.
+	 */
+	keyExtras?: (options: AgentOptions) => unknown;
 	/** Serve a cached result for this content key instead of spawning. */
 	replay?: (key: string) => { hit: true; value: unknown } | { hit: false };
 	/** Park a call while the run is paused; resolves when it may proceed. */
 	waitWhilePaused?: (signal: AbortSignal) => Promise<void>;
 	log: (message: string) => void;
 	phase: (title: string) => void;
+	/**
+	 * Run a command on the HOST and return its real exit code.
+	 *
+	 * Absent when the project is not trusted, in which case shell() throws
+	 * rather than silently doing nothing — a gate that quietly stops gating is
+	 * the failure this whole feature exists to remove.
+	 */
+	shell?: (command: string, options: ShellOptions, signal: AbortSignal) => Promise<ShellResult>;
+	/** A shell() call settled; what the journal records. */
+	shellSettled?: (outcome: ShellOutcome) => void;
+}
+
+export interface ShellOptions {
+	/** Kill the process after this many ms. Omitted means no limit. */
+	timeoutMs?: number;
+	/** Extra environment for the child, merged over the host's. */
+	env?: Record<string, string>;
+}
+
+export interface ShellOutcome {
+	key: string;
+	command: string;
+	cwd: string;
+	result: ShellResult;
+	startedAt: number;
+	endedAt: number;
+	replayed: boolean;
 }
 
 export interface EngineOptions {
 	/** Extra sandbox bindings, merged after the built-in globals. */
 	globals?: Record<string, unknown>;
+	/**
+	 * The project directory shell() runs in and keys against. Absent in unit
+	 * tests, where no shell hook is wired either.
+	 */
+	cwd?: string;
 }
 
 // ---------------------------------------------------------------------- meta
@@ -351,7 +389,7 @@ export async function runWorkflowScript(
 		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
 		const index = ++agentCount;
 		const label = options.label ?? `agent ${index}`;
-		const key = agentKey(prompt, options as unknown as Record<string, unknown>);
+		const key = agentKey(prompt, options as unknown as Record<string, unknown>, hooks.keyExtras?.(options));
 		const startedAt = Date.now();
 
 		// A shared session is one conversation continued by one agent at a time.
@@ -539,8 +577,54 @@ export async function runWorkflowScript(
 		);
 	};
 
+	const cwd = engineOptions.cwd ?? process.cwd();
+
+	/**
+	 * Run a command on the host and hand the script its real exit code.
+	 *
+	 * This is the only thing in the sandbox an agent cannot author. Agents get
+	 * their own bash inside their own pi process, so shell() grants no new
+	 * power — it relocates existing power to where the RESULT is trustworthy.
+	 * That distinction is the whole point: a workflow that gates on an agent's
+	 * assertion that the tests passed is gating on prose, and we have watched
+	 * that produce "17/17 passing" for an application that never started.
+	 *
+	 * Replayed on resume like an agent, because re-running a build is slow and
+	 * re-running a mutating command is worse.
+	 */
+	const shell = async (command: unknown, options: unknown = {}): Promise<ShellResult> => {
+		if (typeof command !== "string" || !command.trim()) {
+			throw new WorkflowFatalError("shell() requires a non-empty command string");
+		}
+		if (!hooks.shell) {
+			throw new WorkflowFatalError(
+				"shell() is unavailable because this project is not trusted. Trust the project to use it as a gate, or verify some other way — do not fall back to asking an agent whether it succeeded.",
+			);
+		}
+		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+
+		const opts = (options && typeof options === "object" ? options : {}) as ShellOptions;
+		const startedAt = Date.now();
+		const key = shellKey(command, cwd, opts as unknown as Record<string, unknown>);
+
+		const cached = hooks.replay?.(key);
+		if (cached?.hit) {
+			const value = cached.value as ShellResult;
+			hooks.shellSettled?.({ key, command, cwd, result: value, startedAt, endedAt: Date.now(), replayed: true });
+			return value;
+		}
+
+		await hooks.waitWhilePaused?.(controller.signal);
+		if (controller.signal.aborted) throw new WorkflowFatalError("workflow aborted");
+
+		const result = await hooks.shell(command, opts, controller.signal);
+		hooks.shellSettled?.({ key, command, cwd, result, startedAt, endedAt: Date.now(), replayed: false });
+		return result;
+	};
+
 	const sandbox: Record<string, unknown> = {
 		agent,
+		shell,
 		parallel,
 		pipeline,
 		phase: (title: unknown) => hooks.phase(String(title)),

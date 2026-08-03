@@ -30,8 +30,10 @@
  * are exclusive on purpose: announcing a `wait: true` run as well would bill
  * the same tokens twice.
  */
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -40,8 +42,14 @@ import { loadAgentTypes, type AgentTypeDef, type AgentTypeRegistry } from "./age
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
 import { CONFIG, SPEND_CHANNEL, SPEND_SOURCE, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
-import { runWorkflowScript, validateScript, type AgentOptions, type EngineHooks } from "./engine.ts";
-import { ReplayIndex, type JournalInput } from "./journal.ts";
+import {
+	runWorkflowScript,
+	validateScript,
+	type AgentOptions,
+	type EngineHooks,
+	type ShellOptions,
+} from "./engine.ts";
+import { ReplayIndex, shellKey, type JournalInput, type ShellResult } from "./journal.ts";
 import { resolveModelReference, resolveRole } from "./models.ts";
 import {
 	allAgentsFailed,
@@ -143,6 +151,93 @@ export function resolveScript(
 		throw new Error(`cannot resume ${params.resumeFromRunId}: its stored script is missing`);
 	}
 	throw new Error("workflow requires one of: script, name, scriptPath, or resumeFromRunId");
+}
+
+/** Output kept per stream before shell() starts discarding. */
+const SHELL_OUTPUT_CAP = 200_000;
+
+/**
+ * Run one shell() command on the host.
+ *
+ * `shell: true` because the point is to run the project's own gate — `pnpm test
+ * && pnpm build` — exactly as a person would type it. That is the same reach a
+ * subagent's bash already has, which is why this is gated on project trust at
+ * the call site rather than sandboxed here: it grants no new power, it moves
+ * existing power somewhere the result cannot be authored by a model.
+ *
+ * Output is capped per stream rather than truncated at the end, so a runaway
+ * command cannot exhaust memory before it is killed.
+ */
+export function runShellCommand(
+	command: string,
+	cwd: string,
+	options: ShellOptions,
+	signal: AbortSignal,
+): Promise<ShellResult> {
+	return new Promise((resolve) => {
+		let stdout = "";
+		let stderr = "";
+		let truncated = false;
+		let timedOut = false;
+
+		const child = spawn(command, {
+			shell: true,
+			cwd,
+			env: options.env ? { ...process.env, ...options.env } : process.env,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		const collect = (chunk: Buffer, into: "out" | "err") => {
+			const text = chunk.toString("utf8");
+			if (into === "out") {
+				if (stdout.length >= SHELL_OUTPUT_CAP) truncated = true;
+				else stdout += text.slice(0, SHELL_OUTPUT_CAP - stdout.length);
+			} else {
+				if (stderr.length >= SHELL_OUTPUT_CAP) truncated = true;
+				else stderr += text.slice(0, SHELL_OUTPUT_CAP - stderr.length);
+			}
+		};
+		child.stdout?.on("data", (chunk: Buffer) => collect(chunk, "out"));
+		child.stderr?.on("data", (chunk: Buffer) => collect(chunk, "err"));
+
+		const kill = () => {
+			child.kill("SIGTERM");
+			const hard = setTimeout(() => {
+				if (child.exitCode === null) child.kill("SIGKILL");
+			}, 5000);
+			hard.unref?.();
+		};
+
+		// No timeout unless the script asks for one, matching the decision that
+		// removed every other wall-clock limit here. A gate that runs long is a
+		// slow gate; a gate that was killed is one whose verdict we do not have.
+		let timer: NodeJS.Timeout | undefined;
+		if (options.timeoutMs && options.timeoutMs > 0) {
+			timer = setTimeout(() => {
+				timedOut = true;
+				kill();
+			}, options.timeoutMs);
+			timer.unref?.();
+		}
+
+		const onAbort = () => kill();
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+
+		child.on("error", (error) => {
+			if (timer) clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+			// A command that could not start is a failed gate, not a crashed run:
+			// the script sees a non-zero exit and decides, same as any failure.
+			resolve({ exitCode: null, stdout, stderr: `${stderr}${String(error)}`, truncated, timedOut });
+		});
+
+		child.on("close", (code) => {
+			if (timer) clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+			resolve({ exitCode: code, stdout, stderr, truncated, timedOut });
+		});
+	});
 }
 
 export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOptions): void {
@@ -496,10 +591,57 @@ function startRun(
 			persist();
 			changed();
 		},
+		// Resolve what the options only name, so a resume cannot serve an answer
+		// produced under a role or a file that has since changed.
+		keyExtras: (agentOptions) => {
+			const type = agentOptions.agentType ? agentTypes.types.get(agentOptions.agentType) : undefined;
+			const files = Array.isArray(agentOptions.context?.files) ? agentOptions.context.files : [];
+			const contextDigest = files.length
+				? files
+						.map((file) => {
+							const full = isAbsolute(String(file)) ? String(file) : join(env.cwd, String(file));
+							try {
+								return `${file}:${createHash("sha256").update(readFileSync(full)).digest("hex").slice(0, 16)}`;
+							} catch {
+								// Unreadable now is itself a change worth invalidating on.
+								return `${file}:missing`;
+							}
+						})
+						.join("\n")
+				: undefined;
+			return {
+				// The resolved role, not its name: model, thinking, tools and prompt
+				// all change the answer.
+				agentDef: type ? { model: type.model, thinking: type.thinking, tools: type.tools, prompt: type.prompt } : undefined,
+				defaults: agentOptions.agentType ? agentTypes.defaults : undefined,
+				contextDigest,
+			};
+		},
 		replay: (key) => {
 			if (!replayIndex) return { hit: false };
 			const found = replayIndex.take(key);
 			return found.hit ? { hit: true, value: found.record.result } : { hit: false };
+		},
+		// Bound only when the project is trusted. Undefined makes shell() throw
+		// with a reason rather than resolve to something harmless — a gate that
+		// stops gating without saying so is exactly the failure this removes.
+		shell: env.approved
+			? (command, shellOptions, signal) => runShellCommand(command, env.cwd, shellOptions, signal)
+			: undefined,
+		shellSettled: (outcome) => {
+			journal({
+				kind: "shell",
+				key: outcome.key,
+				command: outcome.command,
+				cwd: outcome.cwd,
+				exitCode: outcome.result.exitCode,
+				result: outcome.result,
+				startedAt: outcome.startedAt,
+				endedAt: outcome.endedAt,
+				...(outcome.replayed ? { replayed: true } : {}),
+			});
+			const verdict = outcome.result.exitCode === 0 ? "ok" : `exit ${outcome.result.exitCode ?? "signal"}`;
+			hooks.log(`${outcome.replayed ? "replayed " : ""}shell: ${outcome.command.split("\n")[0]!.slice(0, 80)} — ${verdict}`);
 		},
 		waitWhilePaused: async (signal) => {
 			if (!gate.isPaused()) return;
@@ -672,7 +814,7 @@ function startRun(
 
 	journal({ kind: "run", event: "start" });
 
-	run.settled = runWorkflowScript(params.script, params.args, hooks, controller.signal).then(
+	run.settled = runWorkflowScript(params.script, params.args, hooks, controller.signal, { cwd: env.cwd }).then(
 		(result) => {
 			// The script returning is not the same as the work happening. Judge the
 			// run on its agents — see tallyAgents for what this is protecting.

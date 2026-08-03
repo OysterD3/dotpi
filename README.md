@@ -1708,6 +1708,38 @@ at plain `vim` — and changing `$EDITOR` to suit pi would change it for git, cr
 else too. Keep it as strict JSON: pi parses settings with `JSON.parse`, so a `//` comment silently
 breaks the whole file.
 
+## Gating a workflow on facts
+
+`shell(command, opts?)` runs a command in the **host** process and returns
+`{exitCode, stdout, stderr, truncated, timedOut}`. It is the only value in a workflow script an
+agent cannot author.
+
+That matters because the alternative does not work. A run here told its agent "Run pnpm check", got
+25 invocations of `pnpm check && pnpm test`, a report of *"17/17 passing"*, and an application that
+did not start; the adversarial reviewer that followed ran zero commands touching the real thing.
+Both agents were honest — the acceptance criterion was one they could satisfy by writing it. Asking
+a model to pick a better criterion is still asking the model for the verdict.
+
+```js
+phase('Verify')
+const tests = await shell('pnpm check && pnpm test')
+if (tests.exitCode !== 0) await agent('Build is red, fix it:\n' + tests.stderr.slice(-4000))
+```
+
+Three properties worth knowing:
+
+- **Agents cannot call it.** They have bash inside their own pi process, but its output reaches the
+  script only as something they chose to type. `shell()` exists solely in the orchestration sandbox.
+- **It grants no new power.** A subagent already runs arbitrary commands. This relocates existing
+  reach to where the *result* is trustworthy. It is bound only when the project is trusted, and
+  throws with a reason otherwise — a gate that silently stops gating is worse than none.
+- **Write `exitCode === 0`, never `!== 0`.** A signal-killed process reports `null`.
+
+Calls are journaled and replayed on resume like agents, because re-running a build is slow and
+re-running a mutating command is worse. Output is capped per stream at 200KB with `truncated` set.
+There is no default timeout, matching every other wall-clock decision here; pass `timeoutMs` when a
+specific gate can hang.
+
 ## `agent/models.json`
 
 Tracked, alongside `settings.json`. pi reads it from `getAgentDir()/models.json` and its schema

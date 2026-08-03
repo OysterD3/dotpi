@@ -43,6 +43,7 @@ Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async c
   - context — what to fork into the agent (see Forking context below).
   - session — a name, scoped to this run. Agents sharing a name continue ONE conversation in turn (see Shared sessions below).
 - parallel(thunks): Promise<any[]> — run tasks concurrently. This is a BARRIER: awaits all thunks. A thunk that throws resolves to null — the call itself never rejects.
+- shell(command, opts?): Promise<{exitCode, stdout, stderr, truncated, timedOut}> — run a command on the HOST and read its real exit code. See **Gating on facts** below; this is the only value in a script an agent cannot author. opts: {timeoutMs?, env?}. Replayed on resume like an agent. Unavailable (throws) when the project is not trusted.
 - pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Every stage callback receives (prevResult, originalItem, index). A stage that throws drops that item to null and skips its remaining stages.
 - phase(title): void — group subsequent agents under this title in progress output.
 - log(message): void — emit a progress line.
@@ -103,13 +104,26 @@ Stating the ownership IN THE PROMPT is what keeps concurrent agents in one repo 
 
 Two smells that both mean the same thing. A prompt containing a bulleted list of requirements: that list IS the fan-out, so split it before you run it. And a single agent past ~40 turns: that is a decomposition failure showing up as wall-clock, not diligence. Neither is fixed by giving the one agent more thinking.
 
-**Name a finish line the agent cannot move.** An implement agent satisfies exactly the check you write into its prompt and no more, so a weak check buys you code that passes it and nothing else. A typecheck is not a finish line — it proves the code compiles. Neither are tests the same agent wrote against a fixture the same agent wrote: that is a closed loop, and it closes green whatever the code does.
+**Gating on facts, not on claims.** An implement agent satisfies exactly the check you write into its prompt, so a weak check buys code that passes it and nothing else. But the deeper problem is who produces the verdict: if the agent reports whether it succeeded, the verdict is prose, and prose is free to be wrong.
 
-This is measured, not hypothetical. A run here told its agent "Run pnpm check", got 25 invocations of \`pnpm check && pnpm test\`, a report of "17/17 passing", and an application that did not start — because nothing in the task ever required starting it. The adversarial reviewer that followed ran zero commands that touched the real thing.
+This is measured, not hypothetical. A run here told its agent "Run pnpm check", got 25 invocations of \`pnpm check && pnpm test\`, a report of "17/17 passing", and an application that did not start. The adversarial reviewer that followed ran zero commands touching the real thing. Both agents were honest; the acceptance criterion was one they could satisfy by writing it.
 
-So state acceptance in terms of the real artifact: start the binary and see it answer, drive the actual endpoint, load the real file, run the pre-existing suite and not only the new one. Give the agent the exact command and the observable that means success. Where no such check exists yet, building one is the first agent's job — and it is worth its own agent, running in parallel with the parts it will be used to check.
+So do NOT ask an agent whether the work is good. Run the gate yourself:
 
-Say it once per implement agent, in the prompt, next to what it owns.
+  phase('Implement')
+  await parallel(PARTS.map(p => () => agent(p.prompt, { label: p.key, phase: 'Implement' })))
+  phase('Verify')
+  const tests = await shell('pnpm check && pnpm test')
+  if (tests.exitCode !== 0) {
+    await agent('The build is red. Fix it. Failures:\\n' + tests.stderr.slice(-4000), { phase: 'Verify' })
+  }
+  return { green: tests.exitCode === 0, output: tests.stdout.slice(-2000) }
+
+shell() runs in the host process, and agents cannot call it — they have their own bash inside their own pi, but its output reaches you only as something they chose to type. Only shell() gives you a number the model never touched. Write gates as \`exitCode === 0\`, never \`!== 0\`: a signal-killed process reports null.
+
+Prefer a gate that exercises the real artifact — start the binary and see it answer, drive the endpoint, run the PRE-EXISTING suite and not only the new one. Tests the same agent wrote against a fixture it also wrote are a closed loop, and it closes green whatever the code does. Where no such check exists yet, building one is the first agent's job, and it is worth its own agent running in parallel with the parts it will check.
+
+Still say what each agent owns in its prompt. The gate tells you whether the work is good; ownership is what keeps concurrent writers from destroying each other's work.
 
 Quality patterns, for when the request justifies the extra agents:
 - Adversarial verify: N independent skeptics per finding, each prompted to REFUTE; kill if a majority refute. Prevents plausible-but-wrong findings from surviving. One verifier is the default; go to three only for claims that are expensive to be wrong about.

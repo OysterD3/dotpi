@@ -259,9 +259,16 @@ check("and observation beats intention", SUBAGENT_PREAMBLE.includes("Report what
 
 // The other half: the SCRIPT has to name a check the agent cannot satisfy by
 // writing the checker.
-check("description demands a real finish line", description.includes("**Name a finish line the agent cannot move.**"), true);
-check("and names the closed loop by name", description.includes("that is a closed loop"), true);
-check("a typecheck is called out as insufficient", description.includes("A typecheck is not a finish line"), true);
+// The prose-only version of this ("name a finish line the agent cannot move")
+// was itself the weaker fix: it asked the model to pick a better criterion
+// while leaving the VERDICT with the agent. shell() moves the verdict to the
+// host, so the description must point at it and must not regress to prose.
+check("description gates on facts, not claims", description.includes("**Gating on facts, not on claims.**"), true);
+check("and names the mechanism", description.includes("Only shell() gives you a number the model never touched"), true);
+check("with the null-exit gotcha", description.includes("exitCode === 0"), true);
+check("shell() is in the globals list", description.includes("shell(command, opts?)"), true);
+check("and names the closed loop by name", description.includes("are a closed loop"), true);
+check("the measured failure is kept as evidence", description.includes("an application that did not start"), true);
 // The other half of the same measurement. Bounding depth stops one agent
 // grinding; it does not by itself make the run wide, and on this machine every
 // implement phase came out one agent deep — 53 minutes and 177 turns for a

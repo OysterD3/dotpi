@@ -16,7 +16,7 @@ import { findKeyword, hasUltracodeKeyword } from "./keyword.ts";
 import { parseAgentTypes } from "./agents.ts";
 import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, type AgentOptions } from "./engine.ts";
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
-import { agentKey, ReplayIndex, stableStringify } from "./journal.ts";
+import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
@@ -1909,6 +1909,97 @@ console.log("\n--- tool: the reasoning-level chain ---");
 		resolveThinking({ thinking: "maximum" } as never, { thinking: "nonsense" } as never, defaults),
 		"low",
 	);
+}
+
+console.log("\n--- journal: the key covers what options only NAME ---");
+{
+	const opts = { agentType: "explorer", context: { files: ["a.ts"] } };
+	// Same call, different resolved role -> different key. Before this, editing a
+	// role's prompt or model in subagents.json left every cached result valid and
+	// a resume replayed an answer produced by the OLD role.
+	const roleA = agentKey("audit", opts, { agentDef: { model: "sonnet", prompt: "be brief" } });
+	const roleB = agentKey("audit", opts, { agentDef: { model: "sonnet", prompt: "be exhaustive" } });
+	check("editing the role's prompt invalidates", roleA === roleB, false);
+	const modelA = agentKey("audit", opts, { agentDef: { model: "sonnet" } });
+	const modelB = agentKey("audit", opts, { agentDef: { model: "opus" } });
+	check("so does changing its model", modelA === modelB, false);
+
+	// Same call, different file CONTENT -> different key. We hash the path in
+	// options, but the bundle is materialised at spawn time, so a path-only key
+	// survived an edit to the file it names.
+	const fileA = agentKey("audit", opts, { contextDigest: "a.ts:1111" });
+	const fileB = agentKey("audit", opts, { contextDigest: "a.ts:2222" });
+	check("editing a context file invalidates", fileA === fileB, false);
+
+	// And the key is still stable when nothing changed, or replay never hits.
+	check("identical inputs, identical key", agentKey("audit", opts, { agentDef: { model: "x" } }), agentKey("audit", opts, { agentDef: { model: "x" } }));
+	check("omitting extras is still supported", typeof agentKey("audit", opts), "string");
+}
+
+console.log("\n--- engine: shell() is the un-fakeable gate ---");
+{
+	// The whole point: the script reads an exit code the AGENT cannot author.
+	// A workflow that gates on an agent asserting the tests passed is gating on
+	// prose — measured here as "17/17 passing" for an app that never started.
+	const calls: Array<{ command: string; cwd: string }> = [];
+	const f = fakeHooks(() => "x");
+	const hooks = {
+		...f.hooks,
+		shell: async (command: string, _o: unknown, _s: unknown) => {
+			calls.push({ command, cwd: "/proj" });
+			return { exitCode: command.includes("pass") ? 0 : 1, stdout: "out", stderr: "", truncated: false, timedOut: false };
+		},
+	};
+	const run = await runWorkflowScript(
+		`${META}const a = await shell('pnpm test --pass')
+const b = await shell('pnpm test --fail')
+return [a.exitCode, b.exitCode, a.stdout]`,
+		undefined,
+		hooks as never,
+		undefined,
+		{ cwd: "/proj" },
+	);
+	check("the real exit code reaches the script", run.result, [0, 1, "out"]);
+	check("both commands ran on the host", calls.map((c) => c.command), ["pnpm test --pass", "pnpm test --fail"]);
+}
+{
+	// Untrusted project: shell() must THROW, not resolve to something harmless.
+	// A gate that silently stops gating is worse than no gate.
+	const f = fakeHooks(() => "x");
+	const outcome = await runWorkflowScript(`${META}return await shell('pnpm test')`, undefined, f.hooks, undefined, {}).then(
+		() => "no-throw",
+		(error) => (error instanceof Error && error.message.includes("not trusted") ? "refused" : `wrong: ${error}`),
+	);
+	check("no trust -> shell() refuses loudly", outcome, "refused");
+}
+{
+	const f = fakeHooks(() => "x");
+	const hooks = { ...f.hooks, shell: async () => ({ exitCode: 0, stdout: "", stderr: "", truncated: false, timedOut: false }) };
+	const outcome = await runWorkflowScript(`${META}return await shell('  ')`, undefined, hooks as never, undefined, { cwd: "/p" }).then(
+		() => "no-throw",
+		(error) => (error instanceof Error && error.message.includes("non-empty command") ? "rejected" : `wrong: ${error}`),
+	);
+	check("an empty command is rejected", outcome, "rejected");
+}
+
+console.log("\n--- journal: shell keys and replay ---");
+{
+	// Salted, so a shell key can never be served an agent's result or vice versa
+	// even if the text were identical.
+	check("shell and agent keys are different domains", shellKey("x", "/p", {}) === agentKey("x", {}), false);
+	check("cwd is significant", shellKey("pnpm test", "/a", {}) === shellKey("pnpm test", "/b", {}), false);
+	check("options are significant", shellKey("t", "/p", {}) === shellKey("t", "/p", { timeoutMs: 5 }), false);
+	check("same call, same key", shellKey("t", "/p", { timeoutMs: 5 }), shellKey("t", "/p", { timeoutMs: 5 }));
+
+	// A non-zero exit IS a result and must replay. Agents differ: a failed agent
+	// is not a result and is re-run.
+	const key = shellKey("pnpm test", "/p", {});
+	const index = new ReplayIndex([
+		{ kind: "shell", seq: 1, t: 1, key, command: "pnpm test", cwd: "/p", exitCode: 1, startedAt: 0, endedAt: 1, result: { exitCode: 1, stdout: "boom", stderr: "", truncated: false, timedOut: false } },
+	]);
+	const hit = index.take(key);
+	check("a failing shell call still replays", hit.hit && (hit.record.result as { exitCode: number }).exitCode, 1);
+	check("and is consumed once", index.take(key).hit, false);
 }
 
 console.log("\n--- store: work still owed ---");
