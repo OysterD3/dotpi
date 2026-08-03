@@ -715,8 +715,14 @@ export class WorkflowsPanel {
 		// identical up there. The session file is a real transcript the child
 		// appends to as it works, so the tail is the difference between a spinner
 		// and a monitor.
-		if (agent.sessionFile) {
-			const activity = this.activityFor(agent.sessionFile, Math.max(3, budget - lines.length - 2));
+		// The room genuinely left, after the "─ live ─" header and the one line the
+		// clip below spends on its "↓ more" notice. No floor: a floor of 3 asked for
+		// lines the head-keeping clip would discard on the same pass, so a cramped
+		// pane paid for a transcript read per redraw whose only visible effect was
+		// raising the number in "↓ N more lines".
+		const room = budget - lines.length - 2;
+		if (agent.sessionFile && room > 0) {
+			const activity = this.activityFor(agent.sessionFile, room);
 			if (activity.length > 0) {
 				lines.push(theme.fg("muted", agent.endedAt ? "─ last activity ─" : "─ live ─"));
 				for (const event of activity) {

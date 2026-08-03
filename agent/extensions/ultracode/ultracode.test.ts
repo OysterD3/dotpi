@@ -1923,6 +1923,7 @@ console.log("\n--- store: tailing a live agent session ---");
 			entry({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "let me\n  look" }] } }) +
 			entry({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "pnpm test" } }] } }) +
 			entry({ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "17 passed" }] } }) +
+			entry({ type: "message", message: { role: "user", content: [{ type: "text", text: "now fix the flake" }] } }) +
 			entry({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Tests   are   green" }] } }),
 	);
 	const events = sessionActivity(file);
@@ -1931,8 +1932,12 @@ console.log("\n--- store: tailing a live agent session ---");
 	// Whitespace is collapsed because these render as one line each.
 	check("multi-line thinking becomes one line", events[0], { kind: "thinking", name: "", detail: "let me look" });
 	// A tool RESULT is not the agent acting; showing it would drown the view in
-	// build output, which is the thing the agent is reading, not doing.
-	check("tool results are not activity", events.some((e) => e.kind === "result"), false);
+	// build output, which is the thing the agent is reading, not doing. Assert on
+	// the fixture's actual result text: an earlier version of this checked for a
+	// `kind` of "result", which sessionActivity never emits, so it passed while
+	// "17 passed" was sitting in the output it claimed to exclude.
+	check("tool results are not activity", events.map((e) => e.detail), ["let me look", "pnpm test", "Tests are green"]);
+	check("nor is the user's prompt", events.some((e) => e.detail.includes("fix the flake")), false);
 
 	// The case a live tail always hits: the child is mid-write.
 	appendFileSync(file, '{"type":"message","message":{"role":"assist');
@@ -1941,6 +1946,29 @@ console.log("\n--- store: tailing a live agent session ---");
 
 	check("a missing file is empty, not an error", sessionActivity(join(dir, "nope.jsonl")), []);
 	check("the limit is honoured", sessionActivity(file, 1).length, 1);
+
+	// The tail is READ, not merely parsed. Three 150 KB records keep the line
+	// count far under the parse cap, so only a bounded read from the end can
+	// keep the first one out — which is the property that stops a redraw from
+	// costing more the longer the agent has been running.
+	const big = join(dir, "big.jsonl");
+	const bulk = (tag: string) =>
+		entry({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `${tag} ${"x".repeat(150_000)}` }] } });
+	writeFileSync(big, bulk("ANCIENT") + bulk("MIDDLE") + bulk("RECENT"));
+	const tailed = sessionActivity(big);
+	check("only the last bytes are read", tailed.map((e) => e.detail.slice(0, 6)), ["RECENT"]);
+	check("and a huge block is bounded before collapsing", tailed[0]!.detail.length <= 512, true);
+
+	// The query beats the scope: a search's `path` is usually "." and says
+	// nothing, while the pattern is the whole reason the call happened.
+	const args = join(dir, "args.jsonl");
+	writeFileSync(
+		args,
+		entry({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "search", arguments: { path: ".", pattern: "TODO" } }] } }) +
+			entry({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "odd", arguments: { needle: "haystack" } }] } }),
+	);
+	check("a search shows its pattern, not its scope", sessionActivity(args).map((e) => e.detail), ["TODO", "haystack"]);
+
 	rmSync(dir, { recursive: true, force: true });
 }
 

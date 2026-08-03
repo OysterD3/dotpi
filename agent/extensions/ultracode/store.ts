@@ -22,7 +22,20 @@
  * are named `<runId>-a<index>`.
  */
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	closeSync,
+	existsSync,
+	fstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { RUN_STORE_DIR } from "./config.ts";
 import { pruneWorktrees } from "./worktree.ts";
@@ -322,8 +335,18 @@ export function appendJournalLine(agentDir: string, runId: string, record: unkno
 }
 
 /** One thing an agent did, flattened for the live view. */
+/**
+ * How much of a transcript's end to read. Comfortably holds the `limit * 8`
+ * records the parser looks at, while bounding a redraw to a fixed-size read no
+ * matter how long the agent has been running.
+ */
+const ACTIVITY_TAIL_BYTES = 256 * 1024;
+
+/** Per-block character bound before collapsing whitespace; see `flat`. */
+const DETAIL_CHARS = 512;
+
 export interface SessionEvent {
-	kind: "text" | "thinking" | "tool" | "result";
+	kind: "text" | "thinking" | "tool";
 	/** Tool name for "tool", otherwise empty. */
 	name: string;
 	/** A single line, already collapsed — the caller only truncates to width. */
@@ -339,23 +362,50 @@ export interface SessionEvent {
  * pi transcript being appended to as the child works, so tailing it is the
  * difference between a spinner and a monitor.
  *
- * Only the tail is parsed. These files reach megabytes on a long agent and the
- * panel re-renders on every turn, so parsing the whole thing would put the cost
- * of watching in proportion to how long you have been watching.
+ * Only the tail is READ, not merely parsed. These files reach megabytes on a
+ * long agent and the panel re-renders on every turn, so slurping the whole
+ * thing and then slicing would still put the cost of watching in proportion to
+ * how long you have been watching — on the render path.
  */
 export function sessionActivity(sessionFile: string, limit = 12): SessionEvent[] {
 	let raw: string;
+	/** Whether the read began mid-file, so line one is a fragment. */
+	let clipped = false;
+	let fd: number | undefined;
 	try {
-		raw = readFileSync(sessionFile, "utf8");
+		fd = openSync(sessionFile, "r");
+		const size = fstatSync(fd).size;
+		const from = Math.max(0, size - ACTIVITY_TAIL_BYTES);
+		const span = size - from;
+		const buffer = Buffer.allocUnsafe(span);
+		const got = readSync(fd, buffer, 0, span, from);
+		// A byte offset can land inside a multi-byte character; the mojibake is
+		// confined to the partial first line, which is dropped below anyway.
+		raw = buffer.toString("utf8", 0, got);
+		clipped = from > 0;
 	} catch {
 		return [];
+	} finally {
+		if (fd !== undefined) closeSync(fd);
 	}
 	const lines = raw.split("\n");
+	// The first line is half a record when the read started mid-file.
+	if (clipped) lines.shift();
 	// Generous relative to `limit`: one assistant message can carry several
 	// blocks, and a run of tool results can push the interesting text back.
 	const tail = lines.slice(Math.max(0, lines.length - limit * 8));
 	const events: SessionEvent[] = [];
-	const flat = (text: unknown) => String(text ?? "").replace(/\s+/g, " ").trim();
+	// Collapse only what could be displayed. A single block is routinely tens of
+	// kilobytes — a reasoning trace, a file read back — and the caller truncates
+	// to terminal width regardless, so running the whitespace regex over the
+	// whole thing is work thrown away. The bound is far above any terminal width
+	// so that leading indentation cannot eat the entire budget.
+	const flat = (text: unknown) => String(text ?? "").slice(0, DETAIL_CHARS).replace(/\s+/g, " ").trim();
+	/** Last resort for a tool whose arguments use none of the known names. */
+	const firstString = (args: Record<string, unknown>) => {
+		for (const value of Object.values(args)) if (typeof value === "string" && value.trim()) return value;
+		return "";
+	};
 
 	for (const line of tail) {
 		if (!line.trim()) continue;
@@ -368,22 +418,36 @@ export function sessionActivity(sessionFile: string, limit = 12): SessionEvent[]
 		}
 		const message = entry?.message;
 		if (entry?.type !== "message" || !message) continue;
+		// Only what the agent itself produced is activity. A pi transcript stores
+		// tool RESULTS as messages carrying the same content shape, so without
+		// this every result's text renders as something the agent said — which is
+		// precisely the drowning this view exists to avoid. The string branch
+		// already checked the role; the array branch is where results actually
+		// arrive, so it is the branch that needed it.
+		if (message.role !== "assistant") continue;
 		const content = message.content;
 		if (typeof content === "string") {
-			if (message.role === "assistant" && flat(content)) events.push({ kind: "text", name: "", detail: flat(content) });
+			const detail = flat(content);
+			if (detail) events.push({ kind: "text", name: "", detail });
 			continue;
 		}
 		if (!Array.isArray(content)) continue;
 		for (const part of content as Array<Record<string, unknown>>) {
 			if (!part || typeof part !== "object") continue;
-			if (part.type === "text" && flat(part.text)) events.push({ kind: "text", name: "", detail: flat(part.text) });
-			else if (part.type === "thinking" && flat(part.thinking)) events.push({ kind: "thinking", name: "", detail: flat(part.thinking) });
-			else if (part.type === "toolCall") {
+			if (part.type === "text") {
+				const detail = flat(part.text);
+				if (detail) events.push({ kind: "text", name: "", detail });
+			} else if (part.type === "thinking") {
+				const detail = flat(part.thinking);
+				if (detail) events.push({ kind: "thinking", name: "", detail });
+			} else if (part.type === "toolCall") {
 				const args = (part.arguments ?? part.input) as Record<string, unknown> | undefined;
-				// The one field that says what the call is ABOUT. A command or a
-				// path is the whole story for the tools an agent spends its time in.
+				// What the call is ABOUT, and the query outranks the scope: for a
+				// search, `path` is usually "." or the repo root and says nothing
+				// while the pattern is the entire point. The trailing fallback keeps
+				// a tool that names its inputs anything else from rendering blank.
 				const subject = args
-					? flat(args.command ?? args.path ?? args.file_path ?? args.pattern ?? args.query ?? "")
+					? flat(args.command ?? args.pattern ?? args.query ?? args.file_path ?? args.path ?? firstString(args))
 					: "";
 				events.push({ kind: "tool", name: String(part.name ?? "?"), detail: subject });
 			}

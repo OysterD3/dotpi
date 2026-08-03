@@ -34,6 +34,22 @@ export const CONFIG = {
 	/** Wall-clock ceiling for one reviewer call, so a hung spawn cannot wedge the turn. */
 	reviewerTimeoutMs: 5 * 60_000,
 	/**
+	 * Reasoning level for the reviewer, passed explicitly on every call.
+	 *
+	 * The point is that it is stated at all. Omitting --thinking does not mean
+	 * "the model's default", it means the child reads settings.json and takes
+	 * `defaultThinkingLevel` — so raising that for the session you are typing in
+	 * silently raised every advisor consult too, and the advisor is spawned
+	 * per tool call with the whole transcript in its prompt. That coupling is
+	 * invisible at the point where the setting is edited, which is what makes it
+	 * a trap rather than a preference.
+	 *
+	 * "medium" because a second opinion is worth some reasoning and this is not
+	 * the session's own model: the reviewer reads a transcript and answers, it
+	 * does not carry a task.
+	 */
+	reviewerThinking: "medium",
+	/**
 	 * How often the "what is the advisor doing" line is repainted. The elapsed
 	 * time is shown in whole seconds, so a faster tick would redraw without
 	 * saying anything new — and the point of the tick is that the number moves

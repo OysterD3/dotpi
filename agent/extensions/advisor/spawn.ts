@@ -28,6 +28,8 @@ export interface ReviewerRequest {
 	cwd: string;
 	/** "provider/model-id" for pi's --model flag. Required: the reviewer model. */
 	model: string;
+	/** Reasoning level; defaults to CONFIG.reviewerThinking. Never omitted downstream. */
+	thinking?: string;
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	/**
@@ -115,6 +117,12 @@ export function buildArgs(request: ReviewerRequest): string[] {
 		"--no-approve",
 		"--model",
 		scrubArg(request.model),
+		// Always passed, never conditional: an omitted --thinking is not "leave it
+		// to the model", it is "inherit settings.json defaultThinkingLevel", so
+		// leaving it off couples every consult to the level chosen for the session
+		// the advisor is reviewing. See CONFIG.reviewerThinking.
+		"--thinking",
+		scrubArg(request.thinking ?? CONFIG.reviewerThinking),
 	];
 	args.push(scrubArg(request.prompt));
 	return args;

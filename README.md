@@ -1218,6 +1218,11 @@ flattens the session branch (task, every tool call, every result) and runs the r
 **tool-less headless `pi` call** (`--no-tools`, so it advises and cannot act). What the agent sees is
 the same either way: call `advisor()`, wait, get advice back.
 
+That child call also passes `--thinking` explicitly (`CONFIG.reviewerThinking`, currently `medium`).
+Omitting the flag does **not** mean "the model's default" — the child reads `settings.json` and
+inherits `defaultThinkingLevel`, so raising that for the session being reviewed silently raised every
+consult along with it, at one spawn per `advisor()` call with the whole transcript in the prompt.
+
 The reviewer model is **configurable and required** — that is the whole feature. With none set the
 tool is not offered at all. Set it three ways, in priority order:
 
@@ -1851,7 +1856,7 @@ is committed to a public repo. Keys belong in a gitignored file that is also lis
 
 ## Installed packages
 
-Four third-party packages are pinned in `settings.packages`. `pi install` vendors them into
+Five third-party packages are pinned in `settings.packages`. `pi install` vendors them into
 `agent/npm/` and `agent/git/`, both gitignored — the pins are the record, not the trees.
 
 | Package | What it does | Configured by |
@@ -1864,10 +1869,14 @@ Four third-party packages are pinned in `settings.packages`. `pi install` vendor
 
 **The `compact-tools` extension was removed for this.** It re-registered `read`, `bash`, `grep`,
 `find` and `ls` to give each a one-line collapsed row, and pi-fff in `override` mode re-registers
-`find` and `grep` for real. Two extensions claiming the same tool name is decided by load order —
-`agent/extensions/` loads before installed packages, so pi-fff would have won and the collision
-would have been silent. Deleting the local one makes the ownership explicit. The cost is that
-`read`, `bash` and `ls` go back to pi's default multi-line collapsed rendering.
+`find` and `grep` for real. Two extensions claiming the same tool name is decided by load order, and
+it resolves the opposite way to the obvious guess: `getAllRegisteredTools` keeps the **first**
+registration for a name (`if (!toolsByName.has(name))`), and installed packages load **last**, after
+`agent/extensions/`. So **compact-tools would have won, and pi-fff's `find`/`grep` would have been
+the thing silently ignored** — the collision would have quietly defeated the package that was
+installed for exactly those two tools. Deleting the local extension is what actually hands the names
+to FFF, not merely a tidy-up. The cost is that `read`, `bash` and `ls` go back to pi's default
+multi-line collapsed rendering.
 
 **`override` mode is set via `PI_FFF_MODE=override` in `~/.zshrc`**, not here. pi has no settings
 key for extension flags — the mode comes from `--fff-mode`, the env var, or `/fff-mode override`,
@@ -1875,10 +1884,10 @@ and the last of those only persists for one session (it is stored as a session e
 `env` extension gone there is no `.env` to put it in either, so the shell profile is the only
 durable place left.
 
-**Two of these are unpinned by version** (`pi-web-access`, `codex-fast-mode`) and resolve to whatever
-is latest at install time. The lockfile that would record what actually landed lives in `agent/npm/`,
-which is gitignored, so a clone can silently get a different build. That is a deliberate trade for
-staying current, not an oversight — pin them with `@x.y.z` if reproducibility matters more.
+**All five are pinned to an exact version or commit.** The lockfile that would otherwise record what
+landed lives in `agent/npm/`, which is gitignored, so anything left floating lets a clone silently
+get a different build — `pi-web-access` and `codex-fast-mode` used to float for exactly that reason
+and no longer do. Bump the pins deliberately; nothing else in the repo records what you were running.
 
 **Compaction moved out of tracked config.** The local `compaction` extension was removed because
 `pi-openai-server-compaction` registers the same `session_before_compact` hook and one would silently

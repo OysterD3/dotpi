@@ -912,12 +912,24 @@ function startRun(
 			// no file to tail and reported "none" for the entire time the agent was
 			// actually doing something. The lookup is a readdir, so it stops once
 			// it has an answer.
+			// Resolved once per ATTEMPT, not once per row. `row` outlives a schema
+			// retry while `sessionId` does not, so short-circuiting on
+			// `row.sessionFile` pinned the panel to attempt 0's abandoned transcript
+			// — you would sit watching the attempt that failed while the one that
+			// produced the answer ran invisibly. A later attempt overwrites; the flag
+			// only stops the readdir repeating within a single attempt, and stays
+			// unset until the lookup succeeds, so a transcript that is not on disk
+			// yet is retried on the next turn instead of being given up on.
+			let recorded = false;
 			const recordTranscript = () => {
-				if (!row || row.sessionFile) return;
+				if (!row || recorded) return;
 				// Looked up by the id this agent actually ran under. Deriving it from
 				// (index, attempt) missed every shared-session agent, whose id is
 				// `<runId>-s<slug>-<hash>`.
-				row.sessionFile = sessionFile ?? sessionPathById(agentDir, runId, sessionId) ?? row.sessionFile;
+				const found = sessionFile ?? sessionPathById(agentDir, runId, sessionId);
+				if (!found) return;
+				row.sessionFile = found;
+				recorded = true;
 			};
 
 			// Spend is applied per turn as the child reports it, not in one lump
@@ -926,8 +938,8 @@ function startRun(
 			// the fleet keep running. The deltas already cover a dead agent's spend
 			// too, so neither branch below adds the total a second time.
 			const onUsage = (delta: SpawnUsage) => {
-				// Cheap after the first hit: recordTranscript short-circuits once
-				// row.sessionFile is set.
+				// Cheap after the first hit: recordTranscript short-circuits for the
+				// rest of this attempt once it has resolved a path.
 				recordTranscript();
 				addUsage(progress.usage, delta);
 				if (row) row.usage = addedUsage(row.usage, delta);

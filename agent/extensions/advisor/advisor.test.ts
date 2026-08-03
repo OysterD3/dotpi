@@ -546,6 +546,13 @@ console.log("\n--- spawn: a null byte must not disable the advisor ---");
 	check("clean text is untouched", scrubArg("nothing to strip"), "nothing to strip");
 	// The prompt is the last argv slot, which is what makes it args[12].
 	check("the prompt is still last", args.at(-1), "review this");
+
+	// --thinking is passed unconditionally. Omitting it does not mean "the
+	// model's default": the child reads settings.json and inherits
+	// defaultThinkingLevel, so raising that for the session being reviewed
+	// silently raised every consult with it.
+	check("the reasoning level is stated, not inherited", args[args.indexOf("--thinking") + 1], CONFIG.reviewerThinking);
+	check("and an explicit level overrides it", buildArgs({ prompt: "p", model: "m", thinking: "high" } as never).includes("high"), true);
 }
 
 rmSync(ROOT, { recursive: true, force: true });
