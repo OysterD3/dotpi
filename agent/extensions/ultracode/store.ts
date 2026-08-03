@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUN_STORE_DIR } from "./config.ts";
+import { pruneWorktrees } from "./worktree.ts";
 import { emptyUsage, type SpawnUsage } from "./spawn.ts";
 
 export type RunStatus = "running" | "paused" | "done" | "error" | "aborted" | "interrupted";
@@ -68,6 +69,15 @@ export interface RunMeta {
 	 */
 	peakConcurrency?: number;
 	deepestAgentTurns?: number;
+	/**
+	 * Worktree scopes this run left behind, with the branch holding the work.
+	 *
+	 * Persisted because the branches are RETAINED and the run's own result
+	 * message is the only other place they are named — so a session that ends
+	 * before you read it would leave committed work discoverable only by
+	 * guessing at `git branch --list 'pi/wf/*'`.
+	 */
+	worktrees?: Array<{ name: string; branch: string; baseCommit: string; files: number }>;
 	args?: unknown;
 }
 
@@ -255,13 +265,28 @@ export function unresumedInterrupted(metas: RunMeta[], cwd?: string): RunMeta[] 
 /** Drop the oldest settled runs past `keep`. Active runs are never pruned. */
 export function pruneRuns(agentDir: string, keep: number): void {
 	const settled = listRuns(agentDir).filter((meta) => isSettled(meta.status));
+	/** Projects whose git needs telling that a worktree directory has gone. */
+	const orphanedIn = new Set<string>();
 	for (const meta of settled.slice(keep)) {
+		const dir = runDir(agentDir, meta.runId);
+		// A run that opened worktree scopes registered them in the PROJECT's git,
+		// not here. Deleting the directory out from under that leaves an entry
+		// git reports as "prunable" and, worse, refuses to let anything reuse the
+		// path: `worktree add` on it fails with "missing but already registered"
+		// until someone prunes. Verified against a real repo.
+		if (meta.cwd && existsSync(join(dir, "worktrees"))) orphanedIn.add(meta.cwd);
 		try {
-			rmSync(runDir(agentDir, meta.runId), { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
 		} catch {
 			/* leave it for the next prune */
 		}
 	}
+	// After the directories are gone, so git sees them as missing. Best effort
+	// and deliberately fire-and-forget: retention must not be able to fail, and
+	// a stale registration is a nuisance rather than data loss. The scope
+	// BRANCHES are untouched — they hold work, and pruning a run's bookkeeping
+	// is not a decision to throw that away.
+	for (const cwd of orphanedIn) void pruneWorktrees(cwd);
 }
 
 // ------------------------------------------------------------------- journal

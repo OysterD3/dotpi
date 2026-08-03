@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { commitScope, createScope, discardEmptyScope, repoRoot, scopeChange, snapshotCommit } from "./worktree.ts";
+import { commitScope, createScope, discardEmptyScope, pruneWorktrees, repoRoot, scopeChange, snapshotCommit } from "./worktree.ts";
 
 const ROOT = mkdtempSync(join(tmpdir(), "wt-test-"));
 const REPO = join(ROOT, "repo");
@@ -132,6 +132,28 @@ console.log("\n--- long names do not collide ---");
 	check("and distinct branches", long1.branch !== long2.branch, true);
 	// Still recognisable on disk, not just a hash.
 	check("the readable part survives", long1.path.includes("an-extremely-long-scope"), true);
+}
+
+console.log("\n--- a deleted run directory leaves git needing a prune ---");
+{
+	// The lifecycle bug. Retention deletes a run directory; any worktrees inside
+	// it stay registered in the PROJECT's git as "prunable", and — verified here
+	// rather than assumed — git then REFUSES to reuse that path at all.
+	const runDir = join(ROOT, "doomed");
+	const scope = await createScope(REPO, runDir, "wf-9", "temporary");
+	writeFileSync(join(scope.path, "work.ts"), "kept\n");
+	await commitScope(scope, "work");
+
+	rmSync(runDir, { recursive: true, force: true });
+	check("git still lists it", git(["worktree", "list"]).includes(scope.path), true);
+	check("and calls it prunable", git(["worktree", "list"]).includes("prunable"), true);
+
+	await pruneWorktrees(REPO);
+	check("pruning clears the registration", git(["worktree", "list"]).includes(scope.path), false);
+	// The branch is NOT collateral. Pruning a run's bookkeeping is not a
+	// decision to throw away the work the run committed.
+	check("but the branch survives the prune", git(["branch", "--list", scope.branch]).includes("pi/wf/wf-9"), true);
+	check("with its commit intact", git(["show", `${scope.branch}:work.ts`]), "kept");
 }
 
 rmSync(ROOT, { recursive: true, force: true });

@@ -488,6 +488,14 @@ function startRun(
 		meta.replayedCount = progress.replayedCount;
 		meta.peakConcurrency = progress.peakConcurrency;
 		meta.deepestAgentTurns = progress.deepestAgentTurns;
+		meta.worktrees = worktreeChanges.size
+			? [...worktreeChanges.values()].map((change) => ({
+					name: change.scope.name,
+					branch: change.scope.branch,
+					baseCommit: change.scope.baseCommit,
+					files: change.files,
+				}))
+			: undefined;
 		lastPersist = Date.now();
 		writeMeta(agentDir, meta);
 	};
@@ -699,6 +707,9 @@ function startRun(
 					return;
 				}
 				worktreeChanges.set(name, change);
+				// Written immediately: a crash after the commit but before the run
+				// settles would otherwise leave the branch with no pointer to it.
+				persist();
 				hooks.log(`worktree scope "${name}": ${change.files} file(s), +${change.insertions}/-${change.deletions} on ${scope.branch}`);
 			} catch (error) {
 				// A scope we cannot measure is still a scope with work in it. Say so

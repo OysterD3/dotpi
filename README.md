@@ -1750,6 +1750,18 @@ are `pi/wf/<runId>/<slug>-<digest>`; the digest is of the full scope name, becau
 alone lets two long names collide on one directory — a bug this repo's own test caught during
 implementation.
 
+**Lifecycle.** A worktree is registered in the *project's* git, not here, so retention deleting a run
+directory would leave an entry git calls `prunable` — and, verified against a real repo, git then
+refuses to reuse that path at all (`worktree add` fails with "missing but already registered").
+`pruneRuns` therefore runs `git worktree prune` in the affected project after removing the directory.
+The scope **branches are never touched** by any of that: pruning a run's bookkeeping is not a
+decision to throw away work it committed.
+
+Which means scope branches accumulate until you deal with them. They are recorded in `run.json`
+(`worktrees[]`, with the branch, base commit and file count) and written the moment a scope settles
+rather than at run end, so a crash cannot leave committed work with nothing pointing at it.
+`git branch --list 'pi/wf/*'` finds the lot.
+
 ## Run shape
 
 `run.json` records two numbers beyond the totals, and the workflow result reports them back to the
