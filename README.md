@@ -120,31 +120,6 @@ stores the numbers rather than the drawing, so it re-renders correctly after a t
 | `config.ts` | Channel name, meter glyphs, thresholds |
 | `usage.test.ts` | Unit coverage |
 
-**`agent/extensions/web-search/`** — registers a `web_search` tool backed by
-[Exa](https://exa.ai). Requires `EXA_API_KEY`.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Tool registration and orchestration |
-| `config.ts` | Tunables and endpoint constants |
-| `client.ts` | Request building, filter validation, HTTP |
-| `format.ts` | Dedupe and markdown rendering (pure) |
-| `render.ts` | Collapsed/expanded TUI view |
-| `types.ts` | Exa response shapes |
-
-**`agent/extensions/web-fetch/`** — registers a `web_fetch` tool that reads pages by URL via Exa's
-`/contents`. Pairs with `web_search`, which finds the URLs. Requires `EXA_API_KEY`.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Tool registration and orchestration |
-| `config.ts` | Tunables and fence markers |
-| `client.ts` | URL validation, request building, HTTP |
-| `sanitize.ts` | Injection defenses (pure) |
-| `format.ts` | Fenced, labelled rendering (pure) |
-| `render.ts` | Collapsed/expanded TUI view |
-| `types.ts` | Exa `/contents` response shapes |
-
 **`agent/extensions/lsp/`** — registers an `lsp_diagnostics` tool: real compiler errors and
 warnings from language servers, so the agent can verify an edit without running a build. pi has
 no LSP support of its own, so this is a complete client.
@@ -1807,7 +1782,7 @@ git clone git@github.com:OysterD3/dotpi.git ~/.pi     # or https://github.com/Oy
 cp ~/.pi/agent/settings.example.json ~/.pi/agent/settings.json
 
 # 3. Authenticate this machine (auth.json is gitignored — each machine logs in itself)
-pi          # then /login;  and set up agent/.env from agent/.env.example if you use web-search
+pi          # then /login  (agent/.env from agent/.env.example if an extension needs a key)
 ```
 
 If `~/.pi` already exists (pi created it), move it aside first — `mv ~/.pi ~/.pi.bak` — then clone and
@@ -1844,15 +1819,6 @@ things — extensions, themes, the permissions policy template, subagents — tr
   labelled from the duration the API returns rather than from its position in the response.
   A ChatGPT/Codex account reports a single weekly window, so you get `Weekly:` and nothing else.
   Set `CONFIG.showLimits` to `false` to drop the line entirely.
-- **Web search** — needs an Exa key from <https://dashboard.exa.ai/api-keys>; put it in
-  `agent/.env` (see below). Tunables (result count, snippet length, search mode, timeout) live in
-  `agent/extensions/web-search/config.ts`. Exa bills per search, and
-  `CONFIG.searchType` values `deep`/`deep-reasoning` cost substantially more and are far slower than
-  the default `auto` (~1s vs 4–40s). Highlights-only is the default content mode because it keeps
-  token cost predictable; set `CONFIG.includeText` to also pull page text. Categories `company` and
-  `people` disable `excludeDomains` and both date filters — the tool rejects that combination up
-  front rather than letting Exa 400. Canonical API reference:
-  <https://exa.ai/docs/reference/search-api-guide-for-coding-agents>
 - **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env/` adds it:
 
   ```sh
@@ -1860,31 +1826,16 @@ things — extensions, themes, the permissions policy template, subagents — tr
   chmod 600 ~/.pi/agent/.env
   ```
 
-  Put `EXA_API_KEY=...` (and anything else) in there. Precedence is **most specific wins**: a var
+  Put whatever an extension needs in there. Precedence is **most specific wins**: a var
   already exported in your shell beats `<cwd>/.pi/.env`, which beats `~/.pi/agent/.env`. Nothing
   already set is ever overwritten. `.env` is gitignored — **never** put a key in `settings.json`
   or `.env.example`, both of which are committed to this public repo.
 
   Caveat: the loader runs at `session_start`, so it reliably serves anything read at call time
-  (like `EXA_API_KEY`, which `web-search` reads inside `execute()`). Whether it lands early
+  (anything an extension reads inside `execute()`). Whether it lands early
   enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
   provider keys in your shell profile or use `/login`.
-- **Web fetch, and its trust boundary** — `web_fetch` returns third-party content, which is
-  attacker-controlled by definition. Defenses: invisible/bidi/tag characters, terminal escapes and
-  markup are stripped; content is wrapped in fence markers randomised per process (so a page can't
-  forge the closing marker) with any copy inside neutralised; and an explicit untrusted-data notice
-  precedes it. Instruction-like prose is **not** censored — blocklisting phrases is trivially
-  bypassed and mangles legitimate pages, so the design is containment plus labelling. **This raises
-  the bar; it does not make reading hostile pages safe.** Nothing fetched is ever executed.
-  Because Exa performs the fetch, SSRF against localhost and private ranges is impossible by
-  construction — which also means intranet URLs don't work.
-- **Keeping fetches cheap** — pass a `query` to `web_fetch` and it returns a focused summary plus
-  targeted excerpts instead of the whole page. Measured: **1,604 chars vs 6,571 — 75.6% smaller**
-  on the same document. Text mode is capped at `CONFIG.maxCharsPerPage` (6k) and reports truncation
-  rather than silently cutting. Note that Exa's documented `text.verbosity: "compact"` knob had
-  **no measurable effect** in testing (identical 18,668 chars vs `"full"`), so the character cap is
-  the only control that actually works.
-- **Tool output is collapsed** — `web_search` and `web_fetch` results show the first
+- **Tool output is collapsed** — the noisier tools show the first
   `CONFIG.collapsedLines` (8) lines with a `… N more line(s)` hint; press **Ctrl+O**
   (`app.tools.expand`) for the full detail. pi's TUI has **no mouse support**, so expansion is
   keyboard-only. The model always receives the complete text — only the on-screen view collapses.

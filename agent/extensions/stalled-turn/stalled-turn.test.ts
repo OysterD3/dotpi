@@ -56,6 +56,36 @@ check("an abort is not a stall", isStalled({ role: "assistant", content: [], sto
 // An error is already reported as a failure; resuming would loop on a real fault.
 check("an error is not a stall", isStalled({ role: "assistant", content: [], stopReason: "error" }), false);
 check("a user message is never a stall", isStalled({ role: "user", content: [], stopReason: "stop" }), false);
+
+// The second shape, and the costlier one: the provider claims a tool call and
+// sends none, so the loop has nothing to execute and the turn ends with the
+// model having just announced what it was about to do. Taken verbatim from a
+// real transcript — stopReason "toolUse", blocks ["thinking", "text"], after
+// the model said "Let me consult the advisor before building."
+check(
+	"toolUse with no tool call is a stall",
+	isStalled({
+		role: "assistant",
+		content: [{ type: "thinking", thinking: "..." }, text("Let me consult the advisor before building.")],
+		stopReason: "toolUse",
+	}),
+	true,
+);
+check("even with no content at all", isStalled({ role: "assistant", content: [], stopReason: "toolUse" }), true);
+// A real tool-use turn must be left completely alone — this is the common case
+// and resuming it would inject a spurious prompt into healthy work.
+check(
+	"but a real tool call is not",
+	isStalled({ role: "assistant", content: [{ type: "toolCall", name: "bash" }], stopReason: "toolUse" }),
+	false,
+);
+check(
+	"nor is text alongside a real call",
+	isStalled({ role: "assistant", content: [text("running it"), { type: "toolCall", name: "bash" }], stopReason: "toolUse" }),
+	false,
+);
+// Other endings are the provider reporting something true; do not paper over them.
+check("a length cap is not a stall", isStalled({ role: "assistant", content: [], stopReason: "length" }), false);
 check("no message at all", isStalled(undefined), false);
 
 // ------------------------------------------------------------------ settings

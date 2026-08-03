@@ -1,0 +1,87 @@
+{
+  "lastChangelogVersion": "0.83.0",
+  "theme": "one-dark-pro",
+  "defaultProvider": "qoder",
+  "defaultModel": "ultimate",
+  "defaultThinkingLevel": "off",
+  "externalEditor": "nvim",
+  "permissions": {
+    "defaultMode": "auto",
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/id_rsa)",
+      "Read(**/*.pem)",
+      "Read(**/.aws/**)",
+      "Read(**/.ssh/**)",
+      "Write(**/.env)",
+      "Edit(**/.env)"
+    ],
+    "ask": [],
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm lint *)",
+      "Workflow",
+      "Advisor",
+      "Ask_user"
+    ],
+    "allowDestructive": [],
+    "destructiveOverridesAllow": true,
+    "askWithoutUi": "deny",
+    "auto": {
+      "model": "cheap"
+    }
+  },
+  "advisor": {
+    "model": "frontier"
+  },
+  "compaction": {
+    "steer": true,
+    "thinking": "low",
+    "maxWords": 700,
+    "compactAtPercent": 80,
+    "compactAtTokens": 0,
+    "enabled": true
+  },
+  "stalledTurn": {
+    "enabled": true,
+    "maxResumes": 2
+  },
+  "packages": [
+    "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615"
+  ],
+  "models": {
+    "active": "qoder",
+    "providers": {
+      "openai": {
+        "session": "openai-codex/gpt-5.6-sol",
+        "frontier": "openai-codex/gpt-5.6-sol",
+        "fast": "openai-codex/gpt-5.6-terra",
+        "cheap": "openai-codex/gpt-5.6-luna"
+      },
+      "anthropic": {
+        "session": "anthropic/claude-opus-5",
+        "frontier": "anthropic/claude-opus-5",
+        "fast": "anthropic/claude-sonnet-5",
+        "cheap": "anthropic/claude-haiku-4-5"
+      },
+      "qoder": {
+        "session": "qoder/ultimate",
+        "frontier": "qoder/ultimate",
+        "fast": "qoder/lite",
+        "cheap": "qoder/lite"
+      }
+    }
+  },
+  "visualReference": {
+    "enabled": true,
+    "readAdvice": true,
+    "guideline": true
+  },
+  "retry": {
+    "enabled": true
+  }
+}

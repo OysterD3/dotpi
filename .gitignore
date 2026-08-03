@@ -26,10 +26,14 @@ agent/file-history/
 # SCRIPTS live in agent/workflows/ and are tracked; only the runs are ignored.
 agent/workflow-runs/
 
-# Per-machine settings: pi rewrites this at runtime (thinking level, model, etc.),
-# so it churns and would fight `git pull`. Copy agent/settings.example.json to
-# agent/settings.json on a new machine and adjust.
-agent/settings.json
+# agent/settings.json IS tracked, deliberately, despite pi rewriting it at
+# runtime (thinking level, active model, package pins). It holds no secrets —
+# credentials live in agent/auth.json and agent/.env, both ignored below — and
+# tracking it is what makes a new machine reproduce this setup exactly. The cost
+# is real: pi's writes show up as diffs and can conflict on `git pull`. If that
+# becomes tiresome, `git update-index --skip-worktree agent/settings.json`
+# silences it per-machine without untracking it. settings.example.json stays as
+# the annotated reference.
 
 # self-update extension's throttle timestamp — local bookkeeping, not config
 agent/.self-update.json

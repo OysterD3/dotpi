@@ -4,7 +4,7 @@
  *
  * pi has no native dotenv support (no `dotenv` dependency; every `.env` string in its
  * shipped code is just a `process.env` read), so this fills that gap. Other extensions
- * that read `process.env` at call time — such as `web-search` reading `EXA_API_KEY`
+ * that read `process.env` at call time, rather than at import time
  * inside `execute()` — pick these up automatically.
  *
  *   config.ts  tunables
