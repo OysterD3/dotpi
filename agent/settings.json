@@ -3,7 +3,7 @@
   "theme": "one-dark-pro",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "off",
+  "defaultThinkingLevel": "max",
   "externalEditor": "nvim",
   "quietStartup": true,
   "steeringMode": "all",
