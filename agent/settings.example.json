@@ -4,6 +4,10 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "medium",
   "externalEditor": "nvim",
+  "quietStartup": true,
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "collapseChangelog": true,
   "models": {
     "active": "openai",
     "providers": {
@@ -36,6 +40,11 @@
       "Read(**/*.pem)",
       "Read(**/.aws/**)",
       "Read(**/.ssh/**)",
+      "Read(**/web-search.json)",
+      "Read(**/openai-server-compaction.json)",
+      "Read(**/auth.json)",
+      "Read(**/*-secrets.json)",
+      "Read(**/*.key.json)",
       "Write(**/.env)",
       "Edit(**/.env)"
     ],
@@ -66,15 +75,22 @@
   "goal": {
     "model": "cheap"
   },
+  "recap": {
+    "model": "cheap"
+  },
+  "packages": [
+    "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615",
+    "npm:pi-web-access@0.17.1",
+    "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6",
+    "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055"
+  ],
+  "retry": {
+    "enabled": true
+  },
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000,
-    "steer": true,
-    "thinking": "low",
-    "maxWords": 700,
-    "compactAtPercent": 80,
-    "compactAtTokens": 0
+    "keepRecentTokens": 20000
   },
   "stalledTurn": {
     "enabled": true,

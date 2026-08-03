@@ -12,7 +12,6 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 | `agent/settings.json` | Global pi settings: theme, model, and the `permissions` policy. |
 | `agent/keybindings.json` | Key overrides. Frees Shift+Tab for the permission-mode cycler. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
-| `agent/.env.example` | Template for `agent/.env`, which holds your keys and is gitignored. |
 
 Each extension is a folder whose `index.ts` is the entry point; every sibling file is a plain
 helper module. That is pi's documented multi-file layout, and it's required here — pi auto-loads
@@ -875,7 +874,7 @@ Reach for it when stages build on each other over the same subject — inspect �
 file — not as a general way to share context. It is not a substitute for working inline: your main
 session is already one accumulating context, with your extensions, memory and you in it. And note
 that subagents run `--no-extensions`, so a long chain that fills its window compacts with pi's
-built-in behaviour, not the steering in `agent/extensions/compaction/`.
+built-in behaviour, whatever the parent session is configured to use.
 
 **Workflows don't block the session.** The tool validates the script — meta *and* a compile check,
 so a syntax error fails the call rather than arriving minutes later as a failed run — starts the
@@ -1506,72 +1505,6 @@ reproduce the exact symptom it exists to remove.
 | `config.ts` | Settings and the resume prompt |
 | `stalled-turn.test.ts` | Detection, settings, the cap, and the reset guard |
 
-**`agent/extensions/compaction/`** — lets the summary shed as well as accumulate, and compacts before
-the context is enormous.
-
-Two things were wrong with the default path on a long session. First, pi has two summarizer prompts,
-and the one used on every compaction after the first opens with *"PRESERVE all existing information
-from the previous summary"*, with only a weak *"if something is no longer relevant, you may remove
-it"* against it. Read as append-only, which it largely is, that makes the summary — the one part of
-the context that survives every compaction — also the one part that only ever grows. Second, pi
-passes the **session's** thinking level to the summarizer, so a session set to `max` pays max
-reasoning to write a summary, and reasoning bills at output rates. Summarizing is mostly
-transcription; it does not earn that.
-
-Rather than reimplement compaction, this calls pi's own exported `compact()` with different
-arguments — so the split-turn prefix summary, the read/modified file lists and the previous-summary
-merge all stay pi's code. What changes is the thinking level, and an instruction appended as
-*"Additional focus"* that reframes the summary as a **working brief with a budget**: it names what to
-drop (finished work, files only read, superseded decisions, process narration) and, just as
-specifically, what to keep exact (the user's own constraints, live paths and error strings, binding
-decisions with their reasons). Both halves are needed — a prompt that only says "be shorter" gets
-shorter by dropping the things that are expensive to recover. A `/compact <instructions>` of your own
-is kept and placed last, where it wins.
-
-**Failure always falls back to pi.** An extension cannot reach pi's retry settings or stream
-function, so this call has no retry behind it where pi's own does — and compaction fires when the
-context is nearly full, the worst possible moment to fail. Every failure path returns `undefined`,
-which makes pi run its built-in compaction exactly as if the extension were absent. The steering is
-an optimisation, never a dependency.
-
-**It also fires compaction at all.** pi triggers on `contextTokens > contextWindow - reserveTokens`,
-so on a million-token model with the default 16k reserve that is ~984k — a measured session here
-reached 634k without a single compaction, paying cached reads on all of it every turn.
-`reserveTokens` cannot be repurposed to fire earlier, because it is also the summary's own token
-budget (`maxTokens = 0.8 × reserveTokens`), so raising it would commission an enormous summary. Hence
-a separate trigger, expressed the two ways the question actually gets asked:
-
-```jsonc
-{
-  "compaction": {
-    // pi's own keys — this block is shared, pi reads these three by name
-    "enabled": true,
-    "reserveTokens": 16384,
-    "keepRecentTokens": 20000,
-
-    "steer": true,             // optional; false leaves pi's summary prompt alone
-    "thinking": "low",         // optional; the summarizer's level, NOT the session's
-    "maxWords": 700,           // optional; the budget given to the summary
-    "compactAtPercent": 80,    // optional; 0 disables
-    "compactAtTokens": 0       // optional; hard ceiling whatever the window. 0 disables
-  }
-}
-```
-
-`compactAtTokens` is the cost control: per-turn cached reads scale with context size, so a ceiling on
-context is a ceiling on the standing cost of every remaining turn. It is **off by default**, because
-the right number is a preference rather than a correctness question — a big window hides a big
-context from the percent trigger, so 200k of context on a 1M model is 20% and nowhere near firing.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Settings, the `session_before_compact` hook, and the threshold trigger |
-| `steer.ts` | The steering decision, with `compact()` injected so it is testable |
-| `instructions.ts` | The steering text, and why it is phrased as a focus rather than a rule (pure) |
-| `threshold.ts` | When to compact, given a context reading (pure) |
-| `config.ts` | Settings, and why they share pi's `compaction` block |
-| `compaction.test.ts` | Settings, steering text, every fallback path, and the re-fire guard |
-
 **`agent/extensions/memory/`** — gives pi memory by reading another agent's store on this machine.
 
 That store lives at `~/.claude/projects/<slug>/memory/`: a `MEMORY.md` index loaded into context
@@ -1747,21 +1680,24 @@ waiting on no one. Like the tool itself, neither of those is a setting — the c
 | `ask-user.test.ts` | Normalization, the full flow, rendering, and wiring — including that there is no off switch |
 | `nudge.test.ts` | The detector against real prompts, the cooldown, and every path that must stay silent |
 
-**`agent/extensions/env/`** — loads `.env` files into `process.env` at session start. pi has no
-built-in dotenv support.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Extension wiring |
-| `config.ts` | Tunables |
-| `parse.ts` | dotenv text → key/value pairs (pure) |
-| `load.ts` | File discovery, permission check, applying to `process.env` |
-
 Not tracked (see `.gitignore`): `agent/auth.json` (credentials), `agent/sessions/` (transcripts),
-`agent/skills/` (symlinks into `~/.agents/skills`, shared with other agents and living elsewhere), and
-`agent/settings.json` — because pi rewrites it at runtime (thinking level, model, `lastChangelogVersion`),
-so tracking it would churn and fight `git pull`. The tracked `agent/settings.example.json` is the
-template; copy it per machine. The shared permissions policy lives in that template.
+`agent/skills/` (symlinks into `~/.agents/skills`, shared with other agents and living elsewhere),
+the vendored package trees `agent/npm/` and `agent/git/`, the per-machine artifacts those packages
+write (`agent/qoder-machine-id`, `agent/state/`, the model caches), and the extension key files
+(`web-search.json`, `agent/openai-server-compaction.json`).
+
+**`agent/settings.json` and `agent/models.json` ARE tracked**, which is what lets a clone reproduce
+this setup. That makes them public files in a public repo:
+
+> **Never put a credential in `agent/settings.json` or `agent/models.json`.** Both are committed.
+> pi's own schema invites it — `models.json` accepts a per-provider `apiKey` and `headers`, and
+> settings has `httpProxy`, which can embed `user:pass`. Keys belong in a file that is gitignored
+> *and* listed in `permissions.deny`, so neither git nor the agent itself can read it;
+> `web-search.json` is the worked example. Turning on `enableAnalytics` also makes pi write a
+> persistent `trackingId` UUID into settings.json — leave it off, or accept publishing it.
+
+`agent/settings.example.json` is the annotated reference, kept in step with the real file. It is
+**not** something to copy over `agent/settings.json` on a clone — see the install section.
 
 **Composing prompts in nvim.** pi already ships this — press **Ctrl+X** in the prompt and it hands
 the current text to an external editor in a temp `prompt.md`, suspends its own TUI while the editor
@@ -1772,21 +1708,77 @@ at plain `vim` — and changing `$EDITOR` to suit pi would change it for git, cr
 else too. Keep it as strict JSON: pi parses settings with `JSON.parse`, so a `//` comment silently
 breaks the whole file.
 
+## `agent/models.json`
+
+Tracked, alongside `settings.json`. pi reads it from `getAgentDir()/models.json` and its schema
+(`core/model-config.js`) allows per-provider `baseUrl`, `apiKey`, `headers`, extra `models`, and
+`modelOverrides`.
+
+Today it carries only `contextWindow: 272000` for the three `openai-codex` models. **Those values
+match what pi already reports**, so the file currently changes nothing — it is a pin, not a
+correction.
+
+That is worth knowing because `modelOverrides` is applied as the topmost layer in
+`composeModelProvider`, *after* `refreshModels`. So if OpenAI raises the real window, pi will keep
+reporting 272k and keep compacting early, and nothing will point at a three-line file that appeared
+to do nothing when it was added. Delete the entry rather than editing it if you want pi's own number
+back.
+
+**No credential goes in here.** The schema accepts `apiKey` and `headers` per provider, and this file
+is committed to a public repo. Keys belong in a gitignored file that is also listed in
+`permissions.deny` — see `web-search.json`.
+
+## Installed packages
+
+Four third-party packages are pinned in `settings.packages`. `pi install` vendors them into
+`agent/npm/` and `agent/git/`, both gitignored — the pins are the record, not the trees.
+
+| Package | What it does | Configured by |
+| --- | --- | --- |
+| `pi-provider-qoder` | The Qoder provider. Pinned to a fork carrying four fixes upstream hasn't merged: dropped tool-result images, tool calls silently discarded when arguments arrive empty, plus the two known `finish_reason`/`usage` bugs. | `models.providers.qoder` |
+| `pi-openai-server-compaction` | Codex-style **server-side** compaction for OpenAI models: sends `compaction_trigger` through `POST /v1/responses` and gets an encrypted `compaction` item back, instead of a text summary. | `agent/openai-server-compaction.json` — **not** `settings.compaction` |
+| `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
+| `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
+
+**Two of these are unpinned by version** (`pi-web-access`, `codex-fast-mode`) and resolve to whatever
+is latest at install time. The lockfile that would record what actually landed lives in `agent/npm/`,
+which is gitignored, so a clone can silently get a different build. That is a deliberate trade for
+staying current, not an oversight — pin them with `@x.y.z` if reproducibility matters more.
+
+**Compaction moved out of tracked config.** The local `compaction` extension was removed because
+`pi-openai-server-compaction` registers the same `session_before_compact` hook and one would silently
+win. The surviving `"compaction"` block in settings.json now configures only pi's *built-in* fallback
+path; the replacement reads none of it. Its knobs — `enabled`, `thresholdRatio` (0.7),
+`compactThreshold`, `usePreviousResponseId`, `notify` — come from `~/.pi/agent/openai-server-compaction.json`,
+which this repo does not create. Create it to retune, and note it is gitignored and deny-listed
+because the same file can carry an API key.
+
+**Known gap:** `/usage` no longer shows a compaction row. The old extension called pi's exported
+`compact()`, so pi recorded the spend on the session entry where `usage/collect.ts` finds it. The
+replacement pays for its own calls and reports usage nested under `details`, and emits nothing on the
+`usage:spend` channel, so that spend is invisible to the report. Total understates real cost by
+whatever compaction consumed.
+
 ## Install on a new machine
 
 ```sh
 # 1. Clone this config into place (it IS ~/.pi, with agent/ inside)
 git clone git@github.com:OysterD3/dotpi.git ~/.pi     # or https://github.com/OysterD3/dotpi.git
 
-# 2. Create the per-machine settings from the template
-cp ~/.pi/agent/settings.example.json ~/.pi/agent/settings.json
+# 2. Nothing to copy: agent/settings.json is tracked and arrives with the clone,
+#    package pins and all. Do NOT cp settings.example.json over it — that would
+#    wipe the `packages` array and revert permissions.defaultMode.
 
 # 3. Authenticate this machine (auth.json is gitignored — each machine logs in itself)
-pi          # then /login  (agent/.env from agent/.env.example if an extension needs a key)
+pi          # then /login; pi installs everything in `packages` on first start
 ```
 
 If `~/.pi` already exists (pi created it), move it aside first — `mv ~/.pi ~/.pi.bak` — then clone and
-copy your machine-local `agent/auth.json` and `agent/.env` back in.
+copy your machine-local `agent/auth.json` back in.
+
+Machine-local drift in `agent/settings.json` (thinking level, active model) shows up as a diff and can
+conflict on `git pull`. `git update-index --skip-worktree agent/settings.json` silences it on that
+machine without untracking the file.
 
 Extensions and themes are picked up automatically by filename — no registration step.
 
@@ -1819,22 +1811,6 @@ things — extensions, themes, the permissions policy template, subagents — tr
   labelled from the duration the API returns rather than from its position in the response.
   A ChatGPT/Codex account reports a single weekly window, so you get `Weekly:` and nothing else.
   Set `CONFIG.showLimits` to `false` to drop the line entirely.
-- **Secrets / env vars** — pi has no built-in dotenv support, so `agent/extensions/env/` adds it:
-
-  ```sh
-  cp ~/.pi/agent/.env.example ~/.pi/agent/.env
-  chmod 600 ~/.pi/agent/.env
-  ```
-
-  Put whatever an extension needs in there. Precedence is **most specific wins**: a var
-  already exported in your shell beats `<cwd>/.pi/.env`, which beats `~/.pi/agent/.env`. Nothing
-  already set is ever overwritten. `.env` is gitignored — **never** put a key in `settings.json`
-  or `.env.example`, both of which are committed to this public repo.
-
-  Caveat: the loader runs at `session_start`, so it reliably serves anything read at call time
-  (anything an extension reads inside `execute()`). Whether it lands early
-  enough for pi's *own* provider credentials (`ANTHROPIC_API_KEY` etc.) is untested — keep
-  provider keys in your shell profile or use `/login`.
 - **Tool output is collapsed** — the noisier tools show the first
   `CONFIG.collapsedLines` (8) lines with a `… N more line(s)` hint; press **Ctrl+O**
   (`app.tools.expand`) for the full detail. pi's TUI has **no mouse support**, so expansion is

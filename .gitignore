@@ -2,10 +2,16 @@
 # purpose, so they match at any depth: a stray agent/auth.json.bak or a
 # settings.local.json is caught too. `.env*` covers .env.local / .env.production,
 # which the older `.env` + `*.env` pair silently missed.
+#
+# `!.env.example` used to sit here to un-ignore the dotenv template. That file
+# and the extension that read it are gone, and the negation was the only hole in
+# this block, so it went with them. `*env.example` is deliberate too: `.env*`
+# never matched `prod.env.example` (it does not START with .env) and `*.env`
+# never matched it either (it does not END in .env), so a real value pasted into
+# one would have been committed.
 .env*
 *.env
-!.env.example
-!*.env.example
+*env.example
 auth.json
 credentials.json
 oauth.json
@@ -28,12 +34,45 @@ agent/workflow-runs/
 
 # agent/settings.json IS tracked, deliberately, despite pi rewriting it at
 # runtime (thinking level, active model, package pins). It holds no secrets —
-# credentials live in agent/auth.json and agent/.env, both ignored below — and
-# tracking it is what makes a new machine reproduce this setup exactly. The cost
+# credentials live in agent/auth.json and the extension key files, all ignored
+# below — and tracking it is what makes a new machine reproduce this setup. The cost
 # is real: pi's writes show up as diffs and can conflict on `git pull`. If that
 # becomes tiresome, `git update-index --skip-worktree agent/settings.json`
 # silences it per-machine without untracking it. settings.example.json stays as
 # the annotated reference.
+
+# Packages pi installs from `settings.packages`. `pi install` vendors them here:
+# agent/npm/ is an npm tree (45MB) and agent/git/ is a full clone per git: source
+# (4.7MB and growing). They are reproducible from settings.json, which IS
+# tracked, so committing them would put megabytes of third-party code into a
+# public repo for nothing. agent/npm/ already self-ignores via its own
+# .gitignore; agent/git/ had nothing stopping it.
+agent/git/
+agent/npm/
+
+# Extension credential files. These sit at the repo root because that is where
+# the extension looks for them, which puts a plaintext API key one careless
+# `git add` away from a public repo.
+#
+# The shape patterns below are a backstop, NOT coverage: extensions name their
+# key files `<extension>.json`, which matches none of them. Every new one has to
+# be added by name here AND to permissions.deny in settings.json, or pi's own
+# agent reads it into a transcript. web-search.json is the worked example.
+web-search.json
+openai-server-compaction.json
+*-secrets.json
+*.key.json
+
+# Per-machine artifacts the installed packages write into agent/. None is
+# config: a catalogue that refetches on demand, a random-UUID device
+# fingerprint pi-provider-qoder mints when the Qoder desktop app is absent
+# (dist/index.js getMachineId), and codex-fast-mode's toggle state. Committing
+# any of them publishes machine identity or makes one machine's toggle fight
+# another's on `git pull --rebase`.
+agent/qoder-models-cache.json
+agent/qoder-cn-models-cache.json
+agent/qoder-machine-id
+agent/state/
 
 # self-update extension's throttle timestamp — local bookkeeping, not config
 agent/.self-update.json

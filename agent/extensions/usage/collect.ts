@@ -212,6 +212,8 @@ type EntryLike = {
 	type: string;
 	timestamp?: string;
 	usage?: RecordedUsage;
+	/** Free-form on a compaction entry; see hookCompactionUsage. */
+	details?: unknown;
 	message?: {
 		role?: string;
 		provider?: string;
@@ -238,6 +240,24 @@ function rows(map: Map<string, Totals>): Row[] {
 	return [...map.entries()]
 		.map(([label, totals]) => ({ label, totals }))
 		.sort((a, b) => b.totals.cost - a.totals.cost || billedTokens(b.totals) - billedTokens(a.totals) || a.label.localeCompare(b.label));
+}
+
+/**
+ * Usage an extension reported for a compaction it performed itself.
+ *
+ * Read defensively: `details` is free-form and extension-owned, so every level
+ * is checked and anything unexpected reads as "no spend to report" rather than
+ * throwing inside the report. Only the nesting the one known producer uses is
+ * understood; a different extension reporting a different shape is simply not
+ * counted, which is the same outcome as today.
+ */
+export function hookCompactionUsage(details: unknown): RecordedUsage | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const remote = (details as { remoteCompaction?: unknown }).remoteCompaction;
+	if (!remote || typeof remote !== "object") return undefined;
+	const usage = (remote as { usage?: unknown }).usage;
+	if (!usage || typeof usage !== "object") return undefined;
+	return usage as RecordedUsage;
 }
 
 function timestampOf(entry: EntryLike): number | undefined {
@@ -267,10 +287,20 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
 		}
 
 		if (raw.type === "compaction" || raw.type === "branch_summary") {
-			// Only when pi actually recorded a call. A compaction an extension
-			// performed itself has its spend on the extension's own messages, and
-			// counting an empty entry would add a phantom call to the table.
-			if (raw.usage) record(bucket(overhead, raw.type === "compaction" ? "compaction" : "branch summary"), raw.usage);
+			// pi records `usage` when pi itself made the call. An extension that
+			// compacts on its own account bills to its own key, so pi has nothing
+			// to record and the entry arrives empty — counting that would add a
+			// phantom call, hence the guard.
+			//
+			// But an extension CAN report what it spent, in `details`, and one
+			// does: pi-openai-server-compaction talks to the Responses endpoint
+			// itself and returns its usage under `details.remoteCompaction.usage`.
+			// Without the fallback below, every server-side compaction in a
+			// session is real money that never appears in the table and never
+			// appears in Total — silently, because a missing row looks like a
+			// session that simply never compacted.
+			const spend = raw.usage ?? hookCompactionUsage(raw.details);
+			if (spend) record(bucket(overhead, raw.type === "compaction" ? "compaction" : "branch summary"), spend);
 			continue;
 		}
 

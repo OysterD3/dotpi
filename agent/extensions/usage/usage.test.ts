@@ -300,6 +300,35 @@ console.log("\n--- collect: a compaction pi did not pay for ---");
 	check("an entry with no usage adds no row", usage.overhead.length, 0);
 }
 
+console.log("\n--- collect: a compaction an EXTENSION paid for ---");
+{
+	// pi-openai-server-compaction calls the Responses endpoint on its own key, so
+	// pi records no `usage` on the entry and this row used to vanish entirely —
+	// real money missing from the table AND from Total, looking exactly like a
+	// session that never compacted. It reports what it spent under details.
+	const usage = collectUsage([
+		{
+			type: "compaction",
+			summary: "…",
+			firstKeptEntryId: "x",
+			tokensBefore: 100,
+			details: { remoteCompaction: { version: 2, usage: usageBlock(120_000, 2000, 0.4) } },
+		},
+	]);
+	check("the extension's own spend is counted", usage.overhead.map((row) => row.label), ["compaction"]);
+	check("with its cost", usage.overhead[0]?.totals.cost, 0.4);
+	check("and it reaches the total", usage.total.cost, 0.4);
+}
+{
+	// details is free-form and extension-owned, so every shape that is not the
+	// one known producer must read as "nothing to report" rather than throw
+	// inside the report or invent a row.
+	for (const details of [undefined, null, "text", {}, { remoteCompaction: null }, { remoteCompaction: {} }, { remoteCompaction: { usage: 7 } }]) {
+		const usage = collectUsage([{ type: "compaction", summary: "…", details } as never]);
+		check(`unusable details -> no row (${JSON.stringify(details) ?? "undefined"})`, usage.overhead.length, 0);
+	}
+}
+
 console.log("\n--- collect: errors and interrupts ---");
 {
 	const usage = collectUsage([

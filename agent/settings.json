@@ -1,10 +1,14 @@
 {
   "lastChangelogVersion": "0.83.0",
   "theme": "one-dark-pro",
-  "defaultProvider": "qoder",
-  "defaultModel": "ultimate",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "off",
   "externalEditor": "nvim",
+  "quietStartup": true,
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "collapseChangelog": true,
   "permissions": {
     "defaultMode": "auto",
     "deny": [
@@ -14,6 +18,11 @@
       "Read(**/*.pem)",
       "Read(**/.aws/**)",
       "Read(**/.ssh/**)",
+      "Read(**/web-search.json)",
+      "Read(**/openai-server-compaction.json)",
+      "Read(**/auth.json)",
+      "Read(**/*-secrets.json)",
+      "Read(**/*.key.json)",
       "Write(**/.env)",
       "Edit(**/.env)"
     ],
@@ -38,12 +47,10 @@
   "advisor": {
     "model": "frontier"
   },
+  "recap": {
+    "model": "cheap"
+  },
   "compaction": {
-    "steer": true,
-    "thinking": "low",
-    "maxWords": 700,
-    "compactAtPercent": 80,
-    "compactAtTokens": 0,
     "enabled": true
   },
   "stalledTurn": {
@@ -51,10 +58,13 @@
     "maxResumes": 2
   },
   "packages": [
-    "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615"
+    "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615",
+    "npm:pi-web-access@0.17.1",
+    "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6",
+    "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055"
   ],
   "models": {
-    "active": "qoder",
+    "active": "openai",
     "providers": {
       "openai": {
         "session": "openai-codex/gpt-5.6-sol",
