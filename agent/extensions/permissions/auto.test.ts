@@ -199,6 +199,103 @@ eq(
 );
 
 // ---------------------------------------------------------------------------
+console.log("the trivial-command table — what never reaches the classifier");
+
+// The complaint that motivated it: a conservative cheap classifier kept turning
+// printf and echo into prompts. These must never cost a model call again.
+const trivialCommands = [
+	"echo done",
+	"printf '%s\\n' '--- PI ENV ---'",
+	"echo 'a; b' && printf ok",
+	"pwd",
+	"date",
+	"which node",
+	"ls -la src",
+	"wc -l README.md",
+	"echo one; echo two",
+	"ls | wc -l",
+	"printf 'x' 2>/dev/null",
+	"echo hi >/dev/null 2>&1",
+	"printf 'warn' 1>&2",
+	"echo '2>&1'", // quoted, so it is text for echo, not a redirect
+	"test -f package.json && echo present",
+	"[ -d node_modules ] || echo missing",
+	"stat -f '%z' README.md",
+	"uname -a",
+	"sleep 1",
+];
+for (const command of trivialCommands) {
+	eq(`trivial: ${command}`, behavior(auto, "bash", { command }), "allow");
+}
+
+// And everything with judgement left in it still classifies. False here never
+// blocks anything — it just goes to the model, as it did before the table.
+const notTrivialCommands = [
+	"cat .env", // content reader: the .env deny rules cover the read tool, not bash
+	"head -5 secrets.txt", // content reader
+	"env | grep '^PI_'", // credential printer
+	"printenv AWS_SECRET_ACCESS_KEY", // credential printer
+	"echo $HOME", // expansion — could print any variable
+	"echo \"$AWS_SECRET_ACCESS_KEY\"", // expansion inside quotes still expands
+	"echo '$literal'", // technically literal, but the grammar refuses to judge that
+	"echo `id`", // substitution runs code
+	"echo hi > out.txt", // a file write; where it lands is the classifier's question
+	"echo hello2>&1backup", // bash reads this as `>& 1backup` — a WRITE to the file `1backup`; a glued token is not the harmless `2>&1`
+	"echo hi2>/dev/null", // glued to the word, `2` is not the fd — this is `echo hi2 > /dev/null`… conservative either way
+	"ls < input", // stdin from a file
+	"echo hi & echo bye", // background job
+	"FOO=bar echo hi", // assignment prefix: not the grammar's head-word shape
+	"xargs echo", // wrapper: launders the real command into argument position
+	"find . -name '*.ts'", // -delete/-exec make find a deleter with extra steps
+	"/bin/echo hi", // paths are not names; the table matches names only
+	"npm test", // real work, and the classifier's job to judge
+];
+for (const command of notTrivialCommands) {
+	eq(`still classified: ${command}`, behavior(auto, "bash", { command }), "classify");
+}
+
+// Precedence around the table, both directions.
+eq(
+	"trivial does not rescue a destructive chain",
+	behavior(auto, "bash", { command: "echo starting && rm -rf /tmp/x" }),
+	"ask",
+);
+eq(
+	"trivial does not rescue a substitution hiding a delete",
+	// The $ reject alone would send this to the classifier; the destructive
+	// table already asked before the auto branch was reached.
+	behavior(auto, "bash", { command: "echo $(rm -rf /tmp/x)" }),
+	"ask",
+);
+eq(
+	"a shell-profile redirect never even reaches the grammar",
+	// startup-file-write catches `>> ~/.zshrc` at step 2, ahead of everything
+	// in the auto branch — the redirect reject here is backstop, not the gate.
+	behavior(auto, "bash", { command: "echo hi >> ~/.zshrc" }),
+	"ask",
+);
+eq(
+	"a deny rule beats the trivial table",
+	behavior(policyFor({ defaultMode: "auto", deny: ["Bash(echo *)"] }), "bash", { command: "echo hi" }),
+	"deny",
+);
+eq(
+	"an ask rule beats the trivial table",
+	behavior(policyFor({ defaultMode: "auto", ask: ["Bash(printf *)"] }), "bash", { command: "printf ok" }),
+	"ask",
+);
+eq(
+	"skipReadOnly:false turns the table off too",
+	behavior(policyFor({ defaultMode: "auto", auto: { ...BUILTIN.auto, skipReadOnly: false } }), "bash", { command: "echo hi" }),
+	"classify",
+);
+eq(
+	"the table is auto mode's alone — askAll still asks about echo",
+	behavior(policyFor({ defaultMode: "askAll" }), "bash", { command: "echo hi" }),
+	"ask",
+);
+
+// ---------------------------------------------------------------------------
 console.log("layering — what an untrusted project may do to auto mode");
 
 const root = mkdtempSync(join(tmpdir(), "pi-perms-"));

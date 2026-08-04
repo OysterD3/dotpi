@@ -30,6 +30,7 @@ import { findDestructive, type Finding } from "./destructive.ts";
 import { firstMatch, type Rule } from "./rules.ts";
 import type { PermissionSettings } from "./settings.ts";
 import { MUTATING_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
+import { isTrivial } from "./trivial.ts";
 
 /**
  * `classify` is not a verdict — it is "the deterministic policy has nothing to
@@ -118,9 +119,18 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 			// Kept inline rather than imported from auto.ts, which would drag the AI
 			// SDK into this file and into the corpus test that exercises it. This
 			// file stays pure; auto.ts does the calling.
-			return policy.settings.auto.skipReadOnly && READ_ONLY_TOOLS.has(tool)
-				? { behavior: "allow", reason: "read-only tool" }
-				: { behavior: "classify", reason: "no rule matched — asking the classifier" };
+			//
+			// Both skips are the same cost decision under the same knob: things an
+			// agent does hundreds of times a turn, where a model call per occurrence
+			// makes the mode unusable — and, for the trivial-command table, where a
+			// conservative cheap classifier turned `printf` into a prompt. Both are
+			// reached only by calls that deny, the destructive table, and ask rules
+			// have already let past.
+			if (policy.settings.auto.skipReadOnly) {
+				if (READ_ONLY_TOOLS.has(tool)) return { behavior: "allow", reason: "read-only tool" };
+				if (command !== undefined && isTrivial(command)) return { behavior: "allow", reason: "trivially safe command" };
+			}
+			return { behavior: "classify", reason: "no rule matched — asking the classifier" };
 		case "askMutating":
 			return MUTATING_TOOLS.has(tool)
 				? { behavior: "ask", reason: `${tool} can modify files` }

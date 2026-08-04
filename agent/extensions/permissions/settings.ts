@@ -44,7 +44,7 @@ export type AutoSettings = {
 	 * switch off after an hour.
 	 */
 	model?: string;
-	/** Skip pi's read-only built-ins without asking the model. See tools.ts. */
+	/** Skip pi's read-only built-ins and trivially safe bash commands (echo, printf, ls, …) without asking the model. See tools.ts and trivial.ts. */
 	skipReadOnly: boolean;
 	/**
 	 * What an unreachable or unreadable classifier means.

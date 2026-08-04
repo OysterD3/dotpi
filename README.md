@@ -474,6 +474,19 @@ Three limits worth knowing before you turn it on:
   remain the answer for `.env` and friends; set `skipReadOnly: false` to close the gap at the price
   of a call per read.
 
+The same knob also skips **trivially safe bash commands** (`trivial.ts`): a deterministic
+whole-command grammar for the things an agent runs constantly and a conservative cheap classifier
+kept turning into prompts — `echo`, `printf`, `pwd`, `ls`, `wc`, `which`, `date` and their like.
+The grammar is blunt on purpose: any `$` or backtick rejects (expansions can print credentials,
+substitutions run code), any redirect rejects except whitespace-delimited stream housekeeping
+(`2>&1`, `>/dev/null` — delimited matters: bash reads the glued `echo hello2>&1backup` as a
+redirect that *writes the file* `1backup`, so glued forms fall through), and every pipeline stage
+must begin with a listed name — no wrappers, no env-assignment prefixes, no paths. Content readers
+(`cat`, `head`, `sort`) and credential printers (`env`, `printenv`) are deliberately absent: `cat
+.env` is precisely the classifier's question, since read-tool deny rules do not reach a bash
+command. Rejection never blocks anything — it only means the classifier is consulted, exactly as
+before. Deny rules, the destructive table, and ask rules all still run first.
+
 An unreachable, misconfigured, or unreadable classifier is an **error**, never a silent "safe" — the
 only way to get a clearance is for the model to have literally answered `{"safe": true}`. What an
 error then means is `onError`: the default `allow` degrades the session to the pattern table alone
@@ -502,6 +515,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `index.ts` | Event wiring, the approval prompt, `/permissions` |
 | `destructive.ts` | **What counts as destructive — edit this table to taste** |
 | `decide.ts` | Precedence engine (pure) |
+| `trivial.ts` | **The trivially-safe command grammar — edit this list to taste** (pure) |
 | `rules.ts` | Rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
