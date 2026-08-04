@@ -25,12 +25,12 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { CONFIG, RESULT_MESSAGE } from "./config.ts";
 import { commandLabel, startedText, statusLabel } from "./render.ts";
-import { startShell, type ShellConfig, type ShellJob, type ShellRegistry } from "./shells.ts";
-import { isSettled, newShellId, readMeta, readOutputFrom, type ShellMeta } from "./store.ts";
+import { isSettled, newShellId, startShell, type ShellConfig, type ShellJob, type ShellMeta, type ShellRegistry } from "./shells.ts";
 
 type BashDefinition = ReturnType<typeof createBashToolDefinition>;
 
 export interface ToolsHost {
+	/** pi's agent dir, read from only: it is where the managed bin/ lives. */
 	agentDir: string;
 	registry: ShellRegistry;
 	/**
@@ -156,13 +156,11 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 				command: params.command,
 				cwd: ctx.cwd,
 				pid: undefined,
-				ownerPid: process.pid,
 				sessionId: host.sessionId(),
 				status: "running",
 				startedAt: Date.now(),
 			};
 			const job = startShell({
-				agentDir: host.agentDir,
 				meta,
 				config: host.shellConfig(ctx),
 				env: backgroundEnv(host.agentDir, ctx),
@@ -187,13 +185,13 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 		},
 		renderResult(result, options, theme, context) {
 			if (isBackgroundDetails(result.details)) {
-				// The registry only knows this session's shells; a re-rendered
-				// transcript row after /new or a resume must fall back to the
-				// store, or a long-dead server reads as freshly "started".
-				const job = host.registry.get(result.details.shellId);
-				const meta = job?.meta ?? readMeta(host.agentDir, result.details.shellId);
-				const label = meta ? statusLabel(meta, Date.now()) : "started";
-				const mark = meta && meta.status !== "running" ? theme.fg("muted", "◆") : theme.fg("accent", "◆");
+				// The registry is the only record there is, and it holds this
+				// session's shells alone. A row re-rendered after /new or a
+				// resume says so rather than claiming the shell just "started",
+				// which is what a long-dead dev server would otherwise read as.
+				const meta = host.registry.get(result.details.shellId)?.meta;
+				const label = meta ? statusLabel(meta, Date.now()) : "no longer tracked";
+				const mark = !meta || meta.status !== "running" ? theme.fg("muted", "◆") : theme.fg("accent", "◆");
 				return new Text(`${mark} background shell ${result.details.shellId} ${theme.fg("muted", `· ${label}`)}`, 0, 0);
 			}
 			return donor.renderResult!(result as never, options, theme, context);
@@ -228,10 +226,10 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			}
 
 			// Unfiltered reads only ever keep truncateTail's own tail, so reading
-			// the full window would be I/O and decode work thrown straight away;
-			// the skip note reports whatever the smaller window leaves behind.
+			// the full window would be decode work thrown straight away; the
+			// skip note reports whatever the smaller window leaves behind.
 			const cap = regex ? CONFIG.readCapBytes : CONFIG.unfilteredReadCapBytes;
-			const read = readOutputFrom(host.agentDir, job.meta.shellId, job.readOffset, cap);
+			const read = job.output.read(job.readOffset, cap);
 			job.readOffset = read.nextOffset;
 
 			let text = read.text;

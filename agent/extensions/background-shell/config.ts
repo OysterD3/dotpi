@@ -14,7 +14,7 @@
  */
 export const RESULT_MESSAGE = "background-shell-exit";
 
-/** Custom message type for the hidden reminders (interrupted shells, running shells). */
+/** Custom message type for the hidden per-turn reminder listing running shells. */
 export const REMINDER_MESSAGE = "background-shell";
 
 /**
@@ -59,25 +59,37 @@ export const CONFIG = {
 	/** Output tail carried in the exit message. Enough to show why it exited. */
 	exitTailBytes: 4096,
 	exitTailLines: 20,
-	/** How much of output.log the panel's detail view reads. */
+	/** How much of a shell's buffer the panel's detail view reads. */
 	panelTailBytes: 65_536,
 	/**
-	 * Cap on one FILTERED bash_output read — the regex deserves the widest
-	 * window, since matching lines may sit anywhere in it. A firehose that
-	 * wrote more than this since the last check is skipped to its tail — the
-	 * end is what you want from a shell, and truncateTail trims further to
-	 * pi's usual 2000/50KB.
+	 * Output retained per shell, in memory, as a ring: a dev server can log for
+	 * hours, so the oldest bytes are dropped once this fills. Nothing is
+	 * written to disk, so this is the whole backlog a shell has — bash_output
+	 * reports evicted bytes as skipped rather than pretending they were never
+	 * written. Sized to hold a long build's worth of noise at a cost that stays
+	 * reasonable when retainShells of them are alive at once.
 	 */
-	readCapBytes: 2_000_000,
+	bufferBytes: 1_000_000,
+	/**
+	 * Cap on one FILTERED bash_output read: the whole retained ring, since a
+	 * matching line may sit anywhere in it. A firehose that wrote more than
+	 * this since the last check is skipped to its tail — the end is what you
+	 * want from a shell, and truncateTail trims further to pi's usual
+	 * 2000/50KB.
+	 */
+	readCapBytes: 1_000_000,
 	/**
 	 * Cap on an UNFILTERED bash_output read. truncateTail keeps at most 50KB
-	 * anyway, so reading the full 2MB window would be decode work discarded
-	 * on arrival; this is that cap plus slack, with the skip note covering
+	 * anyway, so reading the whole ring would be decode work discarded on
+	 * arrival; this is that cap plus slack, with the skip note covering
 	 * whatever the smaller window leaves behind.
 	 */
 	unfilteredReadCapBytes: 65_536,
-	/** Settled shell directories kept on disk, newest first. */
-	retainShells: 30,
+	/**
+	 * Settled shells the registry keeps, newest first — with their output, so
+	 * this bounds what background shells cost a long session.
+	 */
+	retainShells: 20,
 	/** Panel refresh tick. Elapsed times only change once a second. */
 	tickMs: 1000,
 	/** Footer-lines re-announce tick while shells are running. */

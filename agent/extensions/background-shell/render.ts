@@ -5,7 +5,7 @@
  */
 
 import { CONFIG } from "./config.ts";
-import { pidAlive, type ShellMeta, type ShellStatus } from "./store.ts";
+import type { ShellMeta, ShellStatus } from "./shells.ts";
 
 export function formatElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -23,8 +23,6 @@ export function statusMark(status: ShellStatus): string {
 			return "✓";
 		case "killed":
 			return "◼";
-		case "interrupted":
-			return "⚡";
 		default:
 			return "✗";
 	}
@@ -39,7 +37,6 @@ export function commandLabel(command: string, max: number = CONFIG.commandPrevie
 /** How a shell exit reads in prose: "exited with code 0", "was killed", … */
 export function exitPhrase(meta: ShellMeta): string {
 	if (meta.status === "killed") return meta.timedOut ? `timed out and was killed` : `was killed`;
-	if (meta.status === "interrupted") return `was interrupted (its pi session died)`;
 	// No pid means spawn itself failed — nothing ever ran, so "died on a
 	// signal" (the other way exitCode stays null) would be a lie.
 	if (meta.exitCode === null) return meta.pid === undefined ? `failed to start` : `died on a signal`;
@@ -101,23 +98,6 @@ export function runningReminder(running: ShellMeta[], now: number): string | und
 	if (running.length === 0) return undefined;
 	const rows = running.map((meta) => `${meta.shellId} (\`${commandLabel(meta.command)}\`, ${formatElapsed(now - meta.startedAt)})`);
 	return `Background shells running: ${rows.join(", ")}. bash_output reads new output; kill_shell stops one.`;
-}
-
-/**
- * What a fresh session is told about shells a dead session left behind.
- * Scoped to this project by the caller; names the orphan's pid when the
- * process itself outlived its owner, because that is the part worth acting on.
- */
-export function interruptedNotice(interrupted: ShellMeta[]): string | undefined {
-	if (interrupted.length === 0) return undefined;
-	const rows = interrupted.map((meta) => {
-		const orphan = pidAlive(meta.pid) ? ` — its process (pid ${meta.pid}) may STILL be running; kill it manually if unwanted` : "";
-		return `${meta.shellId} (\`${commandLabel(meta.command)}\`)${orphan}`;
-	});
-	return [
-		`A previous pi session ended without stopping ${interrupted.length === 1 ? "a background shell" : "background shells"}: ${rows.join("; ")}.`,
-		`They are recorded as interrupted and are not controlled by this session.`,
-	].join(" ");
 }
 
 export function systemReminder(text: string): string {

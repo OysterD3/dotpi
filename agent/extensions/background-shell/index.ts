@@ -10,14 +10,17 @@
  * either eats the turn or gets backgrounded blind with `&`. The pieces here
  * are assembled from patterns already proven in this repo — ultracode's
  * detached-group spawning and kill ladder, its exit delivery (a custom message
- * that wakes an idle agent or rides the current turn as a follow-up), its
- * panel protocol, and the pid-reconciled disk store — with the tool surface
- * copied from Claude Code so the model already knows how to drive it.
+ * that wakes an idle agent or rides the current turn as a follow-up), and its
+ * panel protocol — with the tool surface copied from Claude Code so the model
+ * already knows how to drive it.
  *
- * Shells die with the session: session_shutdown kills every running group.
- * What survives a crash is the record and the output on disk, and the next
- * session gets a hidden reminder naming what was left behind (including a
- * still-alive orphan's pid, the one fact worth acting on).
+ * Nothing here is written to disk. Shells die with the session — every running
+ * group is killed at session_shutdown, and a process-exit hook catches the
+ * paths that never reach it — so a record outliving the process would be a
+ * record nobody reads. The trade is deliberate: a pi killed outright (SIGKILL,
+ * a closed terminal) leaves its detached groups running with nothing left to
+ * report them, where the old on-disk store would have named them at the next
+ * start. Everything else lives in memory and goes with the session.
  *
  * index.ts is wiring only: lifecycle events, delivery, footer announcements,
  * the shortcut, renderers.
@@ -30,22 +33,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { CONFIG, LINES_CHANNEL, REMINDER_MESSAGE, RESULT_MESSAGE } from "./config.ts";
-import {
-	commandLabel,
-	exitPhrase,
-	exitReport,
-	footerLines,
-	formatElapsed,
-	interruptedNotice,
-	runningReminder,
-	systemReminder,
-} from "./render.ts";
-import { ShellRegistry, type KilledBy, type ShellConfig, type ShellJob } from "./shells.ts";
-import { ensureStore, listShells, pruneShells, reconcile, tailOutput, writeMeta, type ShellMeta } from "./store.ts";
+import { commandLabel, exitPhrase, exitReport, footerLines, formatElapsed, runningReminder, systemReminder } from "./render.ts";
+import { ShellRegistry, type KilledBy, type ShellConfig, type ShellJob, type ShellMeta } from "./shells.ts";
 import { registerShellTools } from "./tools.ts";
 import { showShells } from "./tui.ts";
 
-/** What the exit message carries: a meta snapshot plus the tail, so the renderer needs no fs. */
+/** What the exit message carries: a meta snapshot plus the tail, so the renderer needs no lookup. */
 interface ExitDetails {
 	meta: ShellMeta;
 	tail: string[];
@@ -88,8 +81,6 @@ export default function (pi: ExtensionAPI) {
 	let uiCtx: ExtensionContext | undefined;
 	let sessionId: string | undefined;
 	let shellConfig: ShellConfig = {};
-	let interruptedNote: string | undefined;
-	let owedInterrupted: ShellMeta[] = [];
 	let linesTimer: ReturnType<typeof setInterval> | undefined;
 	let builtin: { cwd: string; def: ReturnType<typeof createBashToolDefinition> } | undefined;
 
@@ -145,7 +136,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx) return;
 		try {
 			const idle = ctx.isIdle();
-			const tail = tailOutput(agentDir, job.meta.shellId, CONFIG.exitTailBytes).slice(-CONFIG.exitTailLines);
+			const tail = job.output.tail(CONFIG.exitTailBytes).slice(-CONFIG.exitTailLines);
 			pi.sendMessage<ExitDetails>(
 				{
 					customType: RESULT_MESSAGE,
@@ -162,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 						: { deliverAs: "followUp" },
 			);
 		} catch {
-			/* a dead session cannot receive results; the store still has everything */
+			/* a dead session cannot receive results, and nothing else needs them */
 		}
 	};
 
@@ -214,7 +205,6 @@ export default function (pi: ExtensionAPI) {
 
 	const openPanel = async (ctx: ExtensionContext) => {
 		await showShells(pi, ctx, {
-			agentDir,
 			registry,
 			notify: (message, level) => ctx.ui.notify(message, level ?? "info"),
 		});
@@ -231,39 +221,19 @@ export default function (pi: ExtensionAPI) {
 		sessionId = ctx.sessionManager.getSessionId();
 		shellConfig = loadShellConfig(agentDir, ctx.cwd);
 		builtin = undefined;
-		ensureStore(agentDir);
-		reconcile(agentDir);
-		pruneShells(agentDir, CONFIG.retainShells);
-		// What this session owes the model comes from the STORE, not from
-		// reconcile's return value: the store is global, so another project's
-		// session may have already reconciled this one's dead shells — the
-		// notice belongs to whichever session of the OWNING project shows up
-		// first, and the `reported` flag is what hands it over exactly once.
-		owedInterrupted = listShells(agentDir).filter(
-			(meta) => meta.status === "interrupted" && meta.cwd === ctx.cwd && !meta.reported,
-		);
-		interruptedNote = interruptedNotice(owedInterrupted);
 		drawLines();
 	});
 
 	pi.on("before_agent_start", () => {
-		const parts: string[] = [];
-		if (interruptedNote) {
-			parts.push(interruptedNote);
-			interruptedNote = undefined;
-			for (const meta of owedInterrupted) writeMeta(agentDir, { ...meta, reported: true });
-			owedInterrupted = [];
-		}
 		const reminder = runningReminder(
 			registry.running().map((job) => job.meta),
 			Date.now(),
 		);
-		if (reminder) parts.push(reminder);
-		if (parts.length === 0) return;
+		if (!reminder) return;
 		return {
 			message: {
 				customType: REMINDER_MESSAGE,
-				content: parts.map(systemReminder).join("\n"),
+				content: systemReminder(reminder),
 				display: false,
 			},
 		};
@@ -281,5 +251,13 @@ export default function (pi: ExtensionAPI) {
 		pi.events.emit(LINES_CHANNEL, { lines: undefined });
 		stopLinesTimer();
 		uiCtx = undefined;
+	});
+
+	// The backstop for exits that never reach session_shutdown. With no store
+	// left to record an orphan, a detached dev server surviving pi has nothing
+	// to report it — so take the last synchronous chance to signal the group.
+	// (SIGKILL still skips this; that case is simply out of reach.)
+	process.on("exit", () => {
+		registry.killAll("shutdown");
 	});
 }

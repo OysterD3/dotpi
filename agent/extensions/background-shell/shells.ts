@@ -15,14 +15,54 @@
  * path is an immediate SIGKILL of the whole tree — right for a cancelled
  * foreground command, wrong for "please stop my dev server".
  *
- * Shells die with the session (killAll on session_shutdown). A pi crash skips
- * that, which is what store.reconcile() is for.
+ * Shells die with the session (killAll on session_shutdown), and an exit hook
+ * catches the paths that skip it. A pi killed outright skips both, and since
+ * nothing is written to disk there is no record left for a later session to
+ * reconcile — the orphaned group is simply out of reach.
+ *
+ * A shell's whole existence is this module's registry: the record, the child,
+ * and its output ring. Nothing here touches the filesystem.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { CONFIG } from "./config.ts";
-import { appendOutput, isSettled, writeMeta, type ShellMeta } from "./store.ts";
+import { OutputBuffer } from "./output.ts";
+
+export type ShellStatus = "running" | "done" | "failed" | "killed";
+
+/** One background shell's record. Lives in the registry and dies with the session. */
+export interface ShellMeta {
+	shellId: string;
+	command: string;
+	cwd: string;
+	/** The child's pid — the process group leader, so kill(-pid) reaches everything. */
+	pid: number | undefined;
+	sessionId?: string;
+	status: ShellStatus;
+	startedAt: number;
+	endedAt?: number;
+	/** null means killed by signal rather than exiting on its own. */
+	exitCode?: number | null;
+	/** Set when the kill came from the tool call's timeout parameter. */
+	timedOut?: boolean;
+}
+
+/** Anything but running. */
+export function isSettled(status: ShellStatus): boolean {
+	return status !== "running";
+}
+
+let counter = 0;
+
+/**
+ * A sortable id: `sh-<base36 ms>-<base36 pid>-<counter>`. The pid component
+ * keeps ids from colliding between concurrent pi sessions — they share no
+ * store any more, but they do share a user reading two transcripts.
+ */
+export function newShellId(now: number = Date.now()): string {
+	return `sh-${now.toString(36).padStart(9, "0")}-${process.pid.toString(36)}-${++counter}`;
+}
 
 /** Who asked for the kill. Decides how (and whether) the exit is reported. */
 export type KilledBy = "tool" | "panel" | "timeout" | "shutdown";
@@ -30,7 +70,9 @@ export type KilledBy = "tool" | "panel" | "timeout" | "shutdown";
 export interface ShellJob {
 	meta: ShellMeta;
 	child: ChildProcess | undefined;
-	/** The model's bash_output cursor: byte offset into output.log already read. */
+	/** Everything the shell has written, bounded to the last CONFIG.bufferBytes. */
+	output: OutputBuffer;
+	/** The model's bash_output cursor: bytes of the output stream already read. */
 	readOffset: number;
 	killedBy?: KilledBy;
 	/**
@@ -59,7 +101,6 @@ export function resolveShell(shellPath: string | undefined): { shell: string; ar
 }
 
 export interface StartRequest {
-	agentDir: string;
 	meta: ShellMeta;
 	config: ShellConfig;
 	/** Environment for the child; the caller mirrors the built-in's. Default: process.env. */
@@ -70,12 +111,12 @@ export interface StartRequest {
 	 * is ignored here rather than silently becoming a 1ms timer.
 	 */
 	timeoutSeconds?: number;
-	/** Called exactly once, after the meta has its final status on disk. */
+	/** Called exactly once, after the meta has its final status. */
 	onExit: (job: ShellJob) => void;
 }
 
 export function startShell(request: StartRequest): ShellJob {
-	const { agentDir, meta } = request;
+	const { meta } = request;
 	const { shell, args } = resolveShell(request.config.shellPath);
 	const command = request.config.commandPrefix ? `${request.config.commandPrefix}\n${meta.command}` : meta.command;
 
@@ -83,6 +124,7 @@ export function startShell(request: StartRequest): ShellJob {
 	const job: ShellJob = {
 		meta,
 		child: undefined,
+		output: new OutputBuffer(CONFIG.bufferBytes),
 		readOffset: 0,
 		settled: new Promise<void>((resolve) => {
 			resolveSettled = resolve;
@@ -99,11 +141,10 @@ export function startShell(request: StartRequest): ShellJob {
 		});
 	} catch (error) {
 		// Synchronous spawn failure (bad shell path). Finalize without a child.
-		appendOutput(agentDir, meta.shellId, `spawn failed: ${String(error)}\n`);
+		job.output.append(`spawn failed: ${String(error)}\n`);
 		meta.status = "failed";
 		meta.exitCode = null;
 		meta.endedAt = Date.now();
-		writeMeta(agentDir, meta);
 		queueMicrotask(() => {
 			resolveSettled();
 			request.onExit(job);
@@ -113,10 +154,9 @@ export function startShell(request: StartRequest): ShellJob {
 
 	job.child = child;
 	meta.pid = child.pid;
-	writeMeta(agentDir, meta);
 
-	child.stdout?.on("data", (data: Buffer) => appendOutput(agentDir, meta.shellId, data));
-	child.stderr?.on("data", (data: Buffer) => appendOutput(agentDir, meta.shellId, data));
+	child.stdout?.on("data", (data: Buffer) => job.output.append(data));
+	child.stderr?.on("data", (data: Buffer) => job.output.append(data));
 
 	let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 	const timeoutMs = (request.timeoutSeconds ?? 0) * 1000;
@@ -140,16 +180,15 @@ export function startShell(request: StartRequest): ShellJob {
 		if (job.killedBy === "timeout" && meta.status === "killed") meta.timedOut = true;
 		meta.exitCode = code;
 		meta.endedAt = Date.now();
-		writeMeta(agentDir, meta);
 		resolveSettled();
 		request.onExit(job);
 	};
 
 	// "close", not "exit": close waits for the output pipes to drain, so the
-	// log is complete before the exit report reads its tail.
+	// buffer is complete before the exit report reads its tail.
 	child.on("close", (code) => finalize(code));
 	child.on("error", (error) => {
-		appendOutput(agentDir, meta.shellId, `spawn failed: ${String(error)}\n`);
+		job.output.append(`spawn failed: ${String(error)}\n`);
 		finalize(null);
 	});
 
@@ -194,15 +233,25 @@ export function killJob(job: ShellJob, by: KilledBy): boolean {
 export type KillOutcome = "killed" | "not-running" | "unknown";
 
 /**
- * Every shell this pi process started, running or settled, keyed by id.
+ * Every shell this pi process started, running or settled, keyed by id — and,
+ * with nothing on disk, the only place a shell exists at all.
+ *
  * Settled jobs stay listed so bash_output can drain their remaining output;
- * clear() on session_shutdown is what keeps /new from inheriting them.
+ * clear() on session_shutdown is what keeps /new from inheriting them. Because
+ * each one still holds its output ring, the oldest settled jobs beyond `retain`
+ * are dropped as new shells arrive — the in-memory replacement for the disk
+ * store's prune, and what bounds this registry to retain × bufferBytes.
  */
 export class ShellRegistry {
 	private readonly jobs = new Map<string, ShellJob>();
 
+	constructor(private readonly retain: number = CONFIG.retainShells) {}
+
 	add(job: ShellJob): void {
 		this.jobs.set(job.meta.shellId, job);
+		// Only an add can grow the map, so trimming here is enough to bound it.
+		const settled = this.all().filter((entry) => isSettled(entry.meta.status));
+		for (const stale of settled.slice(this.retain)) this.jobs.delete(stale.meta.shellId);
 	}
 
 	get(shellId: string): ShellJob | undefined {

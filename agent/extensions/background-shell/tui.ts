@@ -1,8 +1,7 @@
 /**
  * The shells control panel: shift+up takes the editor's place and lists this
  * session's background shells; drilling into one shows a live tail of its
- * output. From here a shell can be killed, and its output path fetched for a
- * proper pager.
+ * output. From here a shell can be killed.
  *
  * The mechanics are ultracode's WorkflowsPanel, kept deliberately: the panel
  * sits in the editor slot (`overlay: false`) framed by rules with key hints
@@ -15,9 +14,10 @@
  * is flattened and width-clamped — an over-wide or multi-line line in the
  * editor slot crashes pi-tui.
  *
- * Output is read as a bounded tail of output.log, cached by file size (the
- * file is append-only, so size is a version number). Scrolling is an offset
- * from the bottom; 0 means "follow", which is where every open starts.
+ * Output is read as a bounded tail of the shell's in-memory buffer, cached by
+ * the buffer's total byte count (which only ever grows, so it is a version
+ * number). Scrolling is an offset from the bottom; 0 means "follow", which is
+ * where every open starts.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -25,10 +25,8 @@ import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tu
 import { ASK_CHANNEL, CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
 import { commandLabel, formatElapsed, statusLabel, statusMark } from "./render.ts";
 import type { ShellJob, ShellRegistry } from "./shells.ts";
-import { outputPath, outputSize, tailOutput } from "./store.ts";
 
 export interface TuiHost {
-	agentDir: string;
 	registry: ShellRegistry;
 	notify: (message: string, level?: "info" | "warning" | "error") => void;
 	requestRender: () => void;
@@ -41,8 +39,8 @@ type View = "list" | "detail";
 
 /** `q close` leads every list so width packing and height clipping never drop the exit. */
 const HINTS: Record<View, string[]> = {
-	list: ["q close", "↑↓ select", "→ open", "c kill", "e output path"],
-	detail: ["q close", "← back", "↑↓ scroll", "G follow", "c kill", "e output path"],
+	list: ["q close", "↑↓ select", "→ open", "c kill"],
+	detail: ["q close", "← back", "↑↓ scroll", "G follow", "c kill"],
 };
 
 /** Refresh ticks with no render before concluding the slot was lost. */
@@ -77,7 +75,7 @@ export class ShellsPanel {
 	private scroll = 0;
 	private status = "";
 	private timer: ReturnType<typeof setInterval> | undefined;
-	/** Tail cache for the detail view, invalidated by file size. */
+	/** Tail cache for the detail view, invalidated by the buffer's byte count. */
 	private tail: { shellId: string; size: number; lines: string[] } | undefined;
 	/** Renders served, and the count at the last tick — the orphan watchdog's input. */
 	private renders = 0;
@@ -145,7 +143,6 @@ export class ShellsPanel {
 			return;
 		}
 		if (data === "c") return void this.kill();
-		if (data === "e") return void this.showOutputPath();
 	}
 
 	private close(): void {
@@ -182,12 +179,6 @@ export class ShellsPanel {
 		this.refresh();
 	}
 
-	private showOutputPath(): void {
-		const job = this.current();
-		if (!job) return;
-		this.status = outputPath(this.host.agentDir, job.meta.shellId);
-	}
-
 	private refresh(): void {
 		this.jobs = this.host.registry.all();
 		const found = this.selectedId ? this.jobs.findIndex((job) => job.meta.shellId === this.selectedId) : -1;
@@ -199,9 +190,9 @@ export class ShellsPanel {
 		const job = this.current();
 		if (!job) return [];
 		const id = job.meta.shellId;
-		const size = outputSize(this.host.agentDir, id);
+		const size = job.output.size;
 		if (this.tail?.shellId !== id || this.tail.size !== size) {
-			this.tail = { shellId: id, size, lines: tailOutput(this.host.agentDir, id, CONFIG.panelTailBytes) };
+			this.tail = { shellId: id, size, lines: job.output.tail(CONFIG.panelTailBytes) };
 		}
 		return this.tail.lines;
 	}

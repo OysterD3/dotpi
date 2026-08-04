@@ -1150,7 +1150,7 @@ the command detached in its own process group, returns immediately with a shell 
 arrives later the way ultracode's background workflows do: a custom message that wakes an idle
 agent or rides the current turn as a follow-up, carrying the output tail so short jobs need no
 follow-up read. Two companion tools complete Claude Code's surface: `bash_output` returns what a
-shell wrote since the last check (cursor-based over the on-disk log, optional regex filter), and
+shell wrote since the last check (cursor-based over an in-memory ring, optional regex filter), and
 `kill_shell` SIGTERMs the group with a SIGKILL five seconds behind — the group, not the pid,
 because sh does not exec compound commands and signalling the leader alone leaves the real work
 running with the pipes held open.
@@ -1163,20 +1163,25 @@ that a pass-through rather than a fork.
 
 **shift+up opens the shells panel** — no slash command, deliberately. It is ultracode's `/workflows`
 panel mechanics with shells in the rows: the editor's slot, rules above and below, `↑↓` select,
-`→` drills into a live output tail, `c` kills, `e` shows the output file path, `q`/Esc/ctrl+c out.
-The statusline stands down while it is up (announced on `background-shell:panel-open`) and appends
-one line per running shell the rest of the time (announced on `background-shell:lines`), so a
-running server stays visible without opening anything.
+`→` drills into a live output tail, `c` kills, `q`/Esc/ctrl+c out. The statusline stands down while
+it is up (announced on `background-shell:panel-open`) and appends one line per running shell the
+rest of the time (announced on `background-shell:lines`), so a running server stays visible without
+opening anything.
 
-Shells die with the session — session_shutdown kills every group, so `/new` cannot inherit a
-stranger's dev server and quitting pi does not leave port squatters. What survives is the record:
-`agent/background-shells/<id>/` holds `shell.json` and `output.log`, a crashed pi's leftovers are
-reconciled by owner-pid liveness at the next session_start, and the model gets a hidden reminder
-naming them — including the orphan's pid when the process outlived its owner, which is the one
-fact worth acting on. A hidden per-turn reminder also lists running shells, so the model does not
-forget the server it started twenty turns ago. Killed-by-user exits wait for the next turn instead
-of waking the agent; killed-by-kill_shell exits are reported in that tool's own result and stay
-out of the message stream entirely.
+**Nothing is written to disk** — no store, no log files, nothing to prune. A shell exists in the
+registry and its output in a bounded in-memory ring (1MB, oldest bytes dropped first), because
+shells die with the session anyway: session_shutdown kills every group, so `/new` cannot inherit a
+stranger's dev server and quitting pi does not leave port squatters, and a process-exit hook covers
+the paths that skip session_shutdown. The earlier design kept `shell.json` and `output.log` per
+shell so a crashed pi's leftovers could be reconciled by owner-pid liveness and named to the next
+session; that record was worth one hidden reminder in a rare case and a growing pile of directories
+in `agent/` always, so it is gone. The remaining cost is stated plainly: a pi killed outright leaves
+its detached groups running and nothing reports them. Cursors are absolute offsets into the virtual
+stream, so evicted bytes read back as `[skipped N bytes]` rather than as a silent gap. A hidden
+per-turn reminder lists running shells, so the model does not forget the server it started twenty
+turns ago. Killed-by-user exits wait for the next turn instead of waking the agent;
+killed-by-kill_shell exits are reported in that tool's own result and stay out of the message
+stream entirely.
 
 ```
 $ npm run dev  (background)
@@ -1189,8 +1194,8 @@ $ npm run dev  (background)
 | --- | --- |
 | `index.ts` | Wiring: lifecycle, exit delivery, footer announcements, the shortcut |
 | `tools.ts` | The three tools — `bash` (replacement), `bash_output`, `kill_shell` |
-| `shells.ts` | One shell as a detached process group; spawn, kill ladder, registry |
-| `store.ts` | The on-disk store: shell.json, output.log, cursors, pid reconcile |
+| `shells.ts` | One shell as a detached process group; the record, spawn, kill ladder, registry |
+| `output.ts` | The in-memory output ring: absolute cursors, tail-biased reads, sanitizing |
 | `tui.ts` | **The shift+up shells panel** — list, live tail, kill |
 | `render.ts` | Rows, footer lines, the exit report and reminders (pure) |
 | `config.ts` | Channels, message types, tunables |
