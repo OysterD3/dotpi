@@ -53,6 +53,9 @@
   "compaction": {
     "enabled": true
   },
+  "contextDiet": {
+    "dropOldReasoning": true
+  },
   "stalledTurn": {
     "enabled": true,
     "maxResumes": 2
