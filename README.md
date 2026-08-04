@@ -1421,6 +1421,78 @@ both copies are pinned by assertions in their own suites.
 | `index.ts` | One `before_agent_start` append — chained, never replacing |
 | `tool-batching.test.ts` | The text, the short subagent variant, and that the append does not clobber |
 
+**`agent/extensions/context-diet/`** — stops a long turn paying for context it stopped reading.
+
+pi decides whether to compact in exactly two places: after `agent_end`, and before a new prompt.
+Both are turn boundaries. Inside a turn, `_runAgentPrompt` awaits the whole tool loop before the
+check is reached (`agent-session.js:776`), so `shouldCompact()` is unreachable for the duration —
+however many hundred calls that is. Its own docstring says as much: *"Called after agent_end and
+before prompt submission."*
+
+Session `019fcad1` is what that costs. One prompt, one turn, 2h44m, 399 model calls, 530 tool calls,
+**$125.86**:
+
+| | |
+| --- | --- |
+| context, first call → last | 12,641 → **375,108** tokens, against a 272,000 window |
+| calls above the window | **219 of 397** |
+| first compaction | overflow recovery, *after* the API returned "your input exceeds the context window" |
+| second compaction | at `agent_end`, 51s after the final answer — 347k summarised, then never read |
+| both compactions | $7.47, cache disabled by design, billed at the over-window rate |
+
+The threshold itself was set correctly — `272000 - 16384` reserve is 255,616, comfortably under the
+cliff. It was simply never evaluated. And the cliff is where the money is: gpt-5.6 doubles every
+rate above 272k (in $5→$10, cached $0.50→$1.00, out $30→$45 per Mtok), so those 219 calls cost
+$81.85 of the $107 main-loop spend. The split is exactly clean — the largest 1× call carried
+269,836 tokens, the smallest 2× call 273,729.
+
+So this trims what gets *sent*, per call, and leaves the turn alone. The `context` hook runs inside
+`streamAssistantResponse` on every LLM call and rewrites only the copy bound for the provider;
+`context.messages`, the session and the JSONL are untouched, so `/compact`, `/rewind`, fork and tree
+navigation all still see the full history. Nothing is aborted — which rules out the obvious
+alternative, because `ctx.compact()` can be called mid-turn but opens with `await this.abort()`, and
+killing a 2.7-hour harness run to save tokens is not a trade worth making.
+
+Over the high-water mark (80% of the window) a round drops the bodies of old tool results, oldest
+first, down to a target of 55%. Errors are never dropped, nor are the newest 24 results — the live
+working set. Screenshots are the exception to that last rule: only the newest 3 survive, because one
+goes stale the moment the next is taken and costs ~1.2k tokens to keep saying so. Each dropped body
+becomes one line naming the call and its size, so the model can re-run what it actually wants.
+
+Two invariants carry the whole thing, and both are asserted directly:
+
+- **A dropped result is replaced, never removed.** Remove the message and every later request is
+  rejected for having a tool call with no result — which reads as a provider outage, not a bug here.
+- **A stub renders byte-identically forever.** Evictions are permanent for the session and built
+  from facts fixed when they were made. The prompt cache invalidates from the first byte that
+  differs, so a diet that re-decided each call would move that byte every call and re-bill the whole
+  context uncached — ten times the cached rate, and strictly worse than doing nothing. The gap
+  between the two ratios is the hysteresis that keeps rounds rare; narrowing it is the one change
+  here that can cost more than it saves.
+
+Replaying `019fcad1` through it, charging each round's cache break in full:
+
+| | real | with the diet |
+| --- | --- | --- |
+| peak context | 375k | **218k** |
+| calls above the cliff | 219 | **0** |
+| main-loop cost | $107.00 | **$52.71** |
+
+Five rounds across the session, 180 results stubbed. Peak never reaches 255,616 either, so the
+overflow that forced the first compaction does not happen and the unread second one does not fire —
+the $7.47 goes too. Main-session only: workflow and `task` subagents spawn with `--no-extensions`,
+and they were never the problem — 270 subagent calls cost $5.35 between them, because each starts
+empty.
+
+| File | Role |
+| --- | --- |
+| `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
+| `session.ts` | The per-session eviction set — stickiness and hysteresis (pure) |
+| `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
+| `index.ts` | The `context` hook, and the resets that clear the set |
+| `render.ts` | The one-line transcript entry |
+| `context-diet.test.ts` | 65 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
+
 **`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
 
 When a provider finishes a response having produced no content and reports `stopReason: "stop"`, pi
