@@ -20,7 +20,7 @@ import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
-import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
+import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
 	allAgentsFailed,
 	newProgress,
@@ -1885,6 +1885,18 @@ console.log("\n--- panel: /workflows lists this session's runs ---");
 		sessionRuns([meta("mine", "s1"), cancelled, broken], "s1", none).map((m) => m.runId),
 		["mine"],
 	);
+
+	// Spend is scoped harder than browsing is. The interrupted-run exception
+	// above exists so `R resume run` can reach a fleet another session
+	// abandoned — charging this session for it would be a plain overcount, and
+	// the session that ran it has already reported it.
+	check("this session's runs are billed here", spendRuns(all, "s1", none).map((m) => m.runId), ["mine"]);
+	check("another session's are not", spendRuns(all, "s2", none).map((m) => m.runId), ["theirs"]);
+	check("nor is an interrupted run owed by one", spendRuns(withDead, "s1", none).map((m) => m.runId), ["mine"]);
+	// Same escape hatch as the panel's, and for the same reason: an ephemeral
+	// session has no id, so a fleet it is driving right now would otherwise be
+	// billed to nobody.
+	check("an ephemeral session is still billed for what it drives", spendRuns(all, undefined, (id) => id === "ancient").map((m) => m.runId), ["ancient"]);
 }
 
 console.log("\n--- tool: the reasoning-level chain ---");

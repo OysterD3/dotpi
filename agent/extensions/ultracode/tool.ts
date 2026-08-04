@@ -24,11 +24,12 @@
  * loudly, never silently on the wrong model.
  *
  * Accounting: a `wait: true` run attaches its spend to the tool result as
- * `usage`, which is how pi records it. A background run cannot — the tool
- * returned long before the money was spent — so it announces each subagent
- * turn on SPEND_CHANNEL instead, and a reader adds the two up. The two paths
- * are exclusive on purpose: announcing a `wait: true` run as well would bill
- * the same tokens twice.
+ * `usage`, which is how pi records it, and stamps `details.spendKey` with its
+ * run id to say so. A background run cannot — the tool returned long before the
+ * money was spent — and nothing is announced for it while it runs either.
+ * Everything else is answered from run.json when a report asks (COLLECT_CHANNEL,
+ * wired in index.ts), which is the only version of this that survives the
+ * process it ran in; the key is what keeps the two routes from double-billing.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -41,7 +42,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { loadAgentTypes, type AgentTypeDef, type AgentTypeRegistry } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
-import { CONFIG, SPEND_CHANNEL, SPEND_SOURCE, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
+import { CONFIG, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import {
 	runWorkflowScript,
@@ -352,14 +353,12 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 				}
 				const outcome = run.outcome!;
 				if (outcome.isError) {
-					// Announce before throwing. A `wait: true` run is normally accounted
-					// for by the `usage` on the result below, and announces nothing so
-					// the two cannot double up — but pi builds the tool result itself
-					// when execute throws, and that one carries no usage at all. Four
-					// minutes of agents that then failed would otherwise vanish from
-					// every total. Announced once, as the run's whole spend, because
-					// the per-turn door was shut for this run.
-					announceRunSpend(pi, run.progress.usage, run.spendDetail);
+					// Nothing to announce on the way out. pi builds the tool result
+					// itself when execute throws and it carries no usage, so four
+					// minutes of agents that then failed are recorded only in
+					// run.json — which is exactly where the report reads them from,
+					// and, having no `spendKey` on any result, nothing suppresses
+					// them there.
 					throw new Error(run.progress.status === "aborted" ? "Workflow aborted" : outcome.text);
 				}
 				return {
@@ -371,7 +370,17 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 					// details is the only channel that is both free-form and persisted,
 					// and `details.turns` is the shape the other spending tools in this
 					// repo already use.
-					details: { ...structuredClone(run.progress), turns: run.progress.usage.turns, spendLabel: run.spendDetail },
+					//
+					// `spendKey` is what stops this run being billed twice. It is in
+					// the store like every other run, so the report will be offered it
+					// again from run.json; the key on a result that carries usage says
+					// "already counted, from here".
+					details: {
+						...structuredClone(run.progress),
+						turns: run.progress.usage.turns,
+						spendLabel: run.spendDetail,
+						spendKey: run.progress.runId,
+					},
 					usage: toPiUsage(run.progress.usage),
 				};
 			}
@@ -555,45 +564,11 @@ function startRun(
 	};
 	const changed = () => options.onRunEvent?.();
 
-	/**
-	 * Announce one subagent turn's spend for whoever is keeping a session total.
-	 *
-	 * Silent for `wait: true` runs: pi attaches their usage to the tool result
-	 * (see `toPiUsage` at the end of execute), so a reader that walks the
-	 * transcript already has these tokens. Announcing them as well billed every
-	 * synchronous workflow twice — once as a `workflow (tool)` row and once in
-	 * the announced total. Only background runs, whose tool result was resolved
-	 * long before the money was spent, need this door.
-	 */
-	// Named once, at start: the run's own label for /usage's per-run rows. Fixed
-	// for the run's lifetime so a fleet that crosses midnight does not split into
-	// two rows, and carrying the start time because two runs of the same workflow
-	// are otherwise indistinguishable.
+	// The run's own label for /usage's per-run rows, carrying the start time
+	// because two runs of the same workflow are otherwise indistinguishable. Only
+	// the `wait: true` result needs it from here; the label for every other route
+	// is built where the answer is (index.ts, from run.json).
 	const spendDetail = `${name} (${startedLabel(meta.startedAt, meta.startedAt)})`;
-
-	const announceSpend = (delta: SpawnUsage) => {
-		if (wait) return;
-		// Nothing after the run is cancelled. `session_shutdown` aborts every
-		// controller but the children only die on SIGTERM-then-SIGKILL, so their
-		// last `message_end` events can arrive seconds later — after pi has
-		// started the next session and the subscriber has reset its tally. Those
-		// tokens would land in a session that never spent them. The abort is the
-		// boundary; the run's own totals still take them (run.json is right).
-		if (controller.signal.aborted) return;
-		pi.events.emit(SPEND_CHANNEL, {
-			source: SPEND_SOURCE,
-			detail: spendDetail,
-			calls: delta.turns,
-			usage: {
-				input: delta.input,
-				output: delta.output,
-				cacheRead: delta.cacheRead,
-				cacheWrite: delta.cacheWrite,
-				reasoning: delta.reasoning,
-				cost: delta.cost,
-			},
-		});
-	};
 
 	// A resume reads the previous journal; a fresh run gets an empty index.
 	const replayIndex = params.resumeFromRunId ? new ReplayIndex(readJournalLines(agentDir, params.resumeFromRunId)) : undefined;
@@ -943,7 +918,6 @@ function startRun(
 				recordTranscript();
 				addUsage(progress.usage, delta);
 				if (row) row.usage = addedUsage(row.usage, delta);
-				announceSpend(delta);
 				persistThrottled();
 				changed();
 			};
@@ -1328,29 +1302,4 @@ function toPiUsage(usage: SpawnUsage) {
 		totalTokens: usage.totalTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage.cost },
 	};
-}
-
-/**
- * Announce a whole run's spend in one go, for the paths that never announced
- * per turn. Same payload shape as the per-turn announcement in startRun; see
- * SPEND_CHANNEL for why `cost` is flat.
- */
-function announceRunSpend(pi: ExtensionAPI, usage: SpawnUsage, detail: string | undefined): void {
-	if (usage.turns === 0) return;
-	pi.events.emit(SPEND_CHANNEL, {
-		source: SPEND_SOURCE,
-		// Absent only for a run built outside startRun (tests). A subscriber then
-		// gets the source row without a per-run child, which is the right
-		// degradation: no label is better than a wrong one.
-		...(detail ? { detail } : {}),
-		calls: usage.turns,
-		usage: {
-			input: usage.input,
-			output: usage.output,
-			cacheRead: usage.cacheRead,
-			cacheWrite: usage.cacheWrite,
-			reasoning: usage.reasoning,
-			cost: usage.cost,
-		},
-	});
 }

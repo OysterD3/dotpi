@@ -254,6 +254,83 @@ console.log("\n--- render: the provenance footnote survives an older stored entr
 	check("a report with no announced spend does not", plainUsage(collectUsage([]), {}).includes("announced by extensions"), false);
 }
 
+console.log("\n--- collect: a keyed announcement replaces, it does not accumulate ---");
+{
+	// The whole reason keys exist. A producer with a durable store is asked on
+	// every report, and answers with the same run every time. As increments that
+	// made a $2 fleet read $2, $4, $6 down the session — the report getting more
+	// wrong the more you looked at it.
+	const log = new AnnouncedSpendLog();
+	const snapshot = { source: "workflow", key: "wf-1", detail: "sweep (10:00)", calls: 8, usage: { input: 100, cost: 2 } };
+	log.add(snapshot);
+	log.add(snapshot);
+	log.add(snapshot);
+	check("three answers, one row", log.rows().map((row) => row.label), ["workflow"]);
+	check("counted once", log.rows()[0]?.totals.cost, 2);
+	check("and its calls once", log.rows()[0]?.totals.calls, 8);
+
+	// A later answer for the same run is the fresher one — a run that spent more
+	// since the last report, or the same run read back off disk after a restart.
+	log.add({ ...snapshot, calls: 12, usage: { input: 100, cost: 3.5 } });
+	check("the later word wins", log.rows()[0]?.totals.cost, 3.5);
+	check("without adding to the earlier one", log.rows()[0]?.totals.calls, 12);
+
+	// Different runs are different keys, and still one source row.
+	log.add({ source: "workflow", key: "wf-2", detail: "review (11:00)", calls: 4, usage: { cost: 1 } });
+	check("two runs, one row", log.rows()[0]?.totals.cost, 4.5);
+	check("broken down per run", log.rows()[0]?.children?.map((child) => child.label), ["sweep (10:00)", "review (11:00)"]);
+
+	// Increments from another producer are untouched by any of this.
+	log.add({ source: "recap", calls: 1, usage: { cost: 0.01 } });
+	log.add({ source: "recap", calls: 1, usage: { cost: 0.01 } });
+	check("unkeyed sources still accumulate", log.rows().find((row) => row.label === "recap")?.totals.cost, 0.02);
+}
+
+console.log("\n--- collect: a run the transcript already paid for is not billed again ---");
+{
+	// A `wait: true` workflow records its usage on the tool result, and is also
+	// in the producer's store — so the answer to a report's question contains a
+	// run the report has already counted. `details.spendKey` is how the two are
+	// recognised as the same run.
+	const collected = collectUsage([
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "workflow",
+				isError: false,
+				details: { turns: 24, spendLabel: "code-review (16:01)", spendKey: "wf-sync" },
+				usage: usageBlock(540_000, 30_000, 5.2),
+			},
+		},
+	]);
+	check("the file says which run it covered", collected.accountedKeys, ["wf-sync"]);
+
+	const log = new AnnouncedSpendLog();
+	log.add({ source: "workflow", key: "wf-sync", detail: "code-review (16:01)", calls: 24, usage: { cost: 5.2 } });
+	log.add({ source: "workflow", key: "wf-bg", detail: "migrate (14:03)", calls: 16, usage: { cost: 2.8 } });
+
+	const merged = withAnnounced(collected, log.rows(new Set(collected.accountedKeys)));
+	check("the same run is not counted twice", Number(merged.tools[0]!.totals.cost.toFixed(4)), 8);
+	check("nor its calls", merged.tools[0]?.totals.calls, 40);
+	check("both runs are still named", merged.tools[0]?.children?.map((child) => child.label), ["code-review (16:01)", "migrate (14:03)"]);
+	check("and the children sum to the parent", merged.tools[0]?.children?.reduce((sum, child) => sum + child.totals.calls, 0), 40);
+
+	// Without the exclusion this is what the report would say — the assertion is
+	// here so the dedupe cannot quietly stop working and still look plausible.
+	const naive = withAnnounced(collected, log.rows());
+	check("unfiltered, the same fleet would be billed twice", Number(naive.tools[0]!.totals.cost.toFixed(4)), 13.2);
+
+	// A key that nothing in the file claims must survive: a background run's
+	// result is written before its agents spend anything, so keying off it would
+	// erase the only report of what the fleet cost.
+	const background = collectUsage([
+		{ type: "message", message: { role: "toolResult", toolName: "workflow", isError: false, details: { runId: "wf-bg", background: true } } },
+	]);
+	check("a result with no usage accounts for nothing", background.accountedKeys, []);
+	check("so the run still reports", withAnnounced(background, log.rows(new Set(background.accountedKeys))).announced?.[0]?.totals.cost, 8);
+}
+
 console.log("\n--- collect: an announcement from a non-tool keeps its own row ---");
 {
 	// recap and goal announce but are not tools, so there is nothing to merge

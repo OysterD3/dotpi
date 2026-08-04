@@ -29,12 +29,12 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
-const { PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
+const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
 const { createRun, readMeta } = await import("./store.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
-type SpendEvent = { source: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
+type SpendEvent = { source: string; key?: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
 const ultracode = (await import("./index.ts")).default;
 
 let failures = 0;
@@ -707,15 +707,20 @@ console.log("\n--- workflow tool: background ---");
 	check("the footer's run lines are cleared too", announced().at(-1), undefined);
 }
 
-console.log("\n--- workflow tool: a background run announces what it spends ---");
+console.log("\n--- workflow tool: what a run spent, asked for rather than announced ---");
 {
-	// The one assertion that actually exercises the spend path end to end:
-	// engine -> spawn -> JSONL parse -> applyTurn -> onUsage -> announceSpend ->
-	// the bus. Everything else stopped short of it — the unit test checks
-	// applyTurn in isolation, the other e2e scripts spawn no agents, and the live
-	// test reads run.json, which persist() writes regardless. Deleting the emit
-	// left all 18 suites green, so the central claim of the whole change was
-	// unguarded.
+	// The one assertion that exercises the spend path end to end: engine ->
+	// spawn -> JSONL parse -> applyTurn -> onUsage -> run.json -> the collect
+	// answer. Everything else stops short of it — the unit test checks applyTurn
+	// in isolation, the other e2e scripts spawn no agents, and the live test
+	// reads run.json directly.
+	//
+	// The property under test used to be "a background run announces as it
+	// spends", which was true and useless the moment pi restarted: the tally was
+	// the subscriber's heap and nothing else, so `pi -c` into a session with two
+	// finished fleets reported neither. Now nothing is pushed at all and the
+	// answer is assembled on demand from the store, which is what makes it
+	// survive.
 	//
 	// A fake `pi` stands in for the real binary: piInvocation() runs
 	// process.argv[1] under node, so pointing that at a script which prints one
@@ -742,54 +747,111 @@ console.log("\n--- workflow tool: a background run announces what it spends ---"
 		"return { text }",
 	].join("\n");
 
+	/** Fire the report's question and read what this extension answered. */
+	const collect = (): SpendEvent[] => {
+		busEmitted.length = 0;
+		pi.events.emit(COLLECT_CHANNEL, {});
+		return busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
+	};
+
 	try {
 		const sync = await tool.execute("t-spend", { script, wait: true }, undefined, undefined, ctx);
-		const spend = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
-		// wait: true attaches usage to the tool result instead, so this path must
-		// stay silent or the same tokens get billed twice.
-		check("a wait:true run announces nothing", spend.length, 0);
-		// ...and the tool result it attaches has to carry every field, reasoning
-		// included. Dropping it made the same fleet report different thinking
-		// totals depending only on `wait`.
+		check("a run in flight announces nothing", busEmitted.filter((e) => e.channel === SPEND_CHANNEL).length, 0);
+		// The tool result has to carry every field, reasoning included. Dropping it
+		// made the same fleet report different thinking totals depending only on
+		// `wait`.
 		check("its tool result carries the spend", sync.usage?.cost?.total, 0.25);
 		check("including the reasoning tokens", sync.usage?.reasoning, 150);
+		// And it says which run those tokens belong to, so the report can drop the
+		// same run from the store answer instead of billing it twice.
+		check("and names the run it already accounts for", sync.details.spendKey, sync.details.runId);
 
 		busEmitted.length = 0;
 		const immediate = await tool.execute("t-spend-bg", { script }, undefined, undefined, ctx);
 		const runId = /id: (wf-[a-z0-9]+-\d+)/.exec(immediate.content[0].text)![1]!;
-		for (let i = 0; i < 200 && !busEmitted.some((e) => e.channel === SPEND_CHANNEL); i++) {
+		for (let i = 0; i < 200 && readMeta(AGENT, runId)?.status === "running"; i++) {
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
-		const bg = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
-		check("a background run announces its spend", bg.length > 0, true);
+		check("no announcement while it ran either", busEmitted.filter((e) => e.channel === SPEND_CHANNEL).length, 0);
+
+		const answer = collect();
+		const bg = answer.find((event) => event.key === runId);
+		check("asked, it reports the background run", bg !== undefined, true);
 		// Against the constant, not a copy of its value. The literal here pinned the
 		// old name and failed the suite when the source was deliberately renamed to
 		// match the tool — which is the property that keeps /usage showing one
 		// workflow row rather than two.
-		check("under the shared source name", bg[0]?.source, SPEND_SOURCE);
-		check("carrying the flat cost", bg[0]?.usage.cost, 0.25);
-		check("and the reasoning tokens", bg[0]?.usage.reasoning, 150);
-		check("counted as a call", bg[0]?.calls, 1);
+		check("under the shared source name", bg?.source, SPEND_SOURCE);
+		check("carrying the flat cost", bg?.usage.cost, 0.25);
+		check("and the reasoning tokens", bg?.usage.reasoning, 150);
+		check("counted as a call", bg?.calls, 1);
 		// Named per run, which is what gives /usage a row per workflow — the only
 		// place per-run cost is reported now that no /workflows surface prints one.
-		check("and named for the run it came from", bg[0]?.detail?.startsWith("spender ("), true);
-		check("the run is real", runId.startsWith("wf-"), true);
+		check("and named for the run it came from", bg?.detail?.startsWith("spender ("), true);
+		// Keyed, which is what lets the same run be offered on every report without
+		// the total climbing: a keyed payload replaces, it does not add.
+		check("keyed by the run id", bg?.key, runId);
+		const again = collect();
+		check("asking twice says the same thing", JSON.stringify(again), JSON.stringify(answer));
 
 		// A wait:true run that FAILS attaches no usage — pi builds the error tool
-		// result itself and it carries none — so the spend has to come out the
-		// announcement door instead, or four minutes of agents vanish from every
-		// total. Exclusive with the success path, which announces nothing.
-		busEmitted.length = 0;
+		// result itself and it carries none — so the store is the only record of
+		// what it spent, and the answer has to include it or four minutes of agents
+		// vanish from every total.
 		const failing = [
 			"export const meta = { name: 'doomed', description: 'spends then fails' }",
 			"await agent('say something')",
 			"throw new Error('deliberate')",
 		].join("\n");
 		await tool.execute("t-spend-fail", { script: failing, wait: true }, undefined, undefined, ctx).catch(() => undefined);
-		const failed = busEmitted.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
-		check("a failed wait:true run still reports its spend", failed.length, 1);
-		check("as the run's whole total", failed[0]?.usage.cost, 0.25);
-		check("named the same way", failed[0]?.detail?.startsWith("doomed ("), true);
+		const everything = collect();
+		const doomed = everything.find((event) => event.detail?.startsWith("doomed ("));
+		check("a failed wait:true run is still reported", doomed !== undefined, true);
+		check("as the run's whole total", doomed?.usage.cost, 0.25);
+
+		// The point of the whole arrangement, and the bug that prompted it: the
+		// process that spent the money is gone and the numbers are still there to
+		// answer with. A second instance of the extension shares nothing with the
+		// one above except the store on disk — which is exactly what `pi -c` after
+		// killing pi leaves you holding.
+		const revivedEvents = new Map<string, Function>();
+		const revivedBus: Array<{ channel: string; data: unknown }> = [];
+		let revivedCollect: ((data: unknown) => void) | undefined;
+		const quiet = () => {};
+		ultracode({
+			...pi,
+			on: (event: string, handler: Function) => revivedEvents.set(event, handler),
+			registerCommand: quiet,
+			registerShortcut: quiet,
+			registerTool: quiet,
+			registerEntryRenderer: quiet,
+			registerMessageRenderer: quiet,
+			events: {
+				emit: (channel: string, data: unknown) => revivedBus.push({ channel, data }),
+				on: (channel: string, handler: (data: unknown) => void) => {
+					if (channel === COLLECT_CHANNEL) revivedCollect = handler;
+					return quiet;
+				},
+			},
+		} as any);
+
+		// Nothing live, and no session yet: a fresh instance must not bill a
+		// session for runs it cannot show belong to it.
+		revivedCollect?.({});
+		check("before it knows its session it claims nothing", revivedBus.filter((e) => e.channel === SPEND_CHANNEL).length, 0);
+
+		// Resumed into the same session, the way pi announces one at startup.
+		revivedEvents.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
+		revivedBus.length = 0;
+		revivedCollect?.({});
+		const inherited = revivedBus.filter((e) => e.channel === SPEND_CHANNEL).map((e) => e.data as SpendEvent);
+		check("a resumed session still reports the fleet it inherited", inherited.some((event) => event.key === runId), true);
+		check("with the money intact", inherited.find((event) => event.key === runId)?.usage.cost, 0.25);
+		check(
+			"and every run of the session, not just the last",
+			inherited.map((event) => event.key).sort(),
+			everything.map((event) => event.key).sort(),
+		);
 	} finally {
 		process.argv[1] = realArgv1;
 	}

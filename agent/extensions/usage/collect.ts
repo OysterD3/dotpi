@@ -16,6 +16,12 @@
  *     separate pi processes; `recap` and `goal` call `completeSimple` and store
  *     only a display entry. None of it can be recovered from the file, so each
  *     announces on SPEND_CHANNEL and AnnouncedSpendLog keeps the tally.
+ *   - the same, after a restart. An announcement is an event, so a `pi -c` into
+ *     a session whose fleets ran yesterday inherits none of it — and the tool
+ *     result a background run leaves behind is written before the money is
+ *     spent, so the file cannot fill the gap either. A producer that keeps its
+ *     own durable record answers COLLECT_CHANNEL at report time instead; see
+ *     `AnnouncedSpend.key` for what stops that double-counting.
  *
  * Counted over every entry in the session FILE, not just the current branch: an
  * abandoned fork was still paid for, and a `/usage` that got cheaper when you
@@ -87,6 +93,18 @@ export interface SessionUsage {
 	 * announcement was merged into a tool row and `announced` is empty.
 	 */
 	hasAnnounced?: boolean;
+	/**
+	 * Keys (see `keyFor`) of the individual runs whose spend this report already
+	 * took from the session FILE.
+	 *
+	 * A producer answering COLLECT_CHANNEL reports everything its own store
+	 * holds, including runs that also recorded their usage on a tool result —
+	 * it has no way to know what the transcript already says. This is the other
+	 * half of that: the keys collected here are handed to
+	 * `AnnouncedSpendLog.rows()` so those runs are dropped from the answer
+	 * rather than billed twice.
+	 */
+	accountedKeys: string[];
 	total: Totals;
 	/** User messages, i.e. how many times you asked for something. */
 	turns: number;
@@ -171,6 +189,24 @@ export function labelFor(details: unknown): string | undefined {
 	if (!details || typeof details !== "object") return undefined;
 	const label = (details as { spendLabel?: unknown }).spendLabel;
 	return typeof label === "string" && label.trim() ? label.trim() : undefined;
+}
+
+/**
+ * The stable id of the run behind one tool result, when it has one.
+ *
+ * Third and last of the `details` conventions, and the one that keeps a durable
+ * producer honest: `details.spendKey` says "this result already carries run X's
+ * spend". The producer's own store also holds run X, and answering
+ * COLLECT_CHANNEL it will offer it again — see `SessionUsage.accountedKeys`,
+ * which is what stops that becoming two bills for one fleet.
+ *
+ * Distinct from `spendLabel`, which is for a human reading a row: two runs of
+ * the same workflow in the same minute share a label and must not share a key.
+ */
+export function keyFor(details: unknown): string | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const key = (details as { spendKey?: unknown }).spendKey;
+	return typeof key === "string" && key.trim() ? key.trim() : undefined;
 }
 
 /** Fold one recorded usage block into `into`, counting it as `calls` calls. */
@@ -272,6 +308,8 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
 	/** Per-run breakdown within a tool, keyed by `details.spendLabel`. */
 	const toolDetails = new Map<string, Map<string, Totals>>();
 	const overhead = new Map<string, Totals>();
+	/** Runs whose spend the file already accounts for; see accountedKeys. */
+	const accounted = new Set<string>();
 	let turns = 0;
 	let failed = 0;
 	let firstAt: number | undefined;
@@ -322,6 +360,12 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
 			const name = message.toolName ?? "tool";
 			const calls = callsFor(message.details);
 			record(bucket(tools, name), message.usage, calls);
+			// Only from a result that CARRIED usage. A background run's result is
+			// written when the fleet starts and carries none, so keying off it
+			// would mark the run accounted for and then drop the only report of
+			// what it spent.
+			const key = keyFor(message.details);
+			if (key) accounted.add(key);
 			const label = labelFor(message.details);
 			if (label) {
 				let within = toolDetails.get(name);
@@ -343,7 +387,7 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
 	const overheadRows = rows(overhead);
 	for (const row of [...modelRows, ...toolRows, ...overheadRows]) addTotals(total, row.totals);
 
-	return { models: modelRows, tools: toolRows, overhead: overheadRows, total, turns, failed, firstAt, lastAt };
+	return { models: modelRows, tools: toolRows, overhead: overheadRows, total, turns, failed, firstAt, lastAt, accountedKeys: [...accounted] };
 }
 
 /**
@@ -375,22 +419,63 @@ export interface AnnouncedSpend {
 	 * omit it and get a single row.
 	 */
 	detail?: string;
+	/**
+	 * A stable id for the thing being reported — and, when present, a change of
+	 * meaning: the payload is a SNAPSHOT of that thing's whole spend, replacing
+	 * whatever was last said under the same key, rather than an increment.
+	 *
+	 * That is what lets a producer with a durable store answer COLLECT_CHANNEL
+	 * on every report without the numbers growing each time it is asked, and
+	 * what lets the same run be reported live from memory and later from disk
+	 * and still be billed once. A producer that only ever streams increments
+	 * (recap, goal, the permissions classifier) has nothing to key on and omits
+	 * it.
+	 */
+	key?: string;
 }
 
 /**
  * Running total of what extensions have announced, keyed by source.
  *
- * Increments rather than snapshots, so a producer announces as it spends and
- * never keeps a session-scoped tally of its own — and so two producers cannot
- * overwrite each other. Reset when the session is.
+ * Increments by default, so a producer announces as it spends and never keeps a
+ * session-scoped tally of its own — and so two producers cannot overwrite each
+ * other. Reset when the session is.
+ *
+ * A producer with a durable record of its own spend instead announces keyed
+ * snapshots (see `AnnouncedSpend.key`), which replace rather than add. That is
+ * the only shape that survives a restart: the increments here are events, and
+ * `pi -c` starts from an empty log with nothing in the transcript to rebuild it
+ * from.
  */
 export class AnnouncedSpendLog {
 	private sources = new Map<string, Totals>();
 	/** Per-source breakdown, keyed by the producer's `detail` label. */
 	private details = new Map<string, Map<string, Totals>>();
+	/**
+	 * Keyed SNAPSHOTS, per source: the latest word on each identified thing,
+	 * kept apart from the increments above precisely because they replace rather
+	 * than accumulate.
+	 */
+	private snapshots = new Map<string, Map<string, { detail?: string; totals: Totals }>>();
 
 	add(spend: AnnouncedSpend | undefined): void {
 		if (!spend || typeof spend.source !== "string" || !spend.source) return;
+
+		if (typeof spend.key === "string" && spend.key) {
+			let within = this.snapshots.get(spend.source);
+			if (!within) {
+				within = new Map<string, { detail?: string; totals: Totals }>();
+				this.snapshots.set(spend.source, within);
+			}
+			// Replaced wholesale. A live run announcing its running total and the
+			// same run read back off disk later are the same money said twice, and
+			// the later word — whichever it is — is the one that is complete.
+			const totals = emptyTotals();
+			this.fold(totals, spend);
+			within.set(spend.key, { detail: spend.detail, totals });
+			return;
+		}
+
 		const totals = bucket(this.sources, spend.source);
 		if (typeof spend.detail === "string" && spend.detail) {
 			let within = this.details.get(spend.source);
@@ -421,6 +506,7 @@ export class AnnouncedSpendLog {
 	reset(): void {
 		this.sources.clear();
 		this.details.clear();
+		this.snapshots.clear();
 	}
 
 	/**
@@ -433,16 +519,48 @@ export class AnnouncedSpendLog {
 	 * own footer, and, because pi defers persistence until the first assistant
 	 * message, sometimes those mutated numbers written into the session file.
 	 */
-	rows(): Row[] {
-		return rows(this.sources).map((row) => {
-			const within = this.details.get(row.label);
+	rows(exclude?: ReadonlySet<string>): Row[] {
+		// Built fresh on every call, so what goes out is a snapshot in the same
+		// sense the old copy-on-the-way-out was: this log keeps mutating as spend
+		// arrives, and a stored /usage entry re-renders long after.
+		const totals = new Map<string, Totals>();
+		const children = new Map<string, Map<string, Totals>>();
+		const childBucket = (source: string, label: string): Totals => {
+			let within = children.get(source);
+			if (!within) {
+				within = new Map<string, Totals>();
+				children.set(source, within);
+			}
+			return bucket(within, label);
+		};
+
+		// Increments: the source total and its breakdown are two tallies of the
+		// same money, so they are copied across separately rather than summed.
+		for (const [source, part] of this.sources) addTotals(bucket(totals, source), part);
+		for (const [source, within] of this.details) {
+			for (const [label, part] of within) addTotals(childBucket(source, label), part);
+		}
+
+		// Snapshots: one entry per key, contributing to both, and skipped entirely
+		// when the report says it already has that run from the session file.
+		// Skipped BEFORE the bucket call, so a source whose every run was already
+		// accounted for produces no row at all rather than an empty one.
+		for (const [source, within] of this.snapshots) {
+			for (const [key, snapshot] of within) {
+				if (exclude?.has(key)) continue;
+				addTotals(bucket(totals, source), snapshot.totals);
+				if (snapshot.detail) addTotals(childBucket(source, snapshot.detail), snapshot.totals);
+			}
+		}
+
+		return rows(totals).map((row) => {
+			const within = children.get(row.label);
 			// Every child is emitted, including a lone one. Whether it earns a line
 			// is not knowable here: a single run restates its parent only if the
 			// parent is nothing but that run, and after withAnnounced merges this
 			// into a tool that also spent, it no longer is. The redundant-child rule
 			// therefore lives where the finished parent exists — see pruneChildren.
-			const children = within?.size ? rows(within).map((child) => ({ label: child.label, totals: { ...child.totals } })) : undefined;
-			return { label: row.label, totals: { ...row.totals }, ...(children ? { children } : {}) };
+			return within?.size ? { ...row, children: rows(within) } : row;
 		});
 	}
 }

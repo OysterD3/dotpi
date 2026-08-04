@@ -74,7 +74,8 @@ same column as a `3` beside `$3.30`, and made the Total row add round trips to t
 call the sum a number of calls. pi's `Usage` has nowhere to put a call count, so the convention is
 `details.turns` — free-form, and persisted to the session file, which is what lets a resumed
 session still report the right number. `details.spendLabel` names the individual run the same way
-an announcement's `detail` does, so the indented lines add up to their parent.
+an announcement's `detail` does, so the indented lines add up to their parent, and
+`details.spendKey` carries its id so the producer's own store cannot bill it a second time.
 
 **One producer is one row, whichever route its numbers took.** `workflow` above holds both: the
 synchronous runs pi recorded on tool results and the background ones the extension announced.
@@ -102,11 +103,24 @@ flat), so a producer announces as it spends and never keeps a tally of its own. 
 indented per-run rows above. A producer that isn't installed simply never fires and its row never
 appears.
 
-Announced spend is the one category that does **not** survive a resume: it lives in memory and
-resets with the session, because there is nothing in the file to rebuild it from. That is why
-synchronous workflow spend still rides on the tool result rather than being announced too, which
-would have been the tidier-looking fix and would have quietly made a resumed session under-report.
-The footnote says so whenever any announced spend is in the table.
+Increments do **not** survive a restart: they live in memory, reset with the session, and there is
+nothing in the file to rebuild them from. That was not a footnote-sized problem. A two-hour session
+ran two background fleets, was terminated, and resumed with `pi -c`; `/usage` then reported `$29.87`
+for a session that had actually spent `$44.90`, because the $15 of workflow agents existed only in
+the dead process's heap — and the "announced by extensions" caveat is keyed on *having received* an
+announcement, so the one report missing a third of the bill was also the one that printed no
+warning.
+
+So a producer that keeps a **durable** record of its own spend does not push at all. The report
+fires `usage:collect` before it adds anything up, and those producers answer — synchronously, since
+pi's bus does not await handlers — with keyed snapshots: `key` makes a payload replace rather than
+accumulate, so the same run can be offered on every report, live from memory or later from disk,
+and be billed exactly once. `ultracode` answers from `run.json`, which every settled agent writes.
+A run whose usage is already on a tool result stamps `details.spendKey` with its id, and the report
+drops that key from the answer rather than counting the fleet twice. `recap`, `goal` and the
+permissions classifier keep announcing increments: they have nothing durable to answer from, and
+their spend is cents rather than tens of dollars. The footnote still says so whenever any announced
+spend is in the table.
 
 The report is written into the transcript as a custom entry, the way `/recap` is, so it never
 enters LLM context — and scrolling back to an earlier `/usage` shows what the session had spent *at
@@ -115,10 +129,10 @@ stores the numbers rather than the drawing, so it re-renders correctly after a t
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Command, entry renderer, workflow-spend subscription |
+| `index.ts` | Command, entry renderer, spend subscription and the collect request |
 | `collect.ts` | Session entries → per-source totals (pure) |
 | `render.ts` | Totals → the table (pure) |
-| `config.ts` | Channel name, meter glyphs, thresholds |
+| `config.ts` | Channel names, meter glyphs, thresholds |
 | `usage.test.ts` | Unit coverage |
 
 **`agent/extensions/lsp/`** — registers an `lsp_diagnostics` tool: real compiler errors and
@@ -924,7 +938,8 @@ to block on — and for one-shot sessions (`pi -p`, print/json mode), where endi
 process and a result message would have no turn to land in. Only waited runs attach their spend to
 the tool result as `usage`, which is
 what puts them in `/usage` under their tool name (a background run's tool result is long gone by the
-time money is spent, so its spend arrives on the `usage:spend` channel instead).
+time money is spent, so its spend is answered for from `run.json` when a report asks — see the
+`usage:collect` half of the accounting below).
 
 **The workflow control panel is a panel, not a list.** `shift+↓` at the prompt opens it, and
 `/workflows` still does — the footer line advertising it sits directly under where you type, so
@@ -973,18 +988,28 @@ answers "which of these five cost $40" there instead.
 
 The numbers are still collected, and collected *promptly*: a subagent reports usage on every turn
 it takes and the run folds each one in as it arrives, rather than when the subprocess finally
-exits. `run.json` keeps a per-run total (written on a throttle while agents stream) — the only
-place per-run cost is now recorded, since no command prints it — and each turn is announced on the
-shared `usage:spend` channel, which is where `/usage` gets a workflow row it could not otherwise
-know about.
+exits. `run.json` keeps a per-run total (written on a throttle while agents stream, and final when
+each agent settles) — and that file, not an event, is what `/usage` is answered from.
 
-A `wait: true` run announces **nothing** while it runs: pi already attaches its spend to the tool
-result, which `/usage` reads off the transcript as a `workflow (tool)` row, so announcing as well
-would bill every synchronous workflow twice. The exception is a run that fails or is cancelled —
-`execute` throws, pi builds the error result itself and that one carries no usage at all, so the
-run announces its total on the way out. The two doors stay exclusive; which one opens depends on
-how the run ended. Announcements also stop the moment a run is aborted, so children still dying
-after `/new` cannot bill the next session for tokens it never spent.
+**Nothing is announced while a run is in flight.** It used to be, per subagent turn, and that was
+correct right up until the process ended: the total lived in the subscriber's memory, so
+terminating pi and resuming with `pi -c` gave a session whose `/usage` omitted two completed fleets
+and $15, with no warning available because the warning fires on *having received* an announcement.
+Now `/usage` fires `usage:collect` before it totals anything and ultracode answers from the store —
+synchronously, because pi's bus does not await handlers — with one keyed snapshot per run of this
+session, live progress preferred over disk for a fleet still running. Keys make the answer
+idempotent: asked ten times, a run is billed once, whether the report is a minute or a week after
+the money was spent.
+
+A `wait: true` run is the one whose spend is already in the transcript — pi attaches it to the tool
+result — so it stamps `details.spendKey` with its run id and `/usage` drops that key from the
+store's answer instead of counting the fleet twice. A run that *fails* attaches nothing (pi builds
+the error result itself), and needs no special case any more: it is in the store like every other
+run, and nothing claims its key.
+
+Spend is scoped harder than the panel's list below: strictly this session's runs plus whatever this
+process is driving, never the interrupted-run exception. A fleet another session abandoned is
+reachable there for resuming, but billing it here would be a plain overcount.
 
 **The list is scoped to this session — with one exception.** `/workflows` and its `list` show the
 runs this session started, not fifty deep of history; the store keeps 50 of them and every

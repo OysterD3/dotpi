@@ -45,10 +45,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, type UltracodeSettings } from "./config.ts";
+import { COLLECT_CHANNEL, DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { UltracodeMode } from "./mode.ts";
-import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, startedLabel, statusReport } from "./panel.ts";
+import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
@@ -214,6 +214,54 @@ export default function (pi: ExtensionAPI) {
 		onRunEvent: drawPanel,
 	});
 
+	// --------------------------------------------------------------- spend
+	//
+	// Answered from the store, not from memory, and only when asked. A run's
+	// cost used to be announced per subagent turn, which meant it existed
+	// nowhere but the subscriber's heap: killing pi and resuming with `pi -c`
+	// gave a session whose /usage total silently omitted two completed fleets,
+	// with no warning available because the warning is keyed on having received
+	// an announcement. run.json has the same numbers and outlives the process.
+	//
+	// Synchronous throughout — readMeta is readFileSync — because the report
+	// that asked is built the moment this returns; see COLLECT_CHANNEL.
+	//
+	// One bound worth knowing: retention keeps the newest CONFIG.retainRuns
+	// settled runs, so a session that starts more than that many stops being
+	// able to account for its earliest. That is a 50-run session, and the
+	// alternative — a second tally to survive pruning — is the memory-only
+	// arrangement this replaced.
+	pi.events.on(COLLECT_CHANNEL, () => {
+		const now = Date.now();
+		for (const meta of spendRuns(listRuns(agentDir), sessionId, (runId) => registry.get(runId) !== undefined)) {
+			// Memory first for a run still in flight: run.json's usage is written on
+			// a throttle, so the file can be a few seconds behind, and a report of a
+			// running fleet should be as current as anything else on the screen.
+			const usage = registry.get(meta.runId)?.progress.usage ?? meta.usage;
+			// A run that has spent nothing yet is not a row. Its turns arrive later,
+			// and the next report will ask again.
+			if (!usage || usage.turns <= 0) continue;
+			pi.events.emit(SPEND_CHANNEL, {
+				source: SPEND_SOURCE,
+				// The run id, so being asked twice cannot bill twice, and so a run
+				// whose spend is already on a `wait: true` tool result can be
+				// recognised there and dropped here.
+				key: meta.runId,
+				detail: `${meta.name} (${startedLabel(meta.startedAt, now)})`,
+				calls: usage.turns,
+				usage: {
+					input: usage.input,
+					output: usage.output,
+					cacheRead: usage.cacheRead,
+					cacheWrite: usage.cacheWrite,
+					reasoning: usage.reasoning,
+					// Flat, not `{ total }` — see SPEND_CHANNEL.
+					cost: usage.cost,
+				},
+			});
+		}
+	});
+
 	pi.registerEntryRenderer<ToggleEntry>(ENTRY_TYPE, (entry, _options, theme) =>
 		entry.data ? new Text(theme.fg("accent", `✦ ultracode ${entry.data.action}`), 0, 0) : undefined,
 	);
@@ -266,8 +314,8 @@ export default function (pi: ExtensionAPI) {
 		registry.clear();
 		// One last announcement, so anything drawing the old session's runs (the
 		// footer) clears rather than freezing on the last lines it saw. Spend
-		// needs no such reset: it is announced as increments, and a subscriber
-		// starts its own tally over on session_start.
+		// needs no such reset: nothing is announced until a report asks, and what
+		// is answered then is scoped to whichever session is asking.
 		pi.events.emit(PANEL_CHANNEL, { lines: undefined });
 		stopPanelTimer();
 		uiCtx = undefined;

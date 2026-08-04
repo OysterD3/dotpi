@@ -29,6 +29,28 @@ export const ENTRY_TYPE = "usage";
  */
 export const SPEND_CHANNEL = "usage:spend";
 
+/**
+ * pi.events channel the report fires on before it adds anything up.
+ *
+ * The push half above cannot survive a restart: an announcement is an event, so
+ * spend a producer reported in one process is gone from the next one, and a
+ * background workflow's tool result carries no usage for the session file to
+ * corroborate it with. `pi -c` after a two-hour fleet therefore reported a total
+ * that silently excluded a third of the bill — and, because the "announced by
+ * extensions" caveat is keyed on having received an announcement, it was the one
+ * report that looked complete.
+ *
+ * So a producer that keeps a DURABLE record of its own spend answers here
+ * instead: the report asks, the producer reads its store and announces what it
+ * finds on SPEND_CHANNEL, keyed (see `AnnouncedSpend.key`) so the same run
+ * cannot be counted twice however many times it is asked.
+ *
+ * Answers must be SYNCHRONOUS. pi's bus invokes handlers synchronously and does
+ * not wait for the promise an async one returns, so anything reported after the
+ * first `await` arrives too late for the report that asked.
+ */
+export const COLLECT_CHANNEL = "usage:collect";
+
 /** Cells in the context meter. */
 export const BAR_CELLS = 12;
 export const BAR_FILL = "█";

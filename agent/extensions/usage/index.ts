@@ -11,7 +11,7 @@
  *   collect.ts  session entries -> per-source totals, plus the announced-spend
  *               log any extension can add to (pure)
  *   render.ts   totals -> the table (pure)
- *   config.ts   channel name, meter glyphs, thresholds
+ *   config.ts   channel names, meter glyphs, thresholds
  *
  * The report is written into the transcript as a custom entry, the way /recap
  * is: it is information for you, not context for the model, and a custom entry
@@ -23,7 +23,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { AnnouncedSpendLog, collectUsage, withAnnounced, type AnnouncedSpend, type SessionUsage } from "./collect.ts";
-import { ENTRY_TYPE, SPEND_CHANNEL } from "./config.ts";
+import { COLLECT_CHANNEL, ENTRY_TYPE, SPEND_CHANNEL } from "./config.ts";
 import { plainUsage, renderUsage, type ReportMeta } from "./render.ts";
 
 
@@ -60,7 +60,20 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("usage", {
 		description: "Show what this session has cost, broken down by model, tool and workflow",
 		handler: async (_args: string, ctx) => {
-			const usage = withAnnounced(collectUsage(ctx.sessionManager.getEntries()), announced.rows());
+			// Ask first, add up second. Producers that keep a durable record of their
+			// own spend answer here, which is what makes a resumed session report the
+			// fleets it inherited instead of silently dropping them. Synchronous by
+			// contract: pi's bus calls handlers in place and does not wait for the
+			// promise an async one returns, so an answer given after the first
+			// `await` would arrive after the report below was built. Each handler is
+			// wrapped in try/catch by the bus, so a producer that throws costs its
+			// own rows and nothing else.
+			pi.events.emit(COLLECT_CHANNEL, {});
+			const collected = collectUsage(ctx.sessionManager.getEntries());
+			// Runs the file already accounts for are dropped from the answer: a
+			// producer offering its whole store cannot know which of them also
+			// recorded their usage on a tool result.
+			const usage = withAnnounced(collected, announced.rows(new Set(collected.accountedKeys)));
 
 			// pi reports tokens and percent as null before the first turn has been
 			// measured, which is a different thing from "no context window" — the

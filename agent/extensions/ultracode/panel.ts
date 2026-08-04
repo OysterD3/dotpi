@@ -110,6 +110,22 @@ export function sessionRuns(
 	);
 }
 
+/**
+ * The runs whose spend belongs to this session.
+ *
+ * Nearly sessionRuns above, and deliberately not it: that one also keeps
+ * interrupted runs owed by OTHER sessions in the same project, because the panel
+ * is where you go to resume them. Money is not a browsing convenience — billing
+ * this session for a fleet another session started and abandoned would be a
+ * plain overcount, and the session that ran it already reported it.
+ *
+ * `isLive` is still honoured, for the same reason as there: an ephemeral session
+ * has no id to match on and would otherwise never see its own fleet.
+ */
+export function spendRuns(metas: RunMeta[], sessionId: string | undefined, isLive: (runId: string) => boolean): RunMeta[] {
+	return metas.filter((meta) => isLive(meta.runId) || (sessionId !== undefined && meta.sessionId === sessionId));
+}
+
 export function formatElapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;

@@ -60,10 +60,11 @@ export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
  * pi.events channel for announcing model spend — shared by every extension that
  * bills money, not owned by this one, which is why it is not `ultracode:*`.
  *
- * Payload is an INCREMENT: `{ source: SPEND_SOURCE, detail, usage: { …, cost:
- * number }, calls }`. Announced per subagent turn from the same hook that folds
- * usage into the run, so a subscriber sees spend as it happens without
- * ultracode keeping a second tally to hand out.
+ * Payload is a keyed SNAPSHOT: `{ source: SPEND_SOURCE, key: runId, detail,
+ * usage: { …, cost: number }, calls }`. Keyed, so it replaces rather than adds
+ * to whatever was last said about that run — which is what lets the same run be
+ * reported over and over (it is reported on demand, see COLLECT_CHANNEL) without
+ * the total growing each time.
  *
  * `detail` names the individual run ("code-review (16:01)"), which is what lets
  * /usage answer "which of these five cost $40" — the question that has no other
@@ -75,11 +76,29 @@ export const PANEL_OPEN_CHANNEL = "ultracode:panel-open";
  * keeps that one-directional: ultracode does not know who subscribes (today,
  * /usage), and with no subscriber the events go nowhere.
  *
- * `wait: true` runs are deliberately NOT announced. pi already attaches their
- * spend to the tool result as `usage`, which a reader picks up from the
- * transcript; announcing as well would bill the same tokens twice.
+ * It used to be announced as an increment per subagent turn, which was correct
+ * and unrecoverable: the tally lived in the subscriber's memory, so terminating
+ * pi and running `pi -c` reported a session with two completed fleets and none
+ * of their $15. Now nothing is announced while a run is in flight — the answer
+ * is assembled at report time from run.json, which every settled agent writes.
  */
 export const SPEND_CHANNEL = "usage:spend";
+
+/**
+ * pi.events channel a spend report fires before it adds anything up, and the
+ * reason nothing here is announced as it happens any more.
+ *
+ * ultracode already keeps a durable record of every run — run.json, written
+ * throughout the fleet's life and final when it settles — so it does not need to
+ * push. It answers, from the store plus whatever is still live in memory, and
+ * the answer is the same whether the run finished a minute ago in this process
+ * or two hours ago in one that has since been killed.
+ *
+ * The answer must be given SYNCHRONOUSLY. pi's bus invokes handlers in place and
+ * does not await them, so anything reported after a first `await` reaches a
+ * report that has already been built.
+ */
+export const COLLECT_CHANNEL = "usage:collect";
 
 /**
  * The `source` this extension announces under.
