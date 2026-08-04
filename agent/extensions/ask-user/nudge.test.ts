@@ -24,8 +24,8 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { OPENING_NUDGE, opensWork, systemReminder } = await import("./nudge.ts");
-const { CONFIG, NUDGE_ENTRY_TYPE } = await import("./config.ts");
+const { followUpReminder, OPENING_NUDGE, opensWork, systemReminder } = await import("./nudge.ts");
+const { CONFIG, FOLLOWUP_ENTRY_TYPE, NUDGE_ENTRY_TYPE, TOOL_NAME } = await import("./config.ts");
 const { default: register } = await import("./index.ts");
 
 let failures = 0;
@@ -114,10 +114,18 @@ check("wrapped as a system reminder", systemReminder("x"), "<system-reminder>\nx
 console.log("\n--- wiring ---");
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
-function install(hasUI = true) {
+function install(hasUI = true, idle = false) {
 	const handlers = new Map<string, Handler>();
 	let tools: string[] = [];
-	const ctx = { hasUI, ui: { setStatus: () => {}, notify: () => {} } };
+	const sent: { customType?: string; content?: string; display?: boolean; options?: unknown }[] = [];
+	const ctx = {
+		hasUI,
+		ui: { setStatus: () => {}, notify: () => {} },
+		// tool_call fires while a tool is about to execute, so idle defaults to
+		// false — the realistic case — and is only flipped for the one test that
+		// exercises the triggerTurn backstop.
+		isIdle: () => idle,
+	};
 	register({
 		on: (event: string, handler: Handler) => handlers.set(event, handler),
 		registerTool: () => {},
@@ -125,6 +133,9 @@ function install(hasUI = true) {
 		getActiveTools: () => tools,
 		setActiveTools: (next: string[]) => {
 			tools = next;
+		},
+		sendMessage: (message: Record<string, unknown>, options?: unknown) => {
+			sent.push({ ...message, options } as never);
 		},
 	} as never);
 	handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -137,7 +148,18 @@ function install(hasUI = true) {
 			| undefined;
 		return result?.message;
 	};
-	return { handlers, turn, tools: () => tools };
+	/**
+	 * One tool_call event, the same shape pi dispatches before a tool executes.
+	 * `path` defaults to a fresh one per call, so a loop of N calls behaves like
+	 * N distinct files touched unless a test passes the same path on purpose to
+	 * exercise the "one file, many edits" case.
+	 */
+	let autoPath = 0;
+	const call = (toolName: string, path?: string) => {
+		const input = toolName === "write" || toolName === "edit" ? { path: path ?? `auto-${autoPath++}.ts` } : {};
+		handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "tc", toolName, input }, ctx);
+	};
+	return { handlers, turn, call, tools: () => tools, sent };
 }
 
 {
@@ -184,6 +206,125 @@ console.log("\n--- what never nudges ---");
 	// set the flag it would fire on whatever turn came next instead.
 	check("text steered into a running turn", turn("build me a settings page with a dark mode toggle", "interactive", "steer"), undefined);
 	check("and it did not arm the next turn either", turn("also tidy up the imports"), undefined);
+}
+
+console.log("\n--- the compliance follow-up: message wording ---");
+{
+	const text = followUpReminder(5);
+	check("names the count that tripped it", text.includes("created or edited 5 files"), true);
+	check("says to ask now", text.includes("call ask_user NOW"), true);
+	check("and gives the fallback", text.includes("state your assumptions in one line and continue"), true);
+	check("wrapped as a system reminder, same as the opening nudge", text.startsWith("<system-reminder>\n"), true);
+}
+
+console.log("\n--- the compliance follow-up: counter and latch ---");
+{
+	// Mutations before any nudge has gone out are not a backstop for anything —
+	// there is nothing yet that the nudge could have been ignored.
+	const { call, sent } = install();
+	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
+	check("mutations before any nudge do not arm the follow-up", sent.length, 0);
+}
+{
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
+	check("one mutation short of the threshold stays quiet", sent.length, 0);
+	call("edit"); // the Nth mutation — write and edit both count as a mutation
+	check("edit counts the same as write", sent.length, 1);
+	check("under its own type", sent[0]?.customType, FOLLOWUP_ENTRY_TYPE);
+	check("with the count that tripped it", sent[0]?.content, followUpReminder(CONFIG.followUp.afterMutations));
+	check("hidden, same as the opening nudge", sent[0]?.display, false);
+	check("delivered as a follow-up while the agent is mid-run", sent[0]?.options, { deliverAs: "followUp" });
+}
+{
+	// A lookup tool is neither a mutation nor an ask_user call, so it moves
+	// neither counter — a session that only reads never trips this.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations * 2; i++) call("read");
+	check("reads and other lookups never trip it", sent.length, 0);
+}
+{
+	// One-shot latch: it fires once per arming, not on every mutation past the
+	// threshold — the whole point of "latch" rather than a plain counter.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations * 4; i++) call("write");
+	check("it fires exactly once, however far past the threshold mutations go", sent.length, 1);
+}
+{
+	// An actual ask_user call re-arms the latch: the count starts over, and a
+	// fresh run of mutations can trip the reminder again.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
+	check("fires the first time", sent.length, 1);
+	call(TOOL_NAME);
+	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
+	check("re-armed, but not yet back at the threshold", sent.length, 1);
+	call("write");
+	check("and it fires again once the new count reaches it", sent.length, 2);
+}
+{
+	// The reset is not only a post-delivery thing: an ask_user call clears
+	// mutations counted before the latch ever tripped, too.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	call("write");
+	call("write");
+	call(TOOL_NAME);
+	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
+	check("the mutations before ask_user do not carry over", sent.length, 0);
+	call("write");
+	check("only the mutations since the ask_user call count toward it", sent.length, 1);
+}
+{
+	// No UI, no one to hand the reminder to. In practice this never arises —
+	// the opening nudge is gated on isAvailable(ctx), so nudgeHasFired can only
+	// become true when hasUI already was — but the tool_call handler carries
+	// its own guard rather than depending on that invariant holding forever.
+	const { turn, call, sent } = install(false);
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
+	check("headless: nothing to send", sent.length, 0);
+}
+{
+	// Once the agent has actually gone idle, sendMessage is told to trigger a
+	// fresh turn rather than queue a follow-up — the same idiom stalled-turn
+	// uses to re-enter the loop (pi's sendMessage tests deliverAs before
+	// triggerTurn, so this is the branch that actually fires when nothing is
+	// left mid-run to deliver into).
+	const { turn, call, sent } = install(true, true);
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
+	check("triggerTurn when idle", sent[0]?.options, { triggerTurn: true });
+}
+
+console.log("\n--- the compliance follow-up: distinct files, not calls ---");
+{
+	// Five edits to the same file is one file still unchecked against the
+	// opening questions, not five — the count that trips this and the count
+	// the message names must both be distinct files, not tool calls.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	for (let i = 0; i < CONFIG.followUp.afterMutations * 3; i++) call("edit", "src/app.ts");
+	check("many edits to one file never trip it", sent.length, 0);
+}
+{
+	// Mixing repeat edits to one file with fresh ones: only the distinct paths
+	// count toward the threshold.
+	const { turn, call, sent } = install();
+	turn("build me a settings page with a dark mode toggle");
+	call("write", "a.ts");
+	call("edit", "a.ts"); // same file again — still just one distinct file
+	call("write", "b.ts");
+	call("write", "c.ts");
+	call("write", "d.ts");
+	check("four distinct files is one short", sent.length, 0);
+	call("write", "e.ts");
+	check("the fifth distinct file trips it", sent.length, 1);
+	check("names the distinct file count, not the call count", sent[0]?.content, followUpReminder(CONFIG.followUp.afterMutations));
 }
 
 console.log("\n--- there is no off switch ---");

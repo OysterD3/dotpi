@@ -108,4 +108,15 @@ export const CONFIG = {
 	assumedRows: 24,
 	/** Rows left for the transcript above the panel, matching ultracode's panel. */
 	screenReserve: 6,
+	/**
+	 * Foreground bash has no timeout unless the model asks for one, and a
+	 * blocked/hung command is unreadable to the model until execute()
+	 * resolves — unlike a background shell, there is no bash_output to poll
+	 * it with. When the model passes no explicit `timeout`, tools.ts kills the
+	 * command after this long with zero new output. 0 disables the watchdog.
+	 * User-overridable via settings.json's `backgroundShell.foregroundIdleKillMs`
+	 * (see settings.ts) — unlike shellPath/shellCommandPrefix, a project's
+	 * override here is honoured only when the project is trusted.
+	 */
+	foregroundIdleKillMs: 300_000,
 } as const;

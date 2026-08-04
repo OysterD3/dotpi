@@ -16,15 +16,26 @@
  * execute() resolves, so the exit can only arrive as a later custom message —
  * index.ts delivers it, and the start text tells the model to wait for it
  * rather than invent it.
+ *
+ * Foreground calls get one thing the delegate itself does not: an inactivity
+ * watchdog. pi's bash has no default timeout, and unlike a background shell
+ * there is no bash_output to poll a stuck one with — the model has zero
+ * visibility until execute() resolves, which for a blocked read or a hung
+ * process is never. executeForeground wraps the delegate call rather than
+ * reaching into it: it forwards the real abort signal (so Escape/turn-abort
+ * still works exactly as before) into one of its own, and fires that same
+ * signal itself when output goes quiet — the delegate already kills its
+ * process tree on abort (createLocalBashOperations), so this reuses that path
+ * instead of holding a pid this module was never given.
  */
 
 import { delimiter, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition, truncateTail } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { CONFIG, RESULT_MESSAGE } from "./config.ts";
-import { commandLabel, startedText, statusLabel } from "./render.ts";
+import { commandLabel, formatDuration, startedText, statusLabel } from "./render.ts";
 import { isSettled, newShellId, startShell, type ShellConfig, type ShellJob, type ShellMeta, type ShellRegistry } from "./shells.ts";
 
 type BashDefinition = ReturnType<typeof createBashToolDefinition>;
@@ -61,6 +72,95 @@ const isBackgroundDetails = (details: unknown): details is BackgroundStartDetail
 function activeIds(registry: ShellRegistry): string {
 	const ids = registry.all().map((job) => job.meta.shellId);
 	return ids.length > 0 ? ids.join(", ") : "(none — no background shells in this session)";
+}
+
+type ForegroundDetails = ReturnType<BashDefinition["execute"]> extends Promise<AgentToolResult<infer D>> ? D : never;
+type ForegroundUpdate = AgentToolUpdateCallback<ForegroundDetails>;
+
+/**
+ * Run the foreground delegate with an inactivity watchdog: when the model
+ * gave no explicit `timeout`, a command that goes `idleKillMs` with zero new
+ * output is killed and reported, instead of holding the turn (and, in the
+ * benchmark this closes a gap from, the whole session) hostage to a hang the
+ * model cannot see.
+ *
+ * Only output resets the clock — the delegate's onUpdate fires once
+ * synchronously before anything has run at all (createBashToolDefinition's
+ * "execution has started" no-op), and that call must not look like activity,
+ * or a command silent from second one would get a full extra idleKillMs of
+ * grace it was never meant to have.
+ *
+ * The kill itself is not a separate mechanism: it aborts a signal the
+ * delegate is already listening to (createLocalBashOperations kills the
+ * process tree on abort, same as Escape), so there is no pid or process tree
+ * this module has to reach into on its own.
+ */
+export async function executeForeground(
+	delegate: BashDefinition,
+	toolCallId: string,
+	params: { command: string; timeout?: number },
+	signal: AbortSignal | undefined,
+	onUpdate: ForegroundUpdate | undefined,
+	ctx: ExtensionContext,
+	idleKillMs: number,
+): ReturnType<BashDefinition["execute"]> {
+	// An explicit timeout is the model's own escape hatch, and 0 means the
+	// watchdog is off — either way, run the delegate exactly as before.
+	if (params.timeout !== undefined || idleKillMs <= 0) {
+		return delegate.execute(toolCallId, params, signal, onUpdate, ctx);
+	}
+
+	const watchdog = new AbortController();
+	const forwardAbort = () => watchdog.abort();
+	if (signal) {
+		if (signal.aborted) forwardAbort();
+		else signal.addEventListener("abort", forwardAbort, { once: true });
+	}
+
+	// A single self-rescheduling timer rather than a poll loop: it fires
+	// exactly idleKillMs after the LAST byte, not up to a poll interval late,
+	// and needs no extra tunable for how often to check.
+	let timedOut = false;
+	let timer: ReturnType<typeof setTimeout>;
+	const arm = () => {
+		clearTimeout(timer);
+		timer = setTimeout(() => {
+			timedOut = true;
+			watchdog.abort();
+		}, idleKillMs);
+		(timer as { unref?: () => void }).unref?.();
+	};
+	arm();
+
+	let lastPartial: AgentToolResult<ForegroundDetails> | undefined;
+	let sawStart = false;
+	const trackActivity: ForegroundUpdate = (partial) => {
+		if (sawStart) arm();
+		sawStart = true;
+		lastPartial = partial;
+		onUpdate?.(partial);
+	};
+
+	try {
+		return await delegate.execute(toolCallId, params, watchdog.signal, trackActivity, ctx);
+	} catch (error) {
+		// Not our kill: an outer abort (Escape, turn end) forwarded into the
+		// same signal and the delegate reported that in its own way — let it.
+		if (!timedOut) throw error;
+		// Whatever the delegate captured before it went quiet is worth more to
+		// the model than a bare notice — the last onUpdate snapshot IS that
+		// output, already timestamped through the same ring the delegate uses
+		// for its own partial renders.
+		const priorOutput = (lastPartial?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join("");
+		const notice = `No output for ${formatDuration(idleKillMs)} — killed by the inactivity watchdog. Use run_in_background for long-running work, or pass an explicit timeout.`;
+		return {
+			content: [{ type: "text" as const, text: priorOutput ? `${priorOutput}\n\n${notice}` : notice }],
+			details: undefined as ForegroundDetails,
+		};
+	} finally {
+		clearTimeout(timer);
+		if (signal) signal.removeEventListener("abort", forwardAbort);
+	}
 }
 
 const sleep = (ms: number) =>
@@ -130,12 +230,18 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			if (params.run_in_background !== true) {
-				return host.builtinFor(ctx).execute(
+				// shellConfig(ctx) also runs builtinFor(ctx) as a side effect
+				// (see registerShellTools's wiring below), so the delegate
+				// returned by builtinFor here is already fresh for this cwd.
+				const config = host.shellConfig(ctx);
+				return executeForeground(
+					host.builtinFor(ctx),
 					toolCallId,
 					{ command: params.command, timeout: params.timeout },
 					signal,
 					onUpdate,
 					ctx,
+					config.foregroundIdleKillMs ?? CONFIG.foregroundIdleKillMs,
 				);
 			}
 
@@ -253,6 +359,13 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			}
 			const clipped = truncateTail(text, {});
 
+			// The status line above already states the exit plainly ("exited
+			// with code 0 · 30s") whenever the shell is settled — that reaches
+			// the model exactly as reliably as this tool result itself does, so
+			// a poll that lands after the exit is as good a delivery as the
+			// exit message would have been, and the before_agent_start safety
+			// net has nothing left to add for this shell.
+			if (isSettled(job.meta.status)) job.meta.exitAnnounced = true;
 			const parts = [`Shell ${job.meta.shellId} (\`${commandLabel(job.meta.command)}\`): ${statusLabel(job.meta, Date.now())}`];
 			if (read.skipped > 0) parts.push(`[skipped ${read.skipped} bytes of older unread output]`);
 			if (clipped.truncated) parts.push(`[showing the last ${clipped.outputLines} of ${clipped.totalLines} new lines]`);
@@ -276,6 +389,13 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			const job = host.registry.get(params.shell_id);
 			if (!job) throw new Error(`Unknown shell id "${params.shell_id}". Known shells: ${activeIds(host.registry)}`);
 			if (isSettled(job.meta.status)) {
+				// This result IS the exit reaching the model — as reliably as a
+				// followUp exit message would have, and without the queue that
+				// message rides. Without this, a routine kill_shell on an already-
+				// settled shell would still earn a "may not have reached you" nag
+				// from the next before_agent_start, for a shell the model was just
+				// told about a line above.
+				job.meta.exitAnnounced = true;
 				return {
 					content: [{ type: "text" as const, text: `Shell ${job.meta.shellId} had already finished: ${statusLabel(job.meta, Date.now())}.` }],
 					details: { shellId: job.meta.shellId, status: job.meta.status, exitCode: job.meta.exitCode },
@@ -298,6 +418,9 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			// every job on purpose — un-silencing it here would let a
 			// stubborn group's eventual death post into the next session.
 			if (!isSettled(job.meta.status) && job.meta.sessionId === host.sessionId()) job.suppressExit = false;
+			// Same reasoning as the early return above: if the wait caught the
+			// death, the text below already narrates it.
+			if (isSettled(job.meta.status)) job.meta.exitAnnounced = true;
 
 			const text = isSettled(job.meta.status)
 				? `Killed shell ${job.meta.shellId} (\`${commandLabel(job.meta.command)}\`): ${statusLabel(job.meta, Date.now())}.`

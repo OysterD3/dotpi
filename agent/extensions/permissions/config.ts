@@ -91,6 +91,20 @@ export const CONFIG = {
 	promptCommandChars: 400,
 	/** Reasons listed in the prompt before collapsing the rest into a count. */
 	maxReasonsShown: 4,
+	/**
+	 * Default for `permissions.promptTimeoutMs` — how long the human approval
+	 * prompt (the `ctx.ui.select` await in index.ts) waits before giving up and
+	 * blocking the call.
+	 *
+	 * A benchmark run of this harness recorded four silent stalls of 9.5-16.8
+	 * minutes and one 6h12m overnight hang on that exact await, with nothing to
+	 * end it — one Escape meant to unstick the visible prompt instead killed an
+	 * unrelated 3-hour turn. Five minutes is short enough to end an unattended
+	 * hang well within one sitting and long enough that stepping away to read a
+	 * diff does not get you blocked; 0 restores the old unbounded wait for
+	 * anyone who wants it back.
+	 */
+	promptTimeoutMs: 300_000,
 };
 
 /**

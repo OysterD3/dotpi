@@ -9,9 +9,13 @@
  * report must never be wrong in.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { budgetNotice, budgetReminder, crossedThreshold, reachedThreshold, systemReminder } from "./budget.ts";
 import { AnnouncedSpendLog, billedTokens, cacheHitPercent, callsFor, collectUsage, emptyTotals, withAnnounced } from "./collect.ts";
 import { formatCost, formatTokens, plainUsage } from "./render.ts";
+import { DEFAULTS, loadSettings } from "./settings.ts";
 
 let failures = 0;
 
@@ -666,6 +670,131 @@ console.log("\n--- render: nothing spent yet ---");
 	const text = plainUsage(collectUsage([]), {});
 	check("says so rather than drawing an empty table", text.includes("Nothing spent yet"), true);
 	check("and has no total line", text.includes("Total"), false);
+}
+
+console.log("\n--- budget: reachedThreshold ---");
+{
+	// Off is off, however much has been spent — this is the "0 disables" contract
+	// stepUsd's default relies on.
+	check("stepUsd 0 means off", reachedThreshold(500, 0), 0);
+	check("a negative stepUsd is also off, not an infinite threshold", reachedThreshold(500, -10), 0);
+	check("nothing spent yet", reachedThreshold(0, 10), 0);
+	check("below one step", reachedThreshold(9.99, 10), 0);
+	check("exactly one step", reachedThreshold(10, 10), 10);
+	check("well past several steps", reachedThreshold(47, 10), 40);
+
+	// The half-cent slack: a total a hair under an exact multiple, the way a long
+	// sum of floating-point costs actually lands, must still read as reached —
+	// otherwise the real crossing is reported one step late.
+	check("float drift just under a multiple still reaches it", reachedThreshold(9.996, 10), 10);
+	// But the slack must not manufacture a crossing that is genuinely a cent short.
+	check("a whole cent short is not reached", reachedThreshold(9.99, 10), 0);
+
+	// The classic 0.1 trap: 3 * 0.1 is 0.30000000000000004 unrounded, which would
+	// print as "$0.3000000000000000" instead of the clean number it actually is.
+	check("threshold multiplication is rounded to the cent", reachedThreshold(0.3, 0.1), 0.3);
+}
+
+console.log("\n--- budget: crossedThreshold — latch once ---");
+{
+	// The core contract: nothing to report below the first step.
+	check("below the first step, nothing yet", crossedThreshold(0, 5, 10), undefined);
+	// The first crossing.
+	check("the first step crossed", crossedThreshold(0, 10, 10), 10);
+	// Spending more inside the SAME step must not re-fire — this is the bug a
+	// "fire while total >= threshold" design would have: recomputed every
+	// turn_end, it would notify again on every turn after the first crossing.
+	check("still inside the same step, no new checkpoint", crossedThreshold(10, 15, 10), undefined);
+	// A later step crossed from an already-latched one.
+	check("the next step crossed", crossedThreshold(10, 25, 10), 20);
+	// A big jump between two recomputes (a fleet's spend landing in one lump)
+	// skips over several checkpoints — only the highest is reported, not four
+	// near-identical reminders for $10, $20, $30 and $40.
+	check("a jump past several checkpoints reports only the highest", crossedThreshold(0, 47, 10), 40);
+	// And once latched to that highest one, the skipped ones never surface later
+	// just because the total is still above them.
+	check("the skipped checkpoints do not surface later", crossedThreshold(40, 47, 10), undefined);
+	// Off is off regardless of latch state.
+	check("stepUsd 0 never crosses", crossedThreshold(0, 500, 0), undefined);
+}
+
+console.log("\n--- budget: checkpoint wording ---");
+{
+	// Pinned literal strings: this is the message a human reads and the one a
+	// model is nudged with, so a wording regression has to fail a test, not just
+	// look different in the transcript.
+	check("the user-facing notice", budgetNotice(10, 5 * 60_000), "Session spend crossed $10 (5m elapsed)");
+	// A threshold that is not a whole dollar amount still prints clean — $12.50,
+	// not $12.5000 (formatCost's table precision) or $12.5.
+	check("a fractional threshold formats clean", budgetNotice(12.5, 135 * 60_000), "Session spend crossed $12.50 (2h 15m elapsed)");
+	check("no elapsed time falls back to 0m rather than throwing", budgetNotice(20, undefined), "Session spend crossed $20 (0m elapsed)");
+
+	check(
+		"the hidden reminder",
+		budgetReminder(32.1789, 135 * 60_000, 10),
+		"This session has now cost ~$32.1789 over 2h 15m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $10, change approach: delegate, simplify, or consult the advisor — do not keep grinding the same path.",
+	);
+	// Past $100, formatCost switches to two decimals — the reminder's total must
+	// track that, not hardcode four.
+	check(
+		"a total past $100 still reads clean",
+		budgetReminder(150, undefined, 25),
+		"This session has now cost ~$150.00 over 0m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $25, change approach: delegate, simplify, or consult the advisor — do not keep grinding the same path.",
+	);
+
+	// Wrapped exactly the way every other hidden nudge in this repo is (see
+	// ask-user/nudge.ts's systemReminder) — a different wrapper here would be
+	// invisible to a human diffing the two and still change what the model sees.
+	check("wrapped as a system reminder", systemReminder("x"), "<system-reminder>\nx\n</system-reminder>");
+}
+
+console.log("\n--- settings: usage.budget ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "usage-settings-"));
+	const project = join(dir, "project");
+	mkdirSync(join(project, ".pi"), { recursive: true });
+
+	const write = (path: string, body: unknown) => writeFileSync(path, JSON.stringify(body));
+	const userPath = join(dir, "settings.json");
+	const projectPath = join(project, ".pi", "settings.json");
+
+	check("defaults with no files", loadSettings(dir, project, true).settings, DEFAULTS);
+
+	write(userPath, { usage: { budget: { stepUsd: 5, notifyUser: false, remindModel: true } } });
+	check("the user block is read", loadSettings(dir, project, true).settings, {
+		budget: { stepUsd: 5, notifyUser: false, remindModel: true },
+	});
+
+	write(projectPath, { usage: { budget: { stepUsd: 1000 } } });
+	check("a trusted project overrides", loadSettings(dir, project, true).settings.budget.stepUsd, 1000);
+	// An untrusted clone must not be able to defuse a budget the user's own
+	// global settings turned on — raising stepUsd effectively silences it.
+	check("an untrusted project does not", loadSettings(dir, project, false).settings.budget.stepUsd, 5);
+	check("and says so", loadSettings(dir, project, false).warnings.length, 1);
+
+	// From here on, only the user file is in play.
+	rmSync(projectPath);
+
+	// 0 is the documented way to ask for checkpoints off, and must be honoured
+	// rather than treated as "no value supplied".
+	write(userPath, { usage: { budget: { stepUsd: 0 } } });
+	check("zero is honoured, not ignored as falsy", loadSettings(dir, project, false).settings.budget.stepUsd, 0);
+
+	write(userPath, { usage: { budget: { stepUsd: -5, notifyUser: "yes" } } });
+	const bad = loadSettings(dir, project, false);
+	check("a negative step is rejected", bad.settings.budget.stepUsd, DEFAULTS.budget.stepUsd);
+	check("a non-boolean flag is rejected", bad.settings.budget.notifyUser, DEFAULTS.budget.notifyUser);
+	check("both are reported", bad.warnings.length, 2);
+
+	write(userPath, { usage: { budget: "on" } });
+	check("a malformed budget block is ignored, not fatal", loadSettings(dir, project, false).settings.budget.stepUsd, DEFAULTS.budget.stepUsd);
+	check("and reported", loadSettings(dir, project, false).warnings.length, 1);
+
+	writeFileSync(userPath, "{ not json");
+	check("unparseable settings are ignored, not fatal", loadSettings(dir, project, false).settings, DEFAULTS);
+	check("and reported", loadSettings(dir, project, false).warnings.length, 1);
+
+	rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

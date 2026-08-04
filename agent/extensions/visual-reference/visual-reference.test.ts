@@ -108,6 +108,7 @@ check("it asks rather than guessing when the reference is unusable", VISUAL_REFE
 console.log("\n--- settings ---");
 check("absent -> defaults", resolveSettings(undefined), DEFAULT_SETTINGS);
 check("halves switch independently", resolveSettings({ readAdvice: false }), { ...DEFAULT_SETTINGS, readAdvice: false });
+check("verifyGate switches independently too", resolveSettings({ verifyGate: false }), { ...DEFAULT_SETTINGS, verifyGate: false });
 writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ visualReference: { guideline: false } }));
 check("read from disk", loadSettings(AGENT).guideline, false);
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
@@ -115,18 +116,65 @@ check("unparsable -> defaults", loadSettings(AGENT), DEFAULT_SETTINGS);
 
 console.log("\n--- wiring ---");
 type Handler = (event: unknown) => any;
+
+/**
+ * A minimal stand-in for pi's real ExtensionAPI. `on` collects handlers into
+ * arrays, not a single slot — index.ts now registers TWO `tool_result`
+ * handlers (readAdvice's and the verify gate's), and pi's real runner chains
+ * every handler registered for an event rather than letting the last one
+ * clobber the rest (see runner.js's emitToolResult). A Map<string, Handler>
+ * that overwrote on a second registration would silently test the wrong
+ * handler.
+ */
 function install(block: Record<string, unknown>) {
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ visualReference: block }));
-	const handlers = new Map<string, Handler>();
-	register({ on: (event: string, handler: Handler) => handlers.set(event, handler) } as never);
-	return handlers;
+	const handlers = new Map<string, Handler[]>();
+	const sent: unknown[] = [];
+	const emitted: Array<{ channel: string; data: unknown }> = [];
+	register({
+		on: (event: string, handler: Handler) => {
+			const list = handlers.get(event) ?? [];
+			list.push(handler);
+			handlers.set(event, list);
+		},
+		sendMessage: (message: unknown, options: unknown) => sent.push([message, options]),
+		events: { emit: (channel: string, data: unknown) => emitted.push({ channel, data }) },
+	} as never);
+	return { handlers, sent, emitted };
 }
 
-check("disabled registers nothing", [...install({ enabled: false }).keys()], []);
-check("each half registers alone", [...install({ guideline: false }).keys()], ["tool_result"]);
-check("and the other alone", [...install({ readAdvice: false }).keys()], ["before_agent_start"]);
+/**
+ * Dispatch every registered handler for one event, chaining tool_result
+ * fields the way pi's real emitToolResult does: each handler sees the event as
+ * modified by the ones before it, and only fields a handler actually returns
+ * replace the running result.
+ */
+function runToolResult(handlers: Map<string, Handler[]>, event: Record<string, unknown>) {
+	let current: Record<string, unknown> = { ...event };
+	let modified = false;
+	for (const handler of handlers.get("tool_result") ?? []) {
+		const result = handler(current);
+		if (!result) continue;
+		for (const field of ["content", "details", "isError", "usage"] as const) {
+			if (result[field] !== undefined) {
+				current[field] = result[field];
+				modified = true;
+			}
+		}
+	}
+	return modified ? { content: current.content, details: current.details, isError: current.isError, usage: current.usage } : undefined;
+}
 
-const handlers = install({});
+check("disabled registers nothing", [...install({ enabled: false }).handlers.keys()], []);
+check("readAdvice registers alone", [...install({ guideline: false, verifyGate: false }).handlers.keys()], ["tool_result"]);
+check("guideline registers alone", [...install({ readAdvice: false, verifyGate: false }).handlers.keys()], ["before_agent_start"]);
+check(
+	"verifyGate registers alone",
+	[...install({ readAdvice: false, guideline: false }).handlers.keys()].sort(),
+	["agent_end", "tool_result"],
+);
+
+const { handlers, sent, emitted } = install({});
 const readEvent = {
 	toolName: "read",
 	content: [{ type: "text", text: REAL }],
@@ -134,21 +182,117 @@ const readEvent = {
 	isError: false,
 	usage: { input: 3, output: 4 },
 };
-const out = handlers.get("tool_result")!(readEvent);
-check("an oversized html read is advised", String(out.content[0].text).includes("BUNDLED DOCUMENT"), true);
+const out = runToolResult(handlers, readEvent)!;
+check("an oversized html read is advised", String((out.content as { text: string }[])[0]!.text).includes("BUNDLED DOCUMENT"), true);
 // pi rebuilds the result from this return value, so anything not echoed back is
 // deleted — an omitted `details` blanks the renderer, an omitted `usage` loses
 // the spend. Only isError has a fallback.
 check("details survive", out.details, { truncation: { totalLines: 400 } });
 check("usage survives", out.usage, { input: 3, output: 4 });
-check("a normal read is untouched", handlers.get("tool_result")!({ toolName: "read", content: [{ type: "text", text: "ok" }] }), undefined);
-check("other tools are untouched", handlers.get("tool_result")!({ toolName: "bash", content: [{ type: "text", text: REAL }] }), undefined);
+check("a normal read is untouched", runToolResult(handlers, { toolName: "read", content: [{ type: "text", text: "ok" }] }), undefined);
+check(
+	"a bash call with no reference or screenshot evidence is untouched",
+	runToolResult(handlers, { toolName: "bash", content: [{ type: "text", text: REAL }] }),
+	undefined,
+);
 
 // Appending, never replacing: several extensions chain on this hook, and
 // returning a bare guideline would delete the system prompt.
-const before = handlers.get("before_agent_start")!({ systemPrompt: "BASE PROMPT" });
+const before = handlers.get("before_agent_start")![0]!({ systemPrompt: "BASE PROMPT" });
 check("the guideline is appended to the prompt", before.systemPrompt.startsWith("BASE PROMPT"), true);
 check("and the guideline is in there", before.systemPrompt.includes("Working from a reference"), true);
+
+console.log("\n--- the verify gate end to end ---");
+// Only `messages` matters to the handler — a natural stop's last assistant
+// message names the reason it actually stopped for; an abort's says "aborted",
+// mirroring how pi dist's agent-loop.js shapes a real agent_end event.
+const naturalStop = (): Record<string, unknown> => ({ messages: [{ role: "assistant", stopReason: "stop" }] });
+const userAborted = (): Record<string, unknown> => ({ messages: [{ role: "assistant", stopReason: "aborted" }] });
+{
+	const { handlers: h, sent: s } = install({});
+	// Two dirty edits, no render evidence: agent_end should deliver a follow-up
+	// that resumes the agent, mirroring goal's notMetInstruction delivery.
+	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
+	runToolResult(h, { toolName: "write", input: { path: "/app/Header.tsx" }, isError: false, content: [] });
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("agent_end fires exactly one follow-up", s.length, 1);
+	const [message, options] = s[0] as [Record<string, unknown>, Record<string, unknown>];
+	check("it resumes the agent like goal's notMetInstruction", options, { deliverAs: "followUp", triggerTurn: true });
+	check("it names both files", String(message.content).includes("/app/Button.css") && String(message.content).includes("/app/Header.tsx"), true);
+	check("it states the count", String(message.content).includes("You changed 2 UI files"), true);
+}
+{
+	// Render evidence — a screenshot-shaped bash command — clears the dirt
+	// before agent_end ever sees it, so nothing fires.
+	const { handlers: h, sent: s } = install({});
+	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
+	runToolResult(h, { toolName: "bash", input: { command: "agent-browser --session app screenshot /tmp/out.png" }, isError: false, content: [] });
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("a render before agent_end suppresses the follow-up", s.length, 0);
+}
+{
+	// A non-UI edit (e.g. a .ts store) must not count as dirty at all.
+	const { handlers: h, sent: s } = install({});
+	runToolResult(h, { toolName: "edit", input: { path: "/app/store.ts" }, isError: false, content: [] });
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("a non-UI-extension edit never arms the gate", s.length, 0);
+}
+{
+	// A failed edit changed nothing on disk and must not count as dirty.
+	const { handlers: h, sent: s } = install({});
+	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: true, content: [] });
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("a failed edit is not dirty", s.length, 0);
+}
+{
+	// The firing cap: two follow-ups per session (config.ts's maxFollowUps), then
+	// the gate goes quiet even though the dirt never got cleared.
+	const { handlers: h, sent: s } = install({});
+	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
+	h.get("agent_end")![0]!(naturalStop(), {});
+	h.get("agent_end")![0]!(naturalStop(), {});
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("only two firings, then silence", s.length, 2);
+}
+{
+	// THE GUARD: agent_end fires when the user presses Escape too, and a
+	// follow-up queued from here resumes the agent through agent.continue()
+	// regardless of why the run ended — so an aborted run must get no
+	// follow-up, and the dirt it left behind must survive for the next NATURAL
+	// stop rather than being lost or double-reported.
+	const { handlers: h, sent: s } = install({});
+	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
+	h.get("agent_end")![0]!(userAborted(), {});
+	check("an aborted run gets no follow-up", s.length, 0);
+	h.get("agent_end")![0]!(naturalStop(), {});
+	check("the dirt from before the abort survives to the next natural stop", s.length, 1);
+	const [message] = s[0] as [Record<string, unknown>];
+	check("and still names the pre-abort edit", String(message.content).includes("/app/Button.css"), true);
+}
+{
+	// PIN CONTRACT: a bash command opens a renderable file:// reference, then a
+	// read comes back with an image — that image is presumed to be the
+	// reference screenshot, so its toolCallId is announced on the pin channel.
+	const { handlers: h, emitted: e } = install({});
+	runToolResult(h, {
+		toolName: "bash",
+		input: { command: "agent-browser --session ref --allow-file-access open 'file:///tmp/ref/mock.html'" },
+		isError: false,
+		content: [],
+	});
+	runToolResult(h, { toolName: "read", toolCallId: "call-42", input: {}, isError: false, content: [{ type: "image" }] });
+	check("exactly one pin is emitted", e.length, 1);
+	check("on the context-diet:pin channel", e[0]!.channel, "context-diet:pin");
+	check("carrying the image read's toolCallId", e[0]!.data, { toolCallId: "call-42" });
+}
+{
+	// Without a preceding reference open, an ordinary image read (e.g. the
+	// agent's own app) must not be pinned — the whole point is to protect
+	// reference screenshots specifically, not every image in the session.
+	const { handlers: h, emitted: e } = install({});
+	runToolResult(h, { toolName: "read", toolCallId: "call-1", input: {}, isError: false, content: [{ type: "image" }] });
+	check("an unarmed image read is not pinned", e.length, 0);
+}
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 if (failures > 0) process.exitCode = 1;

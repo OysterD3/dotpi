@@ -12,8 +12,9 @@
  * `agent_end`, and on "not met" deliver a follow-up message, which resumes the
  * agent. The observable behaviour is the same; the mechanism is pi-native.
  *
- *   prompts.ts     evaluator + instruction prompts
- *   judge.ts       the evaluator LLM call, model selection and verdict parsing
+ *   prompts.ts     evaluator, extraction and instruction prompts
+ *   judge.ts       the evaluator + extraction LLM calls, model selection, parsing
+ *   capture.ts     when an "input" event is worth an autoCapture attempt (pure)
  *   transcript.ts  session branch -> budgeted transcript text (pure)
  *   state.ts       active goal, iteration count, session persistence
  *   render.ts      TUI panels and summary text (pure)
@@ -24,12 +25,32 @@
  * Cost note: every stop attempt while a goal is active costs one extra LLM call
  * carrying up to half the context window. Set `goal.model` to a small, fast model
  * to keep that cheap, or the session model judges its own work.
+ *
+ * Two gaps closed after an A/B benchmark traced a runaway session to this
+ * extension sitting unused:
+ *
+ *   - `goal.autoCapture` (default off): a session that never runs `/goal` gets
+ *     no stop-gate at all, which is exactly what happened — a request with
+ *     explicit acceptance criteria ran to a bad result with nothing checking it
+ *     against them. When on, the first work-opening interactive prompt of a
+ *     session, with no goal already active, gets one extraction call (judge.ts's
+ *     extractCriteria) asking whether the message itself states measurable
+ *     criteria; a non-null answer is registered exactly the way `/goal
+ *     <condition>` would be.
+ *   - Compaction and `/resume` reassertion: a goal set early can have the
+ *     message that told the model about it summarized away by a later
+ *     compaction, or restored from a custom entry the model never sees (custom
+ *     entries do not enter LLM context — see state.ts). Either event arms a
+ *     pending flag; the next `before_agent_start` spends it on one hidden
+ *     reminder, so the condition survives both without costing anything on
+ *     turns where neither happened.
  */
 
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isCaptureCandidate } from "./capture.ts";
 import { CONFIG } from "./config.ts";
-import { evaluate, selectModel, type SpendReport } from "./judge.ts";
-import { goalSetInstruction, notMetInstruction } from "./prompts.ts";
+import { evaluate, extractCriteria, selectModel, type SpendReport } from "./judge.ts";
+import { goalSetInstruction, notMetInstruction, reassertInstruction, systemReminder } from "./prompts.ts";
 import {
 	type GoalMessageDetails,
 	type GoalResultDetails,
@@ -42,6 +63,8 @@ import { goalElapsed, GoalState, restoreGoal, tokensSpent } from "./state.ts";
 
 const GOAL_MESSAGE = "goal";
 const GOAL_RESULT = "goal_result";
+/** customType on the hidden compaction/resume reassertion message — see before_agent_start below. */
+const GOAL_REASSERT = "goal_reassert";
 
 /**
  * pi.events channel for announcing model spend, shared by every extension that
@@ -57,8 +80,21 @@ export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	let settings: GoalSettings = { ...DEFAULTS };
 
-	/** One evaluator call's spend, announced as an increment. */
+	/** One evaluator (or extractor) call's spend, announced as an increment. */
 	const announce = (spend: SpendReport) => pi.events.emit(SPEND_CHANNEL, { source: "goal", usage: spend, calls: 1 });
+
+	/**
+	 * autoCapture's one-shot: set on the "input" hook, consumed on
+	 * before_agent_start for the same turn — the pattern ask-user's opening
+	 * nudge uses for the same reason (nudge.ts). `captureTried` closes the
+	 * window for the rest of the session the first time a candidate prompt is
+	 * seen, whether or not it turns into a goal; without it, a session that
+	 * opens with small talk before the real request would get one attempt per
+	 * message instead of one attempt, period.
+	 */
+	let captureThisTurn = false;
+	let captureText = "";
+	let captureTried = false;
 
 	pi.registerMessageRenderer<GoalMessageDetails>(GOAL_MESSAGE, (message, _options, theme) =>
 		message.details ? renderGoalMessage(message.details, theme) : undefined,
@@ -91,6 +127,110 @@ export default function (pi: ExtensionAPI) {
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 		checkModel(ctx);
 		state.adopt(restoreGoal(ctx.sessionManager.getBranch()));
+
+		// autoCapture's one-shot is scoped to "a session". In the CLI, pi
+		// re-runs every extension factory on each session replacement (/new,
+		// /resume, /reload, fork all build a fresh DefaultResourceLoader and
+		// re-await factory(pi) — see loadExtensionsCached in pi dist's
+		// core/extensions/loader.js), so this closure never actually survives
+		// past the session it was built for there and this reset is a no-op in
+		// practice. It earns its keep for the SDK: createAgentSession() lets a
+		// caller construct its own DefaultResourceLoader and pass it in as
+		// `resourceLoader` across several createAgentSession() calls (see pi
+		// dist's core/sdk.js) — that loader's extensions are computed once, in
+		// reload(), and just handed to every session built from it, so THAT
+		// closure genuinely does outlive a single session. Without a reset here,
+		// such an embedder's second session would inherit whether the first had
+		// already spent its attempt.
+		captureThisTurn = false;
+		captureText = "";
+		captureTried = false;
+
+		// A goal just restored from disk is exactly the case state.ts's own
+		// header comment describes: the model has no other way to see it,
+		// because custom entries never enter LLM context. Reassert on the next
+		// turn rather than trusting whatever the visible history still contains
+		// — which may itself have been compacted away already.
+		state.markPendingReassertion();
+	});
+
+	// Judged on the text as typed, before command expansion, and only for a
+	// fresh interactive prompt — mirrors ask-user's nudge.ts, which the same
+	// comment there explains: a prompt steered into a running turn never
+	// reaches before_agent_start, so it must not spend the one shot either.
+	pi.on("input", (event) => {
+		if (!settings.autoCapture || captureTried) return { action: "continue" };
+		if (!isCaptureCandidate(event)) return { action: "continue" };
+
+		// The window closes here, on the first candidate prompt, regardless of
+		// what happens next — including a goal already being active, in which
+		// case there is nothing to capture and there will not be later either:
+		// this was the one first work-opening prompt of the session.
+		captureTried = true;
+		if (!state.get()) {
+			captureThisTurn = true;
+			captureText = event.text;
+		}
+		return { action: "continue" };
+	});
+
+	// Compaction can summarize the goalSetInstruction message that first told
+	// the model about the check into prose with no directive weight. This just
+	// arms the flag; before_agent_start (below) spends it on the next turn.
+	pi.on("session_compact", () => {
+		state.markPendingReassertion();
+	});
+
+	// Reminders ride the turn as one hidden custom message: autoCapture's
+	// extraction result if this is the turn it was armed for, otherwise the
+	// compaction/resume reassertion if that is pending. The two never compete
+	// for the single message slot before_agent_start can return — capture only
+	// runs with no goal active, and reassertion is only armed for one that is.
+	pi.on("before_agent_start", async (_event, ctx) => {
+		const capturing = captureThisTurn;
+		captureThisTurn = false;
+
+		if (capturing && !state.get()) {
+			const message = captureText;
+			captureText = "";
+			// Same "say so before the model call, not after" reasoning as the
+			// command handler below.
+			checkModel(ctx);
+			const extraction = await extractCriteria(ctx, message, ctx.signal, settings.model, announce);
+
+			if (extraction.kind === "error") {
+				ctx.ui.notify(`goal.autoCapture failed, not blocking: ${extraction.reason}`, "warning");
+			} else if (extraction.kind === "criteria" && extraction.criteria.length <= CONFIG.maxConditionChars) {
+				state.set(extraction.criteria, ctx.getContextUsage()?.tokens ?? undefined);
+				return {
+					message: {
+						customType: GOAL_MESSAGE,
+						content: goalSetInstruction(extraction.criteria),
+						display: true,
+						details: { kind: "set", condition: extraction.criteria } satisfies GoalMessageDetails,
+					},
+				};
+			}
+			// "none", "aborted", or criteria too long to trust: nothing to set.
+			// Overlong is treated as unusable rather than truncated, same as a
+			// user-typed `/goal` condition — a clipped goal is judged against
+			// something nobody actually said.
+		}
+
+		if (state.consumePendingReassertion()) {
+			const goal = state.get();
+			if (goal) {
+				return {
+					message: {
+						customType: GOAL_REASSERT,
+						content: systemReminder(reassertInstruction(goal.condition)),
+						display: false,
+					},
+				};
+			}
+		}
+
+		return undefined;
 	});
 
 	pi.registerCommand("goal", {

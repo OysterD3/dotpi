@@ -29,6 +29,19 @@ export function routingReminder(mentions: string[]): string {
 	return `This request names models (${mentions.join(", ")}). Route the workflow accordingly: pass each agent whose role the request covers a matching model reference via the agent() model option, e.g. agent(prompt, { model: "${mentions[0]}" }).`;
 }
 
+/**
+ * The edit-streak nudge: delivered mid-turn (see streak.ts and index.ts's
+ * tool_call handler) once a run of consecutive edit/write calls with no
+ * Workflow call between them crosses CONFIG.editStreakNudge. Deliberately
+ * says "that includes you" — the measured failure was a model that would
+ * itself have flagged 40+ turns of one subagent as a decomposition failure
+ * (see tool.ts's own shape diagnostics) while running exactly that pattern
+ * itself, unwatched, for two hours.
+ */
+export function editStreakReminder(count: number): string {
+	return `You have made ${count} consecutive hand-edits. Per your own workflow doctrine, a bulleted list of deliverables IS the fan-out, and 40+ turns of one agent is a decomposition failure — that includes you. Split the remaining work: one agent per deliverable, shell()-gated.`;
+}
+
 export function systemReminder(text: string): string {
 	return `<system-reminder>\n${text}\n</system-reminder>`;
 }

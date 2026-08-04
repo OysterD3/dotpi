@@ -80,24 +80,43 @@ check("highest random stays in range", pickVerbIndex(() => 0.999999), CONFIG.ver
 // ------------------------------------------------------------------ settings
 
 console.log("\n--- settings ---");
-const { loadSettings, workingText } = await import("./index.ts");
+const { loadSettings, waitAlertText, waitingText, workingText } = await import("./index.ts");
 const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ elapsed: block }));
 
 writeSettings({});
-check("defaults", loadSettings(AGENT), { workingTimer: true, showTurnDuration: true, minTurnMs: 0 });
-writeSettings({ showTurnDuration: false, workingTimer: false, minTurnMs: 5000 });
-check("all overridden", loadSettings(AGENT), { workingTimer: false, showTurnDuration: false, minTurnMs: 5000 });
-writeSettings({ minTurnMs: -1 });
+check("defaults", loadSettings(AGENT), { workingTimer: true, showTurnDuration: true, minTurnMs: 0, waitAlertMs: 120_000 });
+writeSettings({ showTurnDuration: false, workingTimer: false, minTurnMs: 5000, waitAlertMs: 30_000 });
+check("all overridden", loadSettings(AGENT), { workingTimer: false, showTurnDuration: false, minTurnMs: 5000, waitAlertMs: 30_000 });
+writeSettings({ minTurnMs: -1, waitAlertMs: -1 });
 check("negative threshold ignored", loadSettings(AGENT).minTurnMs, 0);
+check("negative alert threshold ignored", loadSettings(AGENT).waitAlertMs, 120_000);
+writeSettings({ waitAlertMs: 0 });
+check("zero alert threshold is honoured — it means off, not invalid", loadSettings(AGENT).waitAlertMs, 0);
 writeSettings({ showTurnDuration: "yes" });
 check("wrong type falls back", loadSettings(AGENT).showTurnDuration, true);
+writeSettings({ waitAlertMs: "soon" });
+check("wrong type falls back for the alert threshold too", loadSettings(AGENT).waitAlertMs, 120_000);
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
-check("unreadable settings fall back", loadSettings(AGENT), { workingTimer: true, showTurnDuration: true, minTurnMs: 0 });
+check("unreadable settings fall back", loadSettings(AGENT), {
+	workingTimer: true,
+	showTurnDuration: true,
+	minTurnMs: 0,
+	waitAlertMs: 120_000,
+});
 
 console.log("\n--- the working row's text ---");
 check("starts at zero", workingText(0), "Working... 0s");
 check("seconds", workingText(12_000), "Working... 12s");
 check("past a minute", workingText(64_000), "Working... 1m 4s");
+
+console.log("\n--- the waiting row's text ---");
+check("starts at zero the instant a wait opens", waitingText(0), "Waiting on your answer... 0s");
+check("seconds", waitingText(12_000), "Waiting on your answer... 12s");
+check("past a minute", waitingText(64_000), "Waiting on your answer... 1m 4s");
+
+console.log("\n--- the waitAlertMs notice's wording ---");
+check("the example from the spec", waitAlertText(120_000), "pi has been waiting 2m 0s for your answer");
+check("short wait", waitAlertText(5000), "pi has been waiting 5s for your answer");
 
 // ------------------------------------------------------------------- wiring
 
@@ -153,6 +172,37 @@ console.log("\n--- the clock stops for a question ---");
 	check("a new turn starts clean", waits.waitedBy(2000), 0);
 }
 
+console.log("\n--- openWaitMs: the currently-open wait's own clock ---");
+{
+	// Distinct from waitedBy(): that is the turn's running total, which must stay
+	// frozen while a question is up. This is what the live "Waiting on your
+	// answer… Xs" row and the waitAlertMs notifier read instead.
+	const waits = new WaitClock();
+	check("nothing open yet", waits.openWaitMs(1000), 0);
+
+	waits.open(1000);
+	check("starts at zero the instant it opens", waits.openWaitMs(1000), 0);
+	check("climbs with the wall clock", waits.openWaitMs(5000), 4000);
+
+	waits.close(5000);
+	check("zero again once closed", waits.openWaitMs(6000), 0);
+
+	// A second wait in the same turn is reported from its own zero, not from
+	// wherever the first wait left off — waitedBy() carries the running total,
+	// openWaitMs() does not.
+	waits.open(10_000);
+	check("a later wait in the same turn also starts at zero", waits.openWaitMs(10_000), 0);
+	check("...while the turn's running total carries the earlier wait forward", [waits.waitedBy(12_000), waits.openWaitMs(12_000)], [
+		4000 + 2000,
+		2000,
+	]);
+
+	// A clock that jumps backwards must not produce a negative open duration.
+	const backwards = new WaitClock();
+	backwards.open(5000);
+	check("a backwards clock cannot make the open wait negative", backwards.openWaitMs(1000), 0);
+}
+
 console.log("\n--- wiring against a fake pi ---");
 {
 	writeSettings({});
@@ -199,9 +249,10 @@ console.log("\n--- wiring against a fake pi ---");
 	messages.length = 0;
 	bus.get(ASK_CHANNEL)!({ active: true });
 	check("opening a question repaints at once", messages.length, 1);
+	check("...showing the live wait row, not the frozen working line", messages[0], "Waiting on your answer... 0s");
 	bus.get(ASK_CHANNEL)!({ active: false });
 	check("and answering it repaints again", messages.length, 2);
-	check("with the count held across the wait", new Set(messages).size, 1);
+	check("...reverting to the working row", messages[1], "Working... 0s");
 
 	events.get("agent_settled")!({}, ctx);
 	check("working message restored to pi's default", messages.at(-1), undefined);
@@ -249,11 +300,14 @@ console.log("\n--- the wait really is subtracted (clock under test control) ---"
 
 		clock += 10_000; // ten seconds of real work
 		bus.get(ASK_CHANNEL)!({ active: true, blocking: true });
-		check("the row shows the work done so far", messages.at(-1), "Working... 10s");
+		// Opening the question switches the row to the live wait clock at once —
+		// it must NOT keep showing the frozen "Working... 10s" a moment longer,
+		// which is exactly the display gap the benchmark forensics traced.
+		check("opening switches to the live wait row, not the frozen work count", messages.at(-1), "Waiting on your answer... 0s");
 
 		clock += 60_000; // a minute spent deciding
 		bus.get(ASK_CHANNEL)!({ active: false, blocking: true });
-		check("and holds across the whole wait", messages.at(-1), "Working... 10s");
+		check("closing reverts to the accumulated work total, unaffected by how long the wait itself ran", messages.at(-1), "Working... 10s");
 
 		clock += 5_000; // five more seconds of work
 		events.get("agent_settled")!({}, ctx);
@@ -292,6 +346,174 @@ console.log("\n--- the wait really is subtracted (clock under test control) ---"
 		check("a payload that is neither edge leaves the clock stopped", entries[0]?.data.durationMs, 0);
 	} finally {
 		Date.now = realNow;
+	}
+}
+
+console.log("\n--- waitAlertMs: escalating notice while a wait runs long ---");
+{
+	// setInterval/clearInterval are faked (not the real timers) so the test can
+	// fire the alert without actually waiting waitAlertMs in real time, and can
+	// assert clearInterval was called with the exact handle setInterval returned.
+	writeSettings({ waitAlertMs: 5000 });
+	const realNow = Date.now;
+	const realSetInterval = globalThis.setInterval;
+	const realClearInterval = globalThis.clearInterval;
+	const realWrite = process.stdout.write.bind(process.stdout);
+	let clock = 0;
+	Date.now = () => clock;
+
+	type FakeHandle = { fn: () => void; ms: number; cleared: boolean };
+	const registered: FakeHandle[] = [];
+	(globalThis as any).setInterval = (fn: () => void, ms: number) => {
+		const handle: FakeHandle = { fn, ms, cleared: false };
+		registered.push(handle);
+		return handle as unknown as NodeJS.Timeout;
+	};
+	(globalThis as any).clearInterval = (handle: unknown) => {
+		if (handle && typeof handle === "object") (handle as FakeHandle).cleared = true;
+	};
+	// Bell writes are counted, not captured verbatim: check()'s own console.log
+	// calls go through process.stdout.write too, so intercepting unconditionally
+	// would swallow the test's own PASS/FAIL lines. Anything that is not exactly
+	// the bell passes straight through to the real stream.
+	let bellCount = 0;
+	(process.stdout as any).write = (chunk: unknown, ...rest: unknown[]) => {
+		if (chunk === "\u0007") {
+			bellCount++;
+			return true;
+		}
+		return (realWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+	};
+
+	try {
+		const bus = new Map<string, (data: unknown) => void>();
+		const events = new Map<string, Function>();
+		const notifications: Array<{ message: string; level?: string }> = [];
+		const messages: Array<string | undefined> = [];
+		const pi = {
+			on: (event: string, handler: Function) => events.set(event, handler),
+			appendEntry: () => {},
+			registerEntryRenderer: () => {},
+			events: {
+				on: (channel: string, handler: (data: unknown) => void) => {
+					bus.set(channel, handler);
+					return () => bus.delete(channel);
+				},
+				emit: () => {},
+			},
+		};
+		((await import("./index.ts")).default as Function)(pi);
+		const ctx = {
+			hasUI: true,
+			ui: {
+				setWorkingMessage: (m?: string) => messages.push(m),
+				notify: (message: string, level?: string) => notifications.push({ message, level }),
+			},
+		};
+		events.get("session_start")!({}, ctx);
+		events.get("agent_start")!({}, ctx);
+
+		bus.get(PERMISSION_CHANNEL)!({ tool: "bash", target: "rm -rf /" });
+		const alerts = registered.filter((r) => r.ms === 5000);
+		check("opening a permission ask registers exactly one alert timer", alerts.length, 1);
+		check("alongside the 1s working-row ticker, not instead of it", registered.some((r) => r.ms === CONFIG.tickMs), true);
+
+		const [alert] = alerts;
+		clock = 5000;
+		alert.fn(); // simulate the interval firing at its first due time
+		check("warns with the open wait's own clock", notifications.at(-1), {
+			message: "pi has been waiting 5s for your answer",
+			level: "warning",
+		});
+		check("and rings the terminal bell", bellCount, 1);
+
+		clock = 10_000;
+		alert.fn();
+		check("repeats at every further interval", notifications.length, 2);
+		check("...with the elapsed wait grown to match", notifications.at(-1)?.message, "pi has been waiting 10s for your answer");
+		check("...ringing the bell again too", bellCount, 2);
+
+		// A second announcement on the same still-open wait (a re-ask, say) must
+		// not start a duplicate timer: pause() checks waits.waiting BEFORE calling
+		// waits.open() (which itself ignores a second open — see the WaitClock
+		// tests above), and only starts the alert on a genuine open transition.
+		bus.get(PERMISSION_CHANNEL)!({ tool: "bash", target: "rm -rf /" });
+		check("a repeat open does not register a second alert timer", registered.filter((r) => r.ms === 5000).length, 1);
+
+		bus.get(PERMISSION_ANSWERED_CHANNEL)!({ tool: "bash" });
+		check("answering clears the alert timer", alert.cleared, true);
+
+		notifications.length = 0;
+		bellCount = 0;
+		alert.fn(); // a timer that fires just as it is cleared must not nag for a wait that already closed
+		check("a stale callback after close notifies nothing", notifications.length, 0);
+		check("...nor rings the bell", bellCount, 0);
+	} finally {
+		Date.now = realNow;
+		globalThis.setInterval = realSetInterval;
+		globalThis.clearInterval = realClearInterval;
+		(process.stdout as any).write = realWrite;
+	}
+}
+
+console.log("\n--- waitAlertMs: 0 disables the nag, hasUI:false skips it ---");
+{
+	const registerFakeSetInterval = () => {
+		const registered: Array<{ ms: number }> = [];
+		const real = globalThis.setInterval;
+		(globalThis as any).setInterval = (_fn: () => void, ms: number) => {
+			registered.push({ ms });
+			return {} as unknown as NodeJS.Timeout;
+		};
+		return { registered, restore: () => (globalThis.setInterval = real) };
+	};
+	const freshPi = () => {
+		const events = new Map<string, Function>();
+		const bus = new Map<string, (data: unknown) => void>();
+		const pi = {
+			on: (event: string, handler: Function) => events.set(event, handler),
+			appendEntry: () => {},
+			registerEntryRenderer: () => {},
+			events: {
+				on: (channel: string, handler: (data: unknown) => void) => {
+					bus.set(channel, handler);
+					return () => bus.delete(channel);
+				},
+				emit: () => {},
+			},
+		};
+		return { events, bus, pi };
+	};
+
+	{
+		writeSettings({ waitAlertMs: 0 });
+		const { registered, restore } = registerFakeSetInterval();
+		try {
+			const { events, bus, pi } = freshPi();
+			((await import("./index.ts")).default as Function)(pi);
+			const ctx = { hasUI: true, ui: { setWorkingMessage: () => {}, notify: () => {} } };
+			events.get("session_start")!({}, ctx);
+			events.get("agent_start")!({}, ctx); // still registers the 1s ticker — workingTimer is independent of waitAlertMs
+			bus.get(PERMISSION_CHANNEL)!({ tool: "bash", target: "rm -rf /" });
+			check("waitAlertMs: 0 registers no alert timer", registered.filter((r) => r.ms !== CONFIG.tickMs).length, 0);
+		} finally {
+			restore();
+		}
+	}
+	{
+		writeSettings({ waitAlertMs: 5000 });
+		const { registered, restore } = registerFakeSetInterval();
+		try {
+			const { events, bus, pi } = freshPi();
+			((await import("./index.ts")).default as Function)(pi);
+			const ctx = { hasUI: false, ui: {} };
+			events.get("session_start")!({}, ctx);
+			events.get("agent_start")!({}, ctx); // no ticker either, without UI to paint
+			bus.get(PERMISSION_CHANNEL)!({ tool: "bash", target: "rm -rf /" });
+			check("a headless context registers no timers at all", registered.length, 0);
+		} finally {
+			restore();
+		}
 	}
 }
 

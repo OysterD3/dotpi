@@ -27,10 +27,26 @@
  * live row holds at the value it had when the question appeared and resumes
  * from there, rather than jumping to catch up when you answer.
  *
+ * That freeze had a blind spot: the row kept reading "Working... 4m 12s",
+ * unchanged, for as long as the question or permission ask sat open — which
+ * looks exactly like a long tool call, not like the one moment pi is stopped
+ * dead waiting on the person at the keyboard. Forensics on a benchmark run
+ * traced real cost to this: permission prompts sat unanswered for 10-17
+ * minutes because nothing on screen (or off it) said so. Two fixes, both
+ * scoped to while a wait is open:
+ *
+ *   - the row switches to "Waiting on your answer... Xs", a live wall clock
+ *     of the open wait itself (waits.openWaitMs), so it visibly ticks instead
+ *     of sitting frozen;
+ *   - past elapsed.waitAlertMs (default 2 minutes), a repeating
+ *     ctx.ui.notify() plus a terminal bell escalate it, firing again at every
+ *     further interval for as long as the wait stays open.
+ *
  * Settings (agent settings.json):
  *   elapsed.workingTimer      boolean, default true
  *   elapsed.showTurnDuration  boolean, default true
  *   elapsed.minTurnMs         number, default 0 (0 reports every turn)
+ *   elapsed.waitAlertMs       number, default 120000 (0 disables the alert)
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,11 +70,15 @@ export function loadSettings(agentDir: string): ElapsedSettings {
 		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
 		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
 		const minTurnMs = typeof block?.minTurnMs === "number" && block.minTurnMs >= 0 ? block.minTurnMs : DEFAULT_SETTINGS.minTurnMs;
+		// 0 is meaningful (the alert is off); anything else negative is not a duration.
+		const waitAlertMs =
+			typeof block?.waitAlertMs === "number" && block.waitAlertMs >= 0 ? block.waitAlertMs : DEFAULT_SETTINGS.waitAlertMs;
 		return {
 			workingTimer: typeof block?.workingTimer === "boolean" ? block.workingTimer : DEFAULT_SETTINGS.workingTimer,
 			showTurnDuration:
 				typeof block?.showTurnDuration === "boolean" ? block.showTurnDuration : DEFAULT_SETTINGS.showTurnDuration,
 			minTurnMs,
+			waitAlertMs,
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -70,6 +90,22 @@ export function workingText(elapsedMs: number): string {
 	return `${CONFIG.workingMessage} ${formatDuration(elapsedMs)}`;
 }
 
+/** The working row's text while a question or permission ask has been open for `openMs`. */
+export function waitingText(openMs: number): string {
+	return `${CONFIG.waitingMessage} ${formatDuration(openMs)}`;
+}
+
+/**
+ * What the repeating waitAlertMs notice says. Shares "answer" with
+ * waitingText() so the loud, occasional interruption and the quiet, constant
+ * row read as the same event rather than two different ones — and so it stays
+ * true for an ask-user question, which this same wait covers and which is not
+ * something you "approve".
+ */
+export function waitAlertText(waitedMs: number): string {
+	return `pi has been waiting ${formatDuration(waitedMs)} for your answer`;
+}
+
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	let settings: ElapsedSettings = loadSettings(agentDir);
@@ -79,6 +115,15 @@ export default function (pi: ExtensionAPI) {
 	const waits = new WaitClock();
 	/** The current run's repaint, so a question can freeze the row on the spot. */
 	let paint: (() => void) | undefined;
+	/**
+	 * The live run's context, held only so the ASK/PERMISSION bus handlers below
+	 * — which the EventBus calls with just a payload, no ctx — can reach
+	 * ctx.ui.notify() for the waitAlertMs nag. Set at agent_start, cleared at
+	 * agent_settled/session_start alongside startedAt.
+	 */
+	let runCtx: ExtensionContext | undefined;
+	/** The repeating waitAlertMs notice for the wait currently open, if any. */
+	let waitAlertTimer: ReturnType<typeof setInterval> | undefined;
 
 	pi.registerEntryRenderer<TurnDurationDetails>(ENTRY_TYPE, (entry, _options, theme) =>
 		entry.data ? renderTurnDuration(entry.data, theme) : undefined,
@@ -99,6 +144,39 @@ export default function (pi: ExtensionAPI) {
 		return event?.active === true && event.blocking !== false;
 	};
 
+	const stopWaitAlert = () => {
+		if (!waitAlertTimer) return;
+		clearInterval(waitAlertTimer);
+		waitAlertTimer = undefined;
+	};
+
+	// Escalation for a wait that runs long: a repeating notify plus a terminal
+	// bell, so a prompt does not depend on someone happening to glance at the
+	// live row. Started once per open wait (the caller checks `waits.waiting`
+	// before calling waits.open(), so a second announcement on an already-open
+	// wait — same shared-channel hazard the comment below describes — cannot
+	// restart the interval early). Guarded on ctx.hasUI for the same reason
+	// clearWorkingMessage is: a context without dialog-capable UI has nothing
+	// to notify(), and no terminal in front of a person to ring a bell at.
+	const startWaitAlert = () => {
+		if (settings.waitAlertMs <= 0 || !runCtx?.hasUI) return;
+		const ctx = runCtx;
+		waitAlertTimer = setInterval(() => {
+			// The wait should already be closed out by stopWaitAlert() before this
+			// can fire stale, but a wait really is what is being reported on, so
+			// checking again costs nothing and guards against a future caller that
+			// forgets to stop the timer on close.
+			if (!waits.waiting) return;
+			process.stdout.write("\u0007"); // terminal bell — audible even in a background pane
+			try {
+				ctx.ui.notify(waitAlertText(waits.openWaitMs(Date.now())), "warning");
+			} catch {
+				/* a replaced session's context throws from every member */
+			}
+		}, settings.waitAlertMs);
+		(waitAlertTimer as { unref?: () => void }).unref?.();
+	};
+
 	// A prompt stops the agent dead until someone answers. The counter holds at
 	// whatever it read when the prompt appeared and picks up from there, so it
 	// keeps meaning "how long the agent has been working" rather than turning
@@ -106,11 +184,14 @@ export default function (pi: ExtensionAPI) {
 	// rather than waiting for the next tick means the row stops and starts on the
 	// keystroke that opens and closes the prompt.
 	const pause = () => {
+		const alreadyOpen = waits.waiting;
 		waits.open(Date.now());
 		paint?.();
+		if (!alreadyOpen) startWaitAlert();
 	};
 	const resume = () => {
 		waits.close(Date.now());
+		stopWaitAlert();
 		paint?.();
 	};
 
@@ -145,8 +226,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		settings = loadSettings(agentDir);
 		startedAt = undefined;
+		runCtx = undefined;
 		waits.reset();
 		stopTicker();
+		stopWaitAlert();
 		clearWorkingMessage(ctx);
 	});
 
@@ -156,6 +239,11 @@ export default function (pi: ExtensionAPI) {
 		if (startedAt !== undefined) return;
 		startedAt = Date.now();
 		waits.reset();
+		// Captured unconditionally, ahead of the workingTimer/hasUI early return
+		// below: waitAlertMs is its own setting and must work even with the live
+		// row turned off, so pause() needs a ctx to notify() with regardless of
+		// whether this run sets up a painter.
+		runCtx = ctx;
 		if (!settings.workingTimer || !ctx.hasUI) return;
 
 		// Held locally as well as published, because stopTicker() clears the
@@ -165,7 +253,13 @@ export default function (pi: ExtensionAPI) {
 		const painter = () => {
 			if (startedAt === undefined) return;
 			try {
-				ctx.ui.setWorkingMessage(workingText(workedMs(startedAt, Date.now(), waits)));
+				const now = Date.now();
+				// While a question or permission ask is open, show its own live
+				// clock instead of the turn counter — see the file header for why
+				// a frozen row here is the whole problem this extension now fixes.
+				ctx.ui.setWorkingMessage(
+					waits.waiting ? waitingText(waits.openWaitMs(now)) : workingText(workedMs(startedAt, now, waits)),
+				);
 			} catch {
 				alive = false;
 				stopTicker(); // the session went away mid-run
@@ -186,7 +280,12 @@ export default function (pi: ExtensionAPI) {
 		// any other.
 		const durationMs = started === undefined ? 0 : workedMs(started, Date.now(), waits);
 		stopTicker();
+		// A wait left open by an abort has no resume() coming to stop this, so it
+		// is stopped here too — otherwise the nag would keep firing for a turn
+		// that already ended.
+		stopWaitAlert();
 		startedAt = undefined;
+		runCtx = undefined;
 		clearWorkingMessage(ctx);
 		if (started === undefined) return;
 

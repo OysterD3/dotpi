@@ -113,6 +113,19 @@ export class GoalState {
 	private goal: ActiveGoal | undefined;
 	private evaluating = false;
 
+	/**
+	 * Whether the condition needs to be re-asserted to the model on the next
+	 * turn. Two events arm this, both in index.ts: `session_compact` (a
+	 * compaction is free to summarize the goalSetInstruction message that first
+	 * told the model about the check into prose with no directive weight), and
+	 * a `session_start` that restores an active goal via restoreGoal (the model
+	 * never sees the custom entry it is read from — see this file's header
+	 * comment on why custom entries stay out of LLM context). The next
+	 * `before_agent_start` consumes it exactly once, so a session hitting
+	 * neither event never pays for it.
+	 */
+	private pendingReassertion = false;
+
 	constructor(private readonly pi: ExtensionAPI) {}
 
 	get(): ActiveGoal | undefined {
@@ -133,8 +146,29 @@ export class GoalState {
 		this.evaluating = false;
 	}
 
-	/** Adopt state recovered from a resumed session without re-persisting it. */
+	/** Arm the reassertion. A no-op with no active goal: there is nothing to reassert. */
+	markPendingReassertion(): void {
+		if (this.goal) this.pendingReassertion = true;
+	}
+
+	/** Consume the flag. Always clears it, so a turn that reads it pays at most once. */
+	consumePendingReassertion(): boolean {
+		const pending = this.pendingReassertion;
+		this.pendingReassertion = false;
+		return pending;
+	}
+
+	/**
+	 * Adopt state recovered from a resumed session without re-persisting it.
+	 *
+	 * Always clears any pending reassertion first: this call replaces the goal
+	 * wholesale with a different session's state (or none), and a flag armed by
+	 * whatever was active before belongs to a goal that, as far as this method
+	 * is concerned, no longer exists. index.ts re-arms it right after, if the
+	 * newly adopted goal warrants it.
+	 */
 	adopt(goal: ActiveGoal | undefined): void {
+		this.pendingReassertion = false;
 		this.goal = goal;
 	}
 
@@ -164,6 +198,10 @@ export class GoalState {
 		const previous = this.goal;
 		if (previous) {
 			this.goal = undefined;
+			// A goal that no longer exists has nothing to reassert; without this a
+			// compaction just before `/goal clear` would reassert a condition the
+			// user just turned off.
+			this.pendingReassertion = false;
 			this.persist(false, previous);
 		}
 		return previous;

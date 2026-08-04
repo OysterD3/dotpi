@@ -12,7 +12,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AUTO, CYCLE, nextMode, type Mode } from "./config.ts";
+import { AUTO, CONFIG, CYCLE, nextMode, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy } from "./decide.ts";
 import { buildQuestion, elide, neutralizeFence, stripInvisible, subjectOf } from "./prompt.ts";
 import { parseRules } from "./rules.ts";
@@ -365,6 +365,49 @@ eq("and both are reported", bad.warnings.filter((line) => line.includes("permiss
 // The defaults must not have been mutated by any of the loads above.
 eq("BUILTIN.auto.onError is untouched", BUILTIN.auto.onError, "allow");
 eq("BUILTIN.auto.model is untouched", BUILTIN.auto.model, undefined);
+
+// ---------------------------------------------------------------------------
+console.log("permissions.promptTimeoutMs — the human-prompt deadline, not auto's");
+
+writeProject({ permissions: { promptTimeoutMs: 60_000 } });
+eq("a positive timeout is accepted", loadSettings(agentDir, project, true).settings.promptTimeoutMs, 60_000);
+
+// Unlike auto.timeoutMs (tested above, where 0 is rejected because it would
+// fail every classifier call instantly), 0 is this field's documented way to
+// ask for the old unbounded wait back and must be accepted, not rejected.
+writeProject({ permissions: { promptTimeoutMs: 0 } });
+eq("zero is accepted — it means wait forever, not instant failure", loadSettings(agentDir, project, true).settings.promptTimeoutMs, 0);
+
+writeProject({ permissions: { promptTimeoutMs: -1 } });
+const negativeTimeout = loadSettings(agentDir, project, true);
+eq("a negative timeout falls back to the default", negativeTimeout.settings.promptTimeoutMs, CONFIG.promptTimeoutMs);
+check(
+	"and is reported",
+	negativeTimeout.warnings.some((line) => line.includes("promptTimeoutMs")),
+	negativeTimeout.warnings.join(" | "),
+);
+
+writeProject({ permissions: { promptTimeoutMs: "five minutes" } });
+const stringTimeout = loadSettings(agentDir, project, true);
+eq("a non-numeric timeout falls back to the default", stringTimeout.settings.promptTimeoutMs, CONFIG.promptTimeoutMs);
+check(
+	"and is reported",
+	stringTimeout.warnings.some((line) => line.includes("promptTimeoutMs")),
+	stringTimeout.warnings.join(" | "),
+);
+
+// promptTimeoutMs is not among the fields the untrusted branch hand-picks
+// (deny, ask, a tightening defaultMode) — it falls through to whatever the
+// user's file or BUILTIN says, same as destructiveOverridesAllow and
+// askWithoutUi already do.
+writeProject({ permissions: { promptTimeoutMs: 1 } });
+eq(
+	"an untrusted project's promptTimeoutMs is ignored entirely",
+	loadSettings(agentDir, project, false).settings.promptTimeoutMs,
+	CONFIG.promptTimeoutMs,
+);
+
+eq("BUILTIN.promptTimeoutMs is untouched", BUILTIN.promptTimeoutMs, CONFIG.promptTimeoutMs);
 
 // ---------------------------------------------------------------------------
 console.log("the destructive table is not switched off by tightening the mode");

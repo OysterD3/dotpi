@@ -77,3 +77,32 @@ export class UltracodeMode {
 		this.turnsSinceReminder = state.turnsSinceReminder;
 	}
 }
+
+/**
+ * True when a message of the given customType appears in the branch more
+ * recently than the last real user prompt — a "message" entry whose role is
+ * "user"; every reminder this extension injects rides in as role "custom"
+ * instead, so those never trip the scan.
+ *
+ * This exists because a background workflow's result is delivered via
+ * pi.sendMessage's triggerTurn or followUp options, and BOTH bypass the one
+ * call site that fires before_agent_start: agent-session.js's `.prompt()`.
+ * `sendCustomMessage`'s triggerTurn branch calls `_runAgentPrompt` directly,
+ * and the followUp branch just queues onto the turn already running — neither
+ * reaches `.prompt()`. So the turn that reacted to the result never got a
+ * before_agent_start pass of its own, and never carried a keyword or mode
+ * reminder either. This is how the NEXT real turn can tell one happened since
+ * the user last typed anything, and treat itself as a continuation of an
+ * opted-in task rather than a cold, unopted-in start.
+ */
+export function hasMessageSinceLastUserTurn(
+	branch: Array<{ type: string; customType?: string; message?: { role?: string } }>,
+	customType: string,
+): boolean {
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i]!;
+		if (entry.type === "custom_message" && entry.customType === customType) return true;
+		if (entry.type === "message" && entry.message?.role === "user") return false;
+	}
+	return false;
+}

@@ -21,7 +21,7 @@
  *
  *     jiti agent/extensions/context-diet/context-diet.test.ts
  */
-import { DEFAULT_SETTINGS, resolveSettings } from "./config.ts";
+import { CONFIG, DEFAULT_SETTINGS, resolveSettings } from "./config.ts";
 import {
 	applyDiet,
 	assistantKey,
@@ -29,6 +29,8 @@ import {
 	collectReasoningDrops,
 	describeCall,
 	dietLine,
+	escalationNotice,
+	escalationReminder,
 	type EvictionRecord,
 	findSupersededReads,
 	formatBytes,
@@ -257,6 +259,64 @@ check(
 	);
 }
 
+console.log("\n--- pinning ---");
+{
+	const messages = conversation(10);
+	const pinned = new Set(["call_0", "call_2"]);
+	const ids = collectCandidates(messages, new Map(), SETTINGS, indexCallLabels(messages), new Set(), pinned).map((c) => c.toolCallId);
+	check("pinned results are never candidates", [ids.includes("call_0"), ids.includes("call_2")], [false, false]);
+	check("unpinned candidates are unaffected", ids, ["call_1", "call_3", "call_4", "call_5"]);
+}
+{
+	// The motivating case: a reference screenshot outlives the image sweep,
+	// which normally reaches inside the recency window and spares only the
+	// newest keepImages — a pin has to override that, not just recency.
+	const messages = conversation(6, 300, { image: 200_000 });
+	const wide = { ...SETTINGS, keepRecentResults: 8, keepImages: 2 };
+	const pinned = new Set(["call_0"]);
+	const ids = collectCandidates(messages, new Map(), wide, indexCallLabels(messages), new Set(), pinned).map((c) => c.toolCallId);
+	check("a pinned screenshot survives the image sweep", ids.includes("call_0"), false);
+	check("its unpinned neighbour still goes", ids.includes("call_1"), true);
+}
+{
+	// planDiet threads pinned through to collectCandidates end to end.
+	const messages = conversation(40);
+	const pinned = new Set(["call_0"]);
+	const plan = planDiet({ messages, evicted: new Map(), currentTokens: 260_000, contextWindow: 272_000, settings: SETTINGS, pinned })!;
+	check("planDiet never evicts a pinned call", plan.records.some((r) => r.toolCallId === "call_0"), false);
+	check("the next oldest unpinned call goes instead", plan.records[0].toolCallId, "call_1");
+}
+{
+	// Omitting pinned entirely (every pre-existing call site) must behave
+	// exactly as before pinning existed.
+	const messages = conversation(40);
+	const plan = planDiet({ messages, evicted: new Map(), currentTokens: 260_000, contextWindow: 272_000, settings: SETTINGS });
+	check("no pinned argument means no pins", plan!.records[0].toolCallId, "call_0");
+}
+
+console.log("\n--- escalation wording ---");
+{
+	const reminder = escalationReminder(3, 221_000);
+	check("wrapped as a hidden system reminder", reminder.startsWith("<system-reminder>\n") && reminder.endsWith("\n</system-reminder>"), true);
+	check(
+		"states the round count and approximate tokens",
+		reminder,
+		"<system-reminder>\n" +
+			"Context has been trimmed 3 times this turn (~221k tokens dropped). You are reading faster than the window holds. " +
+			"Change strategy: delegate self-contained subtasks (if the Workflow tool is available), or finish and verify the " +
+			"current item before opening new files. Re-reading dropped results will re-trigger trimming.\n" +
+			"</system-reminder>",
+	);
+	// No singular/plural branch, unlike dietLine — the spec's wording is a fixed
+	// template and escalateAfterRounds defaults to 3, so N is never 1 in practice.
+	check("count is substituted verbatim, no plural handling", escalationReminder(1, 500).includes("trimmed 1 times this turn"), true);
+}
+check(
+	"notice is shorter and human-facing",
+	escalationNotice(3, 221_000),
+	"Context diet escalated — trimmed 3× this turn (~221k dropped so far). Told the model to change strategy.",
+);
+
 console.log("\n--- invariant: pairing survives ---");
 {
 	const messages = conversation(10);
@@ -313,6 +373,16 @@ check("wrong type falls back", resolveSettings({ keepRecentResults: "lots" }).ke
 // file does not describe.
 check("inverted ratios rejected together", resolveSettings({ highWaterRatio: 0.4, targetRatio: 0.8 }), DEFAULT_SETTINGS);
 check("enabled: false is honoured", resolveSettings({ enabled: false }).enabled, false);
+check("escalateAfterRounds default", DEFAULT_SETTINGS.escalateAfterRounds, 3);
+check("valid escalateAfterRounds taken", resolveSettings({ escalateAfterRounds: 5 }).escalateAfterRounds, 5);
+// Unlike keepRecentReasoning, 0 is a real, documented setting here ("off"), not
+// a self-defeating one — it must survive resolveSettings rather than fall back.
+check("escalateAfterRounds: 0 is honoured (off)", resolveSettings({ escalateAfterRounds: 0 }).escalateAfterRounds, 0);
+check(
+	"negative escalateAfterRounds falls back",
+	resolveSettings({ escalateAfterRounds: -1 }).escalateAfterRounds,
+	DEFAULT_SETTINGS.escalateAfterRounds,
+);
 
 console.log("\n--- across calls ---");
 {
@@ -366,6 +436,119 @@ console.log("\n--- across calls ---");
 	diet.reset();
 	check("reset forgets it", diet.size, 0);
 	check("and the request goes through whole", diet.step({ messages, contextWindow: 272_000, reportedTokens: 50_000 }), {});
+}
+
+console.log("\n--- round counters and escalation ---");
+{
+	// 100 calls so there is enough headroom for several back-to-back rounds:
+	// with keepRecentResults: 4 each round evicts 12 (verified below), and
+	// reportedTokens is pinned above the high-water mark on every call to
+	// simulate the pathological case this feature exists for — a context that
+	// keeps re-inflating faster than any one round can bring it down for good.
+	const settings = { ...SETTINGS, escalateAfterRounds: 3 };
+	const diet = createDiet(settings);
+	const messages = conversation(100);
+
+	const rounds: { dropped?: number; roundsThisTurn: number; escalation?: unknown }[] = [];
+	for (let i = 0; i < 8; i++) {
+		const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+		rounds.push({ dropped: step.entry?.dropped, roundsThisTurn: diet.roundsThisTurn, escalation: step.escalation });
+	}
+
+	check("every call in range finds a fresh round", rounds.every((r) => r.dropped === 12), true);
+	check("roundsThisTurn counts every round, not just the escalating one", rounds.map((r) => r.roundsThisTurn), [1, 2, 3, 4, 5, 6, 7, 8]);
+	check("roundsThisSession tracks the same total with nothing to reset it", diet.roundsThisSession, 8);
+	check("no escalation before the threshold", [rounds[0].escalation, rounds[1].escalation], [undefined, undefined]);
+	check("escalation fires exactly on the round that reaches the threshold", rounds[2].escalation, { roundsThisTurn: 3, tokensThisTurn: 358_740 });
+	// Latched: the turn keeps firing rounds past the threshold, but the model
+	// is told once, not on every round after — see escalatedThisTurn in
+	// session.ts for why re-telling it every round would just be more noise.
+	check("no repeat escalation later in the same turn", rounds.slice(3).every((r) => r.escalation === undefined), true);
+}
+{
+	// Running out of candidates stops producing rounds, but does not touch the
+	// counters already banked — a turn that legitimately exhausted its
+	// evictable results is not a turn escalation should un-fire for.
+	const settings = { ...SETTINGS, escalateAfterRounds: 3 };
+	const diet = createDiet(settings);
+	const messages = conversation(100);
+	for (let i = 0; i < 9; i++) diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	const before = diet.roundsThisTurn;
+	const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	check("no candidates left, no new round", step.entry, undefined);
+	check("roundsThisTurn does not move when nothing fires", diet.roundsThisTurn, before);
+}
+{
+	// escalateAfterRounds: 0 disables the reminder outright, however many
+	// rounds fire — the "0 = off" contract from resolveSettings.
+	const settings = { ...SETTINGS, escalateAfterRounds: 0 };
+	const diet = createDiet(settings);
+	const messages = conversation(100);
+	const escalations: unknown[] = [];
+	for (let i = 0; i < 5; i++) escalations.push(diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 }).escalation);
+	check("off means never, no matter how many rounds fire", escalations.every((e) => e === undefined), true);
+}
+{
+	// turnBoundary() zeroes the per-turn half only — roundsThisSession and the
+	// evicted set both belong to the whole session and must survive it.
+	const settings = { ...SETTINGS, escalateAfterRounds: 3 };
+	const diet = createDiet(settings);
+	const messages = conversation(100);
+	for (let i = 0; i < 3; i++) diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	check("threshold reached once", diet.roundsThisTurn, 3);
+	diet.turnBoundary();
+	check("roundsThisTurn is zeroed", diet.roundsThisTurn, 0);
+	check("roundsThisSession is untouched", diet.roundsThisSession, 3);
+	check("the evicted set is untouched", diet.size, 36);
+
+	// A fresh turn gets its own escalation: the latch reset along with the count.
+	const escalations: unknown[] = [];
+	for (let i = 0; i < 3; i++) escalations.push(diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 }).escalation);
+	check("no escalation for the first two rounds of the new turn", [escalations[0], escalations[1]], [undefined, undefined]);
+	check("escalation fires again once the new turn reaches the threshold", escalations[2], { roundsThisTurn: 3, tokensThisTurn: 358_740 });
+	check("roundsThisSession keeps accumulating across the boundary", diet.roundsThisSession, 6);
+}
+{
+	// reset() clears the round/escalation state along with evicted/reasoning —
+	// it fires when the message list underneath is replaced wholesale, and a
+	// round count against the old branch describes nothing on the new one.
+	const diet = createDiet({ ...SETTINGS, escalateAfterRounds: 3 });
+	const messages = conversation(100);
+	for (let i = 0; i < 3; i++) diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	diet.reset();
+	check("reset zeroes every round counter", [diet.roundsThisTurn, diet.roundsThisSession], [0, 0]);
+}
+
+console.log("\n--- pin cap ---");
+{
+	const diet = createDiet(SETTINGS);
+	for (let i = 0; i < CONFIG.maxPinned; i++) diet.pin(`call_${i}`);
+	check("pinning up to the cap keeps every pin", diet.pinnedSize, CONFIG.maxPinned);
+	diet.pin(`call_${CONFIG.maxPinned}`);
+	check("one more pin holds the set at the cap, not below it or above it", diet.pinnedSize, CONFIG.maxPinned);
+
+	const messages = conversation(40);
+	const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 })!;
+	const stubbedIds = new Set(
+		(step.messages ?? []).filter((m: Msg) => m.role === "toolResult" && m.content[0].text.length < 200).map((m: Msg) => m.toolCallId),
+	);
+	check("the oldest pin was evicted from the SET and is droppable again", stubbedIds.has("call_0"), true);
+	check("the still-pinned calls, call_1 through the cap, all survive", [...Array(CONFIG.maxPinned).keys()].every((i) => !stubbedIds.has(`call_${i + 1}`)), true);
+}
+{
+	// Re-pinning an already-pinned id must not cost it a slot — otherwise a
+	// producer that pins the same result twice would silently evict something
+	// else for no new protection.
+	const diet = createDiet(SETTINGS);
+	for (let i = 0; i < CONFIG.maxPinned; i++) diet.pin(`call_${i}`);
+	diet.pin("call_0");
+	check("re-pinning an existing id is a no-op on size", diet.pinnedSize, CONFIG.maxPinned);
+}
+{
+	const diet = createDiet(SETTINGS);
+	diet.pin("call_0");
+	diet.reset();
+	check("reset clears the pin set too", diet.pinnedSize, 0);
 }
 
 console.log("\n--- reasoning drops (flag off by default) ---");

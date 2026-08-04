@@ -97,6 +97,15 @@ const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhi
 
 export const RESULT_MESSAGE = "workflow-result";
 
+/**
+ * The tool's own registered name, pulled out to a constant because index.ts
+ * now needs to recognise it too — in ToolCallEvent.toolName (the live edit-
+ * streak counter) and in a resumed branch's toolResult entries (streak.ts's
+ * restoreEditStreak). A literal duplicated in both files would silently
+ * desync if this one were ever renamed.
+ */
+export const WORKFLOW_TOOL_NAME = "workflow";
+
 export interface WorkflowToolOptions {
 	registry: RunRegistry;
 	agentDir: string;
@@ -304,7 +313,7 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 	});
 
 	pi.registerTool({
-		name: "workflow",
+		name: WORKFLOW_TOOL_NAME,
 		label: "Workflow",
 		description: WORKFLOW_DESCRIPTION,
 		promptSnippet: WORKFLOW_PROMPT_SNIPPET,

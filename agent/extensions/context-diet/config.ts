@@ -18,6 +18,14 @@ export const CONFIG = {
 	charsPerToken: 4,
 	/** Longest tool argument echoed into a stub, before an ellipsis. */
 	labelChars: 64,
+	/**
+	 * Ceiling on the pin set (see index.ts's "context-diet:pin" channel). A pin
+	 * exempts a result from every eviction rule, including the keepImages
+	 * sweep, so an unbounded set would let one chatty producer exempt the
+	 * whole conversation. Capped from the SET, not from context: the oldest
+	 * pin just becomes evictable again, nothing already in context is touched.
+	 */
+	maxPinned: 8,
 } as const;
 
 export interface DietSettings {
@@ -67,6 +75,21 @@ export interface DietSettings {
 	dropOldReasoning: boolean;
 	/** Newest N assistant messages keep their reasoning when the flag is on. */
 	keepRecentReasoning: number;
+	/**
+	 * Diet rounds fired in one turn before the model is told a round is
+	 * happening. 0 disables the reminder.
+	 *
+	 * A stub is deliberately silent — see diet.ts on why it must render
+	 * byte-identically every time — so nothing in the eviction itself ever
+	 * tells the model a round ran. That is fine for one round. It stops being
+	 * fine when a turn re-reads its way through several: each stub still says
+	 * "re-run the tool if you still need it", which is an invitation to read
+	 * right back into a window that is about to fill up again. This is the
+	 * one place the extension breaks silence, and only after a pattern, not a
+	 * single round — a session that never reaches the threshold sees nothing
+	 * new.
+	 */
+	escalateAfterRounds: number;
 }
 
 export const DEFAULT_SETTINGS: DietSettings = {
@@ -80,6 +103,7 @@ export const DEFAULT_SETTINGS: DietSettings = {
 	minResultBytes: 512,
 	dropOldReasoning: false,
 	keepRecentReasoning: 10,
+	escalateAfterRounds: 3,
 };
 
 /**
@@ -117,5 +141,8 @@ export function resolveSettings(raw: unknown): DietSettings {
 		// Floor of 1: keeping zero reasoning would strip the message the model is
 		// mid-thought on, which no configuration should be able to say.
 		keepRecentReasoning: Math.floor(num("keepRecentReasoning", 1, 1000)),
+		// Floor of 0: unlike keepRecentReasoning, "off" is a valid, documented
+		// choice here, not a self-defeating one.
+		escalateAfterRounds: Math.floor(num("escalateAfterRounds", 0, 1000)),
 	};
 }

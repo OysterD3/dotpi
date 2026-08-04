@@ -46,6 +46,22 @@ export interface ShellMeta {
 	exitCode?: number | null;
 	/** Set when the kill came from the tool call's timeout parameter. */
 	timedOut?: boolean;
+	/**
+	 * Set once this shell's exit has actually reached the model — not merely
+	 * been handed to sendMessage. A followUp queued mid-turn can be purged
+	 * whole by an Escape/abort before the model ever sees it, so this stays
+	 * false for that path at delivery time; only an idle delivery (which
+	 * cannot be queued behind a live turn), a tool result that already
+	 * narrated the exit itself (kill_shell, bash_output), or the
+	 * before_agent_start handler may set it. before_agent_start sets it two
+	 * ways: by finding this shell's followUp already persisted in the session
+	 * branch as a delivered custom_message (proof it WAS drained and seen —
+	 * the common case), or, failing that, by its own reminder injection
+	 * (spliced into the next turn unconditionally, never queued, so listing
+	 * the shell there IS delivery). See index.ts's deliverExit and
+	 * before_agent_start handler, and tools.ts's kill_shell/bash_output.
+	 */
+	exitAnnounced?: boolean;
 }
 
 /** Anything but running. */
@@ -91,6 +107,15 @@ export interface ShellJob {
 export interface ShellConfig {
 	shellPath?: string;
 	commandPrefix?: string;
+	/**
+	 * Foreground-only: kill a command with no explicit `timeout` after this
+	 * many ms of zero new output. 0 disables it. Read from settings.json's
+	 * namespaced `backgroundShell` block (see settings.ts) — unlike
+	 * shellPath/commandPrefix, an untrusted project's override is dropped
+	 * rather than honoured. undefined here means "not set", and the default
+	 * lives in CONFIG so tools.ts is the one place that falls back to it.
+	 */
+	foregroundIdleKillMs?: number;
 }
 
 /** pi's shell resolution, minus the Windows arm this Mac will never take. */

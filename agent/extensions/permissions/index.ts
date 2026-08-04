@@ -248,26 +248,79 @@ export default function (pi: ExtensionAPI) {
 		// and no-UI paths have had their say. Anything wanting to surface the
 		// wait (the cmux bridge, a desktop notifier) subscribes to this rather
 		// than reimplementing the decision. `permissions:answered` closes it.
-		pi.events.emit("permissions:ask", {
-			tool: event.toolName,
-			target,
-			reason: decision.reason,
-			findings: findings.map((finding) => finding.id),
-			sessionId: ctx.sessionManager.getSessionId() ?? undefined,
-			cwd: ctx.cwd,
-		});
+		const announceAsk = () =>
+			pi.events.emit("permissions:ask", {
+				tool: event.toolName,
+				target,
+				reason: decision.reason,
+				findings: findings.map((finding) => finding.id),
+				sessionId: ctx.sessionManager.getSessionId() ?? undefined,
+				cwd: ctx.cwd,
+			});
+		announceAsk();
 
 		const options = buildOptions(event.toolName, target, decision);
+
+		/**
+		 * The deadline this prompt races against.
+		 *
+		 * A benchmark of this exact harness recorded four silent stalls of
+		 * 9.5-16.8 minutes and one 6h12m overnight hang on the `ctx.ui.select`
+		 * below, with no one at the keyboard and no way for the call to give up
+		 * on its own — the human eventually unstuck a *different* wedged prompt
+		 * with Escape and took an unrelated 3-hour turn down with it. 0 keeps
+		 * today's unbounded wait for anyone who deliberately wants it.
+		 *
+		 * `signal` is the one lever `ExtensionUIDialogOptions` gives an extension
+		 * to close a dialog it does not own — verified against both the
+		 * interactive and RPC implementations, which resolve the same
+		 * `undefined` an Escape produces and tear the dialog down. That shared
+		 * result is exactly why the deadline is tracked in `timedOut` here
+		 * rather than inferred from the resolved choice: `undefined` alone
+		 * cannot tell a bored deadline from a deliberate no.
+		 */
+		const timeoutMs = policy.settings.promptTimeoutMs;
+		const controller = new AbortController();
+		let timedOut = false;
+		let halfTimer: ReturnType<typeof setTimeout> | undefined;
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+
+		if (timeoutMs > 0) {
+			// One repeat at the midpoint, not a recurring nag — elapsed's own
+			// waitAlertMs already escalates a long wait on its own schedule. This
+			// is only insurance for a notifier that missed the opening edge
+			// (subscribed after it fired, dropped a push) against the prompt
+			// giving up with them never having heard about it at all.
+			halfTimer = setTimeout(announceAsk, timeoutMs / 2);
+			deadlineTimer = setTimeout(() => {
+				timedOut = true;
+				controller.abort();
+			}, timeoutMs);
+		}
+
 		let choice: string | undefined;
 		try {
-			choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label));
+			choice = await ctx.ui.select(promptTitle(event.toolName, target, decision), options.map((o) => o.label), {
+				signal: controller.signal,
+			});
 		} finally {
+			if (halfTimer !== undefined) clearTimeout(halfTimer);
+			if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
 			// The closing edge of the same wait. Without it a subscriber can only
 			// learn that the agent stopped, never that it started again — which is
 			// why the turn clock could exclude a question but not an approval. In a
 			// finally so a thrown or aborted prompt still releases it.
 			pi.events.emit("permissions:answered", { tool: event.toolName });
 		}
+
+		// The deadline won the race. Blocking, not allowing, is the only safe
+		// guess with nobody confirmed to be watching — and the reason has to be
+		// one the model can act on unattended, or it just repeats the same call
+		// and stalls again on the very next prompt.
+		if (timedOut) {
+			return { block: true, reason: timeoutReason(timeoutMs) };
+		}
+
 		const picked = options.find((option) => option.label === choice);
 
 		// Escape and an explicit Block both mean no. Failing closed is the only
@@ -489,6 +542,7 @@ export default function (pi: ExtensionAPI) {
 					`Rules: ${policy.deny.length} deny, ${policy.ask.length} ask, ${policy.allow.length} allow`,
 					`Destructive overrides allow: ${settings.destructiveOverridesAllow}`,
 					`Without a UI, "ask" becomes: ${settings.askWithoutUi}`,
+					`Prompt timeout: ${settings.promptTimeoutMs === 0 ? "none — waits forever" : `${formatDuration(settings.promptTimeoutMs)} (blocks on expiry)`}`,
 					...(settings.defaultMode === "auto"
 						? [
 								`Auto classifier: ${settings.auto.model ?? "the session model"} — ${stats.calls} call(s) this session, ${formatCost(stats.cost)} (/permissions auto)`,
@@ -615,4 +669,37 @@ function promptTitle(tool: string, target: string, decision: Decision): string {
 	if (reasons.length > listed.length) listed.push(`  • …and ${reasons.length - listed.length} more`);
 
 	return `Approve ${tool}?\n\n  ${shown}\n\n${listed.join("\n")}`;
+}
+
+/** "5m", "1m 30s", "45s" — whichever units are non-zero, floored to the second. */
+export function formatDuration(ms: number): string {
+	const totalSeconds = Math.floor(ms / 1000);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+
+	const parts: string[] = [];
+	if (hours > 0) parts.push(`${hours}h`);
+	if (minutes > 0) parts.push(`${minutes}m`);
+	// Always show seconds unless something coarser already did — "5m" alone
+	// beats "5m 0s", but a sub-minute timeout must still print something.
+	if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+	return parts.join(" ");
+}
+
+/**
+ * The block reason handed to the model when the deadline won the race in the
+ * `tool_call` handler above, instead of a human.
+ *
+ * Actionable rather than a bare "timed out". The benchmark this setting is a
+ * response to shows what an unactionable one does: the model retried the
+ * identical blocked command across every stall, and the eventual Escape meant
+ * to unstick it landed on a *different* prompt and killed a 3-hour turn. Each
+ * clause heads off one way that repeats the same failure — retrying verbatim,
+ * a `pkill` that can catch more than intended, an `rm -rf` that can too — and
+ * "defer this step" gives it a way to make progress without a human at all,
+ * which is the actual point of not blocking forever.
+ */
+export function timeoutReason(timeoutMs: number): string {
+	return `Permission prompt timed out after ${formatDuration(timeoutMs)} with nobody at the keyboard. Do not retry this exact command. Kill by exact PID from your own pidfile instead of pkill; delete specific named files instead of rm -rf; or defer this step and continue other work.`;
 }

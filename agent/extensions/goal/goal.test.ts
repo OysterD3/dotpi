@@ -2,27 +2,33 @@
  * Unit coverage for the /goal pure logic: verdict parsing, the too-long
  * detector, evaluator model selection, transcript budgeting, goal state and its
  * persistence round-trip, the settings loader, and the render helpers whose
- * wording is load-bearing.
+ * wording is load-bearing. Also covers the autoCapture and compaction/resume
+ * reassertion additions: extraction-response parsing, the capture trigger
+ * gate, the pending-reassertion flag's transitions, and both features' wiring.
  *
  * Run it after editing this extension:
  *     pnpm dlx jiti agent/extensions/goal/goal.test.ts
  *
  * pi only auto-loads `index.ts` from an extension folder, so this file sits here
- * harmlessly next to the thing it tests. The network path (a real evaluator
- * call) is not exercised offline; `evaluate()` is covered through its pure
- * parts — selectModel, isTooLong, toVerdict, extractJson.
+ * harmlessly next to the thing it tests. The network path (a real evaluator or
+ * extractor call) is not exercised offline; `evaluate()` and `extractCriteria()`
+ * are covered through their pure parts — selectModel, isTooLong, toVerdict,
+ * toExtraction, extractJson — and their wiring is exercised with no model
+ * selected, so the network call fails fast on "no model selected" rather than
+ * ever leaving the process.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isCaptureCandidate } from "./capture.ts";
 import { CONFIG } from "./config.ts";
-import { extractJson, selectModel, toVerdict } from "./judge.ts";
+import { extractJson, selectModel, toExtraction, toVerdict } from "./judge.ts";
 import { resolveModel } from "./model.ts";
 import { formatDuration, formatTokens, oneLine, plural, statsLine, summaryLine } from "./render.ts";
 import { loadSettings } from "./settings.ts";
 import { goalElapsed, GoalState, restoreGoal, tokensSpent, type GoalEntryData } from "./state.ts";
 import { buildSections, buildTranscript, fitSections } from "./transcript.ts";
-import { TRUNCATION_NOTICE } from "./prompts.ts";
+import { reassertInstruction, systemReminder, TRUNCATION_NOTICE } from "./prompts.ts";
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -72,6 +78,28 @@ check("not an object is an error", toVerdict("nope").kind, "error");
 check("null is an error", toVerdict(null).kind, "error");
 check("string ok is an error", toVerdict({ ok: "true", reason: "x" }).kind, "error");
 
+console.log("\n--- goal.autoCapture: extraction-response parsing ---");
+check("a stated condition is criteria", toExtraction({ criteria: "tests pass" }), {
+	kind: "criteria",
+	criteria: "tests pass",
+});
+check("null criteria means nothing to capture", toExtraction({ criteria: null }), { kind: "none" });
+check("surrounding whitespace is trimmed", toExtraction({ criteria: "  tests pass  " }), {
+	kind: "criteria",
+	criteria: "tests pass",
+});
+// A blank string means the same thing null does — err toward null must not
+// become "set a goal with an empty condition" by accident.
+check("a blank string is treated as null", toExtraction({ criteria: "   " }), { kind: "none" });
+// Anything unreadable is an error, same stance as toVerdict: an extractor
+// response we cannot understand must not be able to set a goal, silently or
+// otherwise.
+check("no 'criteria' field is an error", toExtraction({ reason: "hmm" }).kind, "error");
+check("not an object is an error", toExtraction("nope").kind, "error");
+check("null itself is an error, not none", toExtraction(null).kind, "error");
+check("a number is an error", toExtraction({ criteria: 3 }).kind, "error");
+check("a boolean is an error", toExtraction({ criteria: true }).kind, "error");
+
 console.log("\n--- picking the evaluator model ---");
 const M = (provider: string, id: string, name = id) => ({ provider, id, name, contextWindow: 200_000 });
 const MODELS = [
@@ -110,7 +138,40 @@ check("error mentions goal.model", resolveModel("nope", MODELS), {
 	error: 'goal.model "nope" matched no available model',
 });
 
-// -------------------------------------------------------------- transcript.ts
+console.log("\n--- reassertion wording ---");
+// Pinned exactly: this rides in hidden, with no chance to be asked about, so
+// the wording is the whole of what tells the model the condition is still active.
+check(
+	"names the condition and the mechanism",
+	reassertInstruction("all tests pass"),
+	"Active goal (survives compaction): all tests pass. The stop check will evaluate it — keep working toward it.",
+);
+check("wrapped the way pi's own hidden reminders are", systemReminder("x"), "<system-reminder>\nx\n</system-reminder>");
+
+// -------------------------------------------------------------------- capture.ts
+
+console.log("\n--- goal.autoCapture: which input events are worth the one shot ---");
+const inp = (text: string, over: Record<string, unknown> = {}) => ({ text, source: "interactive" as const, ...over });
+check("a real request is a candidate", isCaptureCandidate(inp("build me a dashboard with a dark mode toggle")), true);
+check("empty text is not", isCaptureCandidate(inp("")), false);
+check("whitespace-only text is not", isCaptureCandidate(inp("   ")), false);
+check("a slash command is not", isCaptureCandidate(inp("/goal all tests pass")), false);
+check("a bang bash line is not", isCaptureCandidate(inp("!ls -la")), false);
+// Too short to plausibly carry an acceptance criterion — the extraction call
+// is the real classifier of "quick question vs. real request"; this only
+// screens out messages that could not possibly qualify.
+check("a greeting below the word floor is not", isCaptureCandidate(inp("hi")), false);
+check("right at the floor qualifies", isCaptureCandidate(inp("a".repeat(CONFIG.minCaptureWords).split("").join(" "))), true);
+check(
+	"one word short of the floor does not",
+	isCaptureCandidate(inp("a".repeat(CONFIG.minCaptureWords - 1).split("").join(" "))),
+	false,
+);
+check("mid-turn steering is not a fresh prompt", isCaptureCandidate(inp("build the whole thing now", { streamingBehavior: "steer" })), false);
+check("a follow-up is not a fresh prompt either", isCaptureCandidate(inp("build the whole thing now", { streamingBehavior: "followUp" })), false);
+check("non-interactive input is not", isCaptureCandidate(inp("build the whole thing now", { source: "rpc" })), false);
+
+// -------------------------------------------------------------------- transcript.ts
 
 console.log("\n--- flattening the transcript ---");
 const msg = (role: string, text: string) => ({ type: "message", message: { role, content: [{ type: "text", text }] } });
@@ -235,6 +296,47 @@ console.log("\n--- goal state ---");
 	check("a malformed entry is not a goal", restoreGoal(malformed), undefined);
 }
 
+console.log("\n--- the pending-reassertion flag ---");
+{
+	const state = new GoalState({ appendEntry: () => {} } as never);
+
+	check("nothing to consume before a goal exists", state.consumePendingReassertion(), false);
+	// Arming with no active goal is a no-op: there is nothing to reassert.
+	state.markPendingReassertion();
+	check("marking without a goal stays unarmed", state.consumePendingReassertion(), false);
+
+	state.set("ship it");
+	state.markPendingReassertion();
+	check("marking with an active goal arms it", state.consumePendingReassertion(), true);
+	check("consuming clears it", state.consumePendingReassertion(), false);
+
+	// Compaction and a restored /resume goal both call this; either should be
+	// able to arm it once, and one before_agent_start should only ever pay once.
+	state.markPendingReassertion();
+	state.markPendingReassertion();
+	check("marking twice is still one reassertion", state.consumePendingReassertion(), true);
+	check("and it does not repeat", state.consumePendingReassertion(), false);
+
+	// Clearing the goal must not leave a stale flag armed for a condition that
+	// no longer exists.
+	state.markPendingReassertion();
+	state.clear();
+	check("clear() drops a pending reassertion", state.consumePendingReassertion(), false);
+
+	// adopt() swaps in a different session's state wholesale; a flag armed for
+	// whatever was active before must not leak into what replaces it.
+	state.set("goal A");
+	state.markPendingReassertion();
+	state.adopt(undefined);
+	check("adopt() drops a stale pending reassertion", state.consumePendingReassertion(), false);
+
+	// adopt() restoring an ACTIVE goal does not arm the flag itself — index.ts
+	// calls markPendingReassertion() right after adopt(), which is what actually
+	// arms it (see the session_start wiring test below).
+	state.adopt({ condition: "goal B", iterations: 0, setAt: Date.now(), elapsedMs: 0 });
+	check("adopt() alone does not arm it", state.consumePendingReassertion(), false);
+}
+
 // --------------------------------------------------------------- settings.ts
 
 console.log("\n--- settings ---");
@@ -250,12 +352,14 @@ console.log("\n--- settings ---");
 	check("defaults with no files", loadSettings(dir, project, true).settings, {
 		model: undefined,
 		maxIterations: CONFIG.maxIterations,
+		autoCapture: false,
 	});
 
 	write(userPath, { goal: { model: "anthropic/claude-haiku-4-5", maxIterations: 5 } });
 	check("the user block is read", loadSettings(dir, project, true).settings, {
 		model: "anthropic/claude-haiku-4-5",
 		maxIterations: 5,
+		autoCapture: false,
 	});
 
 	write(projectPath, { goal: { model: "openrouter/claude-haiku-4-5" } });
@@ -277,6 +381,28 @@ console.log("\n--- settings ---");
 	// 0 is the documented way to ask for no cap at all.
 	write(userPath, { goal: { maxIterations: 0 } });
 	check("zero disables the cap", loadSettings(dir, project, false).settings.maxIterations, 0);
+
+	console.log("\n--- autoCapture ---");
+	check("off by default", loadSettings(dir, project, false).settings.autoCapture, false);
+	write(userPath, { goal: { autoCapture: true } });
+	check("a boolean is read", loadSettings(dir, project, true).settings.autoCapture, true);
+	write(userPath, { goal: { autoCapture: "true" } });
+	check("a non-boolean is rejected", loadSettings(dir, project, false).settings.autoCapture, false);
+	check("and reported", loadSettings(dir, project, false).warnings.some((w) => w.includes("goal.autoCapture")), true);
+
+	// A project turning autoCapture on is exactly the risk the whole block is
+	// trust-gated against: an unattended judge call plus a stop-gate the user
+	// never asked for. It must be dropped, and named, like model and maxIterations.
+	writeFileSync(userPath, JSON.stringify({}));
+	write(projectPath, { goal: { autoCapture: true } });
+	check("an untrusted project cannot turn autoCapture on", loadSettings(dir, project, false).settings.autoCapture, false);
+	check(
+		"and the drop is named",
+		loadSettings(dir, project, false).warnings.some((w) => w.includes("goal.autoCapture")),
+		true,
+	);
+	check("but a trusted one can", loadSettings(dir, project, true).settings.autoCapture, true);
+	rmSync(projectPath);
 
 	writeFileSync(userPath, "{ not json");
 	check("unparseable settings are ignored, not fatal", loadSettings(dir, project, false).settings.maxIterations, CONFIG.maxIterations);
@@ -414,6 +540,163 @@ console.log("\n--- wiring against a fake pi ---");
 	const before = sent.length;
 	await events.get("agent_end")!({ type: "agent_end", messages: [] }, ctx);
 	check("no goal means no evaluation", sent.length, before);
+}
+
+console.log("\n--- goal.autoCapture wiring ---");
+{
+	// A trusted project turns autoCapture on — see settings.ts's trust-gating
+	// tests above for why it has to be trusted to do that at all.
+	const projectDir = mkdtempSync(join(tmpdir(), "goal-capture-"));
+	mkdirSync(join(projectDir, ".pi"), { recursive: true });
+	writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ goal: { autoCapture: true } }));
+
+	const events = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const entries: { customType: string; data?: unknown }[] = [];
+	const notices: [string, string][] = [];
+	const pi = {
+		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		registerEntryRenderer: () => {},
+		appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
+		sendMessage: () => {},
+		on: (event: string, handler: never) => events.set(event, handler),
+	};
+	const ctx = {
+		cwd: projectDir,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 500, contextWindow: 200_000, percent: 1 }),
+		sessionManager: { getBranch: () => [] },
+		ui: { notify: (text: string, level: string) => notices.push([text, level]) },
+		// No model selected anywhere: extractCriteria must fail on
+		// "no model selected" before it ever reaches modelRegistry or the
+		// network, which is what keeps this test offline.
+		model: undefined,
+	};
+
+	const extension = (await import("./index.ts")).default;
+	extension(pi as never);
+	await events.get("session_start")!({}, ctx);
+
+	const input = events.get("input")!;
+	const start = events.get("before_agent_start")!;
+	const turn = async (text: string) => {
+		await input({ type: "input", text, source: "interactive" }, ctx);
+		return start({ type: "before_agent_start", prompt: text, systemPrompt: "" }, ctx);
+	};
+
+	check("a slash command spends nothing", await turn("/goal all tests pass"), undefined);
+	check("and sets no goal", entries.length, 0);
+
+	check("a greeting below the word floor spends nothing", await turn("hi there"), undefined);
+	check("still no goal", entries.length, 0);
+
+	// The first real work-opening prompt: the one shot fires. With no model
+	// selected the extraction call fails fast, and that failure is reported —
+	// not silently swallowed — and does not set a goal.
+	notices.length = 0;
+	await turn("build a login form that validates email and password and submits to the api");
+	check("extraction failure is reported, not silent", notices.at(-1)?.[1], "warning");
+	check("naming autoCapture", notices.at(-1)?.[0]?.includes("goal.autoCapture"), true);
+	check("no goal is set on failure", entries.length, 0);
+
+	// The one shot is spent, whether or not it produced a goal: a second
+	// qualifying message must not try again.
+	notices.length = 0;
+	await turn("build something else entirely, a perfectly good long request");
+	check("the one shot cannot fire twice", notices.length, 0);
+
+	rmSync(projectDir, { recursive: true, force: true });
+}
+
+console.log("\n--- compaction and /resume reassertion wiring ---");
+{
+	type Sent = { customType: string; content: string; details?: unknown; options?: unknown };
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => unknown }>();
+	const events = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const sent: Sent[] = [];
+	const pi = {
+		registerCommand: (name: string, options: never) => commands.set(name, options),
+		registerMessageRenderer: () => {},
+		registerEntryRenderer: () => {},
+		appendEntry: () => {},
+		sendMessage: (message: Sent, options: unknown) => sent.push({ ...message, options }),
+		on: (event: string, handler: never) => events.set(event, handler),
+	};
+	const ctx = {
+		cwd: "/nowhere-that-exists",
+		isProjectTrusted: () => false,
+		getContextUsage: () => ({ tokens: 500, contextWindow: 200_000, percent: 1 }),
+		sessionManager: { getBranch: () => [] },
+		ui: { notify: () => {} },
+	};
+
+	const extension = (await import("./index.ts")).default;
+	extension(pi as never);
+	await events.get("session_start")!({}, ctx);
+	await commands.get("goal")!.handler("ship the thing", ctx);
+
+	const start = events.get("before_agent_start")!;
+	const turn = () => start({ type: "before_agent_start", prompt: "continue", systemPrompt: "" }, ctx) as Promise<
+		{ message?: { customType: string; content: string; display: boolean } } | undefined
+	>;
+
+	check("no reassertion without a compaction", await turn(), undefined);
+
+	await events.get("session_compact")!({ type: "session_compact" }, ctx);
+	const reasserted = await turn();
+	check("compaction arms exactly one hidden reminder", reasserted?.message?.display, false);
+	check("it names the active condition", reasserted?.message?.content.includes("ship the thing"), true);
+	check("wrapped as a system-reminder", reasserted?.message?.content.startsWith("<system-reminder>"), true);
+	check("using the reassert customType", reasserted?.message?.customType, "goal_reassert");
+
+	check("consumed exactly once", await turn(), undefined);
+
+	// Clearing the goal after a compaction must not leave a reassertion armed
+	// for a condition that no longer exists.
+	await events.get("session_compact")!({ type: "session_compact" }, ctx);
+	await commands.get("goal")!.handler("clear", ctx);
+	check("clearing the goal drops a pending reassertion too", await turn(), undefined);
+}
+
+console.log("\n--- reassertion after a /resume restore ---");
+{
+	const events = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		registerEntryRenderer: () => {},
+		appendEntry: () => {},
+		sendMessage: () => {},
+		on: (event: string, handler: never) => events.set(event, handler),
+	};
+	const branch = [
+		{
+			type: "custom",
+			customType: "goal_state",
+			data: { active: true, condition: "ship it", iterations: 0, elapsedMs: 0 },
+		},
+	];
+	const ctx = {
+		cwd: "/nowhere-that-exists",
+		isProjectTrusted: () => false,
+		getContextUsage: () => ({ tokens: 500, contextWindow: 200_000, percent: 1 }),
+		sessionManager: { getBranch: () => branch },
+		ui: { notify: () => {} },
+	};
+
+	const extension = (await import("./index.ts")).default;
+	extension(pi as never);
+	await events.get("session_start")!({ reason: "resume" }, ctx);
+
+	const start = events.get("before_agent_start")!;
+	const turn = () => start({ type: "before_agent_start", prompt: "continue", systemPrompt: "" }, ctx) as Promise<
+		{ message?: { customType: string; content: string } } | undefined
+	>;
+
+	const reasserted = await turn();
+	check("a restored goal is reasserted on the very next turn", reasserted?.message?.customType, "goal_reassert");
+	check("naming the restored condition", reasserted?.message?.content.includes("ship it"), true);
+	check("and only once", await turn(), undefined);
 }
 
 // ------------------------------------------------------- regression coverage

@@ -35,10 +35,11 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { OutputBuffer } = await import("./output.ts");
 const { isSettled, killJob, newShellId, resolveShell, ShellRegistry, startShell } = await import("./shells.ts");
-const { commandLabel, exitReport, footerLines, runningReminder, statusLabel } = await import("./render.ts");
-const { registerShellTools } = await import("./tools.ts");
+const { commandLabel, exitReport, footerLines, formatDuration, runningReminder, statusLabel } = await import("./render.ts");
+const { executeForeground, registerShellTools } = await import("./tools.ts");
 const { ShellsPanel, showShells } = await import("./tui.ts");
 const { CONFIG, RESULT_MESSAGE } = await import("./config.ts");
+const { DEFAULTS, loadSettings } = await import("./settings.ts");
 import type { ShellJob, ShellMeta } from "./shells.ts";
 
 /** The ESC byte, built rather than escaped: source escapes do not survive this file's tooling. */
@@ -191,8 +192,23 @@ console.log("--- render ---");
 	const panelKill = exitReport(killed, [], "panel");
 	check("panel kill is attributed to the user", panelKill.startsWith("The user killed"), true);
 
-	check("runningReminder empty", runningReminder([], now), undefined);
-	check("runningReminder names shells", runningReminder([running], now)!.includes(running.shellId), true);
+	check("runningReminder empty", runningReminder([], [], now), undefined);
+	check("runningReminder names shells", runningReminder([running], [], now)!.includes(running.shellId), true);
+
+	// The unannounced-exit half of the reminder: guaranteed-delivery safety
+	// net for a shell whose exit went out as a followUp and may have been
+	// purged whole by an Escape/abort — see shells.ts's exitAnnounced doc.
+	const lostExit = meta({ command: "npm run dev", startedAt: 0, status: "done", exitCode: 0, endedAt: now - 60_000 });
+	const unannouncedText = runningReminder([], [lostExit], now)!;
+	check("unannounced-exit reminder names the shell and command", [unannouncedText.includes(lostExit.shellId), unannouncedText.includes("npm run dev")], [true, true]);
+	check("unannounced-exit reminder states how long ago", unannouncedText.includes("1m00s ago"), true);
+	check("unannounced-exit reminder flags the risk", unannouncedText.includes("may not have reached you"), true);
+	const lostKill = meta({ startedAt: 0, status: "killed", exitCode: null, endedAt: now, timedOut: false });
+	check("unannounced-exit reminder reuses exitPhrase for non-code exits", runningReminder([], [lostKill], now)!.includes("was killed"), true);
+	check("running and unannounced combine into one message", runningReminder([running], [lostExit], now)!.split("\n").length, 2);
+
+	check("formatDuration rounds to the nearest whole unit", [formatDuration(300_000), formatDuration(90_000), formatDuration(45_000), formatDuration(0)], ["5m", "1m30s", "45s", "0s"]);
+	check("formatDuration drops a zero seconds remainder", formatDuration(5000 * 60 * 60), "5h");
 }
 
 console.log("--- shells (real processes) ---");
@@ -331,6 +347,203 @@ console.log("--- tools against an owned registry ---");
 	registry.killAll("shutdown");
 }
 
+console.log("--- foreground idle watchdog ---");
+{
+	// A delegate that rejects once its signal aborts — mirrors
+	// createLocalBashOperations, which is exactly the mechanism executeForeground
+	// reuses to kill a command rather than holding a pid of its own.
+	//
+	// Its timers are deliberately left REF'D, unlike executeForeground's own
+	// (see arm()'s comment): a real bash delegate holds a live child process,
+	// whose pipe descriptors keep pi's event loop alive on their own regardless
+	// of any timer's ref state. This fake delegate holds no such process, so
+	// without a refed timer of its own the test's event loop would look empty
+	// and node would exit before ever firing executeForeground's unref'd watch
+	// timer — settle() clears it the moment either side actually finishes, so
+	// it never delays the file's own exit at the end.
+	function hangingDelegate(updates: { delayMs: number; content: string }[] = [], rejectMessage = "aborted"): any {
+		return {
+			execute: (_id: string, _params: unknown, signal: AbortSignal | undefined, onUpdate: any) =>
+				new Promise((_resolve, reject) => {
+					const timers: ReturnType<typeof setTimeout>[] = [keepAliveTimer(5000)];
+					const settle = (run: () => void) => {
+						for (const t of timers) clearTimeout(t);
+						run();
+					};
+					const onAbort = () => settle(() => reject(new Error(rejectMessage)));
+					if (signal) {
+						if (signal.aborted) return onAbort();
+						signal.addEventListener("abort", onAbort, { once: true });
+					}
+					for (const u of updates) {
+						timers.push(setTimeout(() => onUpdate?.({ content: [{ type: "text", text: u.content }], details: undefined }), u.delayMs));
+					}
+				}),
+		};
+	}
+
+	// A delegate that resolves on its own after resolveAfterMs, same shape.
+	function resolvingDelegate(updates: { delayMs: number; content: string }[], resolveAfterMs: number, resolveText: string): any {
+		return {
+			execute: (_id: string, _params: unknown, signal: AbortSignal | undefined, onUpdate: any) =>
+				new Promise((resolve, reject) => {
+					const timers: ReturnType<typeof setTimeout>[] = [keepAliveTimer(resolveAfterMs + 1000)];
+					const settle = (run: () => void) => {
+						for (const t of timers) clearTimeout(t);
+						run();
+					};
+					const onAbort = () => settle(() => reject(new Error("aborted")));
+					if (signal) {
+						if (signal.aborted) return onAbort();
+						signal.addEventListener("abort", onAbort, { once: true });
+					}
+					for (const u of updates) {
+						timers.push(setTimeout(() => onUpdate?.({ content: [{ type: "text", text: u.content }], details: undefined }), u.delayMs));
+					}
+					timers.push(setTimeout(() => settle(() => resolve({ content: [{ type: "text", text: resolveText }], details: undefined })), resolveAfterMs));
+				}),
+		};
+	}
+	function keepAliveTimer(ms: number): ReturnType<typeof setTimeout> {
+		return setTimeout(() => {}, ms);
+	}
+
+	const fakeCtx = {} as never;
+
+	// An explicit timeout is the model's own escape hatch — the watchdog must
+	// never race it, even when idleKillMs alone would have fired first.
+	const explicit = await executeForeground(
+		resolvingDelegate([], 40, "explicit-timeout-ran"),
+		"t",
+		{ command: "x", timeout: 1 },
+		undefined,
+		undefined,
+		fakeCtx,
+		10,
+	);
+	check("an explicit timeout bypasses the watchdog", explicit.content[0].text, "explicit-timeout-ran");
+
+	// 0 is the documented "off" switch.
+	const disabled = await executeForeground(resolvingDelegate([], 40, "watchdog-off-ran"), "t", { command: "x" }, undefined, undefined, fakeCtx, 0);
+	check("idleKillMs 0 disables the watchdog", disabled.content[0].text, "watchdog-off-ran");
+
+	// Silence trips it: zero output for idleKillMs kills the command and
+	// explains why, instead of the model waiting on a dead execute() forever.
+	const silent = await executeForeground(hangingDelegate(), "t", { command: "sleep 999" }, undefined, undefined, fakeCtx, 50);
+	check("silence trips the watchdog", silent.content[0].text.includes("No output for"), true);
+	check(
+		"the watchdog message names itself and the escape hatches",
+		[silent.content[0].text.includes("inactivity watchdog"), silent.content[0].text.includes("run_in_background"), silent.content[0].text.includes("explicit timeout")],
+		[true, true, true],
+	);
+
+	// Output resets the clock: the delegate's own leading no-op (empty
+	// content, delayMs 0) must not count as activity, but everything after it
+	// does — so a command producing real output is never killed even though
+	// the total wall time run here exceeds idleKillMs several times over.
+	const active = await executeForeground(
+		resolvingDelegate(
+			[
+				{ delayMs: 0, content: "" },
+				{ delayMs: 50, content: "chunk one" },
+				{ delayMs: 100, content: "chunk one chunk two" },
+			],
+			150,
+			"finished normally",
+		),
+		"t",
+		{ command: "slow but alive" },
+		undefined,
+		undefined,
+		fakeCtx,
+		200,
+	);
+	check("active output is never killed despite exceeding idleKillMs of wall time", active.content[0].text, "finished normally");
+
+	// What the delegate captured before it went quiet is carried into the
+	// kill notice — the model should not have to re-run the command to see
+	// what it printed before hanging.
+	const withOutput = await executeForeground(
+		hangingDelegate([{ delayMs: 10, content: "partial output line" }]),
+		"t",
+		{ command: "sleep 999" },
+		undefined,
+		undefined,
+		fakeCtx,
+		40,
+	);
+	check("prior output is preserved alongside the kill notice", [withOutput.content[0].text.includes("partial output line"), withOutput.content[0].text.includes("No output for")], [true, true]);
+
+	// An outer abort (Escape, turn end) must still reach the delegate exactly
+	// as before, and must NOT be mislabeled as a watchdog kill.
+	const outer = new AbortController();
+	outer.abort();
+	const outerAborted = await executeForeground(hangingDelegate([], "outer-abort-marker"), "t", { command: "sleep 999" }, outer.signal, undefined, fakeCtx, 5000).then(
+		() => "resolved",
+		(error: Error) => error.message,
+	);
+	check("an outer abort is forwarded and rethrown untouched", outerAborted, "outer-abort-marker");
+}
+
+console.log("--- settings ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "background-shell-settings-"));
+	const project = join(dir, "project");
+	mkdirSync(join(project, ".pi"), { recursive: true });
+
+	const write = (path: string, body: unknown) => writeFileSync(path, JSON.stringify(body));
+	const userPath = join(dir, "settings.json");
+	const projectPath = join(project, ".pi", "settings.json");
+
+	check("defaults with no files", loadSettings(dir, project, true).settings, DEFAULTS);
+
+	write(userPath, { backgroundShell: { foregroundIdleKillMs: 5000 } });
+	check("the user block is read", loadSettings(dir, project, true).settings, { foregroundIdleKillMs: 5000 });
+
+	write(projectPath, { backgroundShell: { foregroundIdleKillMs: 1 } });
+	check("a trusted project overrides", loadSettings(dir, project, true).settings.foregroundIdleKillMs, 1);
+	// The whole point of the gate: an untrusted clone must not be able to drive
+	// every foreground command's watchdog down to almost nothing.
+	check("an untrusted project does not", loadSettings(dir, project, false).settings.foregroundIdleKillMs, 5000);
+	check(
+		"and says so",
+		loadSettings(dir, project, false).warnings.some((w) => w.includes("backgroundShell.foregroundIdleKillMs") && w.includes("not trusted")),
+		true,
+	);
+
+	// From here on, only the user file is in play — an untrusted project file
+	// would add a warning of its own and muddle the counts below.
+	rmSync(projectPath);
+
+	write(userPath, { backgroundShell: { foregroundIdleKillMs: -1 } });
+	const bad = loadSettings(dir, project, false);
+	check("a negative value is rejected", bad.settings.foregroundIdleKillMs, undefined);
+	check("and reported", bad.warnings.length, 1);
+
+	// 0 is the documented "off" value and must survive as itself, not as "unset".
+	write(userPath, { backgroundShell: { foregroundIdleKillMs: 0 } });
+	check("zero disables the watchdog rather than being dropped", loadSettings(dir, project, false).settings.foregroundIdleKillMs, 0);
+
+	// A project turning the watchdog near-instant is exactly the risk the whole
+	// block is trust-gated against — it must be dropped, and the drop named.
+	writeFileSync(userPath, JSON.stringify({}));
+	write(projectPath, { backgroundShell: { foregroundIdleKillMs: 1 } });
+	check("an untrusted project cannot arm the watchdog down to 1ms", loadSettings(dir, project, false).settings.foregroundIdleKillMs, undefined);
+	check(
+		"and the drop is named",
+		loadSettings(dir, project, false).warnings.some((w) => w.includes("backgroundShell.foregroundIdleKillMs")),
+		true,
+	);
+	check("but a trusted project can", loadSettings(dir, project, true).settings.foregroundIdleKillMs, 1);
+	rmSync(projectPath);
+
+	writeFileSync(userPath, "{ not json");
+	check("unparseable settings are ignored, not fatal", loadSettings(dir, project, false).settings.foregroundIdleKillMs, undefined);
+	check("and reported", loadSettings(dir, project, false).warnings.length, 1);
+
+	rmSync(dir, { recursive: true, force: true });
+}
+
 console.log("--- wiring against a fake pi ---");
 {
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ theme: "x" }), "utf8");
@@ -371,15 +584,26 @@ console.log("--- wiring against a fake pi ---");
 	check("exit message renderer registered", renderers, [RESULT_MESSAGE]);
 	check("bash keeps the built-in prompt snippet", typeof tools.get("bash").promptSnippet, "string");
 
+	// Mutable so tests can simulate a live turn (isIdle: false) for the
+	// duration of a single exit, then flip back — real pi's isIdle() is just
+	// as dynamic from one deliverExit call to the next.
+	let idleFlag = true;
+	// Mutable so tests can simulate what real pi persists into the session
+	// file: a followUp that was actually drained lands here as its own
+	// custom_message entry, which is exactly what before_agent_start's branch
+	// scan (Fix 2) looks for before treating an exit as unreached.
+	const branch: Array<Record<string, any>> = [];
 	const ctx = {
 		cwd: ROOT,
 		hasUI: false,
-		isIdle: () => true,
+		isIdle: () => idleFlag,
+		isProjectTrusted: () => true,
 		model: undefined,
 		thinkingLevel: undefined,
 		sessionManager: {
 			getSessionId: () => "test-session",
 			getSessionFile: () => undefined,
+			getBranch: () => branch,
 		},
 		ui: { notify: () => {} },
 	};
@@ -434,6 +658,53 @@ console.log("--- wiring against a fake pi ---");
 	const reminded = events.get("before_agent_start")![0]!({}, ctx);
 	check("running reminder injected", reminded.message.content.includes("Background shells running"), true);
 	check("reminder is hidden from the UI", reminded.message.display, false);
+	// bg's exit was delivered while idle (triggerTurn), which is the "cannot
+	// be queued behind a live turn" case exitAnnounced treats as confirmed —
+	// it must never resurface as "may not have reached you".
+	check("an idle-delivered exit is never re-flagged as unreached", reminded.message.content.includes(shellId), false);
+
+	// Guaranteed exit delivery (part A): a mid-turn exit is queued as a
+	// followUp, exactly the queue an Escape/abort purges whole in real pi —
+	// deliverExit has no way to know afterward whether it was drained or
+	// dropped, so it must NOT mark the shell announced for this path.
+	idleFlag = false;
+	const bgDrained = await tools.get("bash").execute("t10", { command: "printf mid-turn-drained", run_in_background: true }, undefined, undefined, ctx);
+	await until("drained mid-turn exit delivered", () => sent.some((s) => s.message.details?.meta?.shellId === bgDrained.details.shellId));
+	const drainedSend = sent.find((s) => s.message.details?.meta?.shellId === bgDrained.details.shellId)!;
+	check("a mid-turn exit is queued as a followUp, not triggered", drainedSend.options, { deliverAs: "followUp" });
+	idleFlag = true;
+
+	// Fix 2's whole point: the COMMON case is that the followUp above WAS
+	// drained and seen. Real pi persists a delivered followUp into the session
+	// branch as its own custom_message entry — simulate that landing, then
+	// confirm before_agent_start finds it there instead of re-flagging it.
+	branch.push({ type: "custom_message", customType: RESULT_MESSAGE, content: drainedSend.message.content, details: drainedSend.message.details });
+	const reminderDrained = events.get("before_agent_start")![0]!({}, ctx);
+	check("a drained followUp is confirmed via the branch, not re-flagged", reminderDrained.message.content.includes(bgDrained.details.shellId), false);
+
+	// Guaranteed exit delivery (part B): a mid-turn exit whose followUp is NOT
+	// found in the branch — the genuinely purged case (an Escape/abort
+	// dropping the followUp queue whole before the model ever saw it) — is
+	// exactly what this reminder exists for, and must still surface.
+	idleFlag = false;
+	const bg4 = await tools.get("bash").execute("t11", { command: "printf mid-turn-purged", run_in_background: true }, undefined, undefined, ctx);
+	await until("mid-turn exit delivered", () => sent.some((s) => s.message.details?.meta?.shellId === bg4.details.shellId));
+	const midTurnSend = sent.find((s) => s.message.details?.meta?.shellId === bg4.details.shellId)!;
+	check("a mid-turn exit is queued as a followUp, not triggered", midTurnSend.options, { deliverAs: "followUp" });
+	idleFlag = true;
+	// No branch entry is pushed for bg4 — simulating the purge.
+
+	// The safety net: before_agent_start's own reminder is the one place a
+	// followUp exit's delivery can be confirmed, since — unlike a followUp —
+	// its return value is spliced into the next turn unconditionally.
+	const reminder2 = events.get("before_agent_start")![0]!({}, ctx);
+	check("the safety net catches a possibly-purged mid-turn exit", reminder2.message.content.includes("may not have reached you"), true);
+	check("the safety net names the shell", reminder2.message.content.includes(bg4.details.shellId), true);
+	check("the already-confirmed drained exit is not swept up too", reminder2.message.content.includes(bgDrained.details.shellId), false);
+
+	// Once the safety net has run for a shell, it must not nag about it again.
+	const reminder3 = events.get("before_agent_start")![0]!({}, ctx);
+	check("a re-announced exit is not repeated", reminder3.message.content.includes("may not have reached you"), false);
 
 	// Shutdown kills what is left, clears the footer, and stays quiet about it.
 	const sentBeforeShutdown = sent.length;

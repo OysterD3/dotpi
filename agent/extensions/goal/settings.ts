@@ -11,12 +11,16 @@
  * rewrites the file (its SettingsManager merges modified fields over the parsed
  * current file, so foreign keys survive).
  *
- * `goal.model` is the one setting with a trust dimension. It names an
- * already-registered pi model, so a project cannot register a provider or supply
- * a key through this block — at worst a hostile repo points the evaluator at a
- * model you already have. Even so, project settings are honoured only when the
- * project is trusted, matching the other extensions, so a clone cannot silently
- * redirect where your transcript is sent.
+ * `goal.model` and `goal.autoCapture` are the settings with a trust dimension.
+ * `model` names an already-registered pi model, so a project cannot register a
+ * provider or supply a key through this block — at worst a hostile repo points
+ * the evaluator at a model you already have. `autoCapture` turns on an
+ * unattended judge call plus a stop-gate that can hold the agent to up to
+ * `maxIterations` extra turns per session — behaviour and spend a project
+ * should not be able to switch on for a user who never opted in. Even so,
+ * project settings are honoured only when the project is trusted, matching the
+ * other extensions, so a clone cannot silently redirect where your transcript
+ * is sent or change how the session runs.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -35,6 +39,16 @@ export type GoalSettings = {
 	model?: string;
 	/** Not-met verdicts before the goal gives up, counted over its whole life. 0 disables the cap. */
 	maxIterations: number;
+	/**
+	 * On the first work-opening interactive prompt of a session, with no goal
+	 * already active, try to extract a measurable stop condition from the
+	 * user's own message and register it the same way `/goal <condition>`
+	 * would — see index.ts and capture.ts. Off by default: `/goal` sitting idle
+	 * is a session where nobody asked for the stop-gate, and this is the one
+	 * setting in this file that changes agent behaviour and spend without an
+	 * explicit command, so it stays opt-in rather than assumed.
+	 */
+	autoCapture: boolean;
 };
 
 export type LoadResult = {
@@ -45,6 +59,7 @@ export type LoadResult = {
 export const DEFAULTS: GoalSettings = {
 	model: undefined,
 	maxIterations: CONFIG.maxIterations,
+	autoCapture: false,
 };
 
 function userSettingsPath(agentDir: string): string {
@@ -89,6 +104,10 @@ function apply(target: GoalSettings, block: Record<string, unknown>, path: strin
 			warnings.push(`${path}: goal.maxIterations must be a whole number >= 0 (0 disables the cap)`);
 		}
 	}
+	if (block.autoCapture !== undefined) {
+		if (typeof block.autoCapture === "boolean") target.autoCapture = block.autoCapture;
+		else warnings.push(`${path}: goal.autoCapture must be a boolean`);
+	}
 }
 
 export function loadSettings(agentDir: string, cwd: string, projectTrusted: boolean): LoadResult {
@@ -109,7 +128,9 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 				// Name every key that was dropped. Reporting only `model` left a
 				// project's maxIterations silently ignored, so a cap the repo asked
 				// for looked like a cap the user chose.
-				const ignored = Object.keys(project).filter((key) => key === "model" || key === "maxIterations");
+				const ignored = Object.keys(project).filter(
+					(key) => key === "model" || key === "maxIterations" || key === "autoCapture",
+				);
 				if (ignored.length > 0) {
 					warnings.push(
 						`${projectPath}: ignoring ${ignored.map((k) => `goal.${k}`).join(", ")} — project is not trusted`,

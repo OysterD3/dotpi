@@ -63,7 +63,39 @@ export const CONFIG = {
 	 * during the long silence before the reviewer's first token.
 	 */
 	statusTickMs: 1000,
+	/**
+	 * How much of a consult's advice is held for resurfacing (see resurface.ts).
+	 * Long enough to still identify the directive weeks or many calls later,
+	 * short enough that the reminder it rides in stays a skim, not a rerun of
+	 * the whole consult.
+	 */
+	adviceHeadChars: 800,
 } as const;
+
+export interface ResurfaceSettings {
+	/**
+	 * Kill switch for resurfacing specifically, independent of `advisor.enabled`
+	 * (which removes the tool itself). Defaults to true.
+	 */
+	enabled: boolean;
+	/**
+	 * Mutating (write/edit/bash) tool calls that must land, with no newer
+	 * consult in between, before the standing advice resurfaces once.
+	 *
+	 * Priced from the forensics this closes: seven sharp advisor steers in the
+	 * benchmark session were each partially ignored within minutes — a handful
+	 * of tool calls, not a handful of turns. 15 is long enough that ordinary
+	 * follow-through (read the file the advice named, make the edit it asked
+	 * for) doesn't trip it, short enough to catch drift before it compounds
+	 * into a rewrite that has to be undone.
+	 */
+	afterCalls: number;
+}
+
+export const DEFAULT_RESURFACE_SETTINGS: ResurfaceSettings = {
+	enabled: true,
+	afterCalls: 15,
+};
 
 export interface AdvisorSettings {
 	/**
@@ -79,8 +111,11 @@ export interface AdvisorSettings {
 	 * the tool out of the session.
 	 */
 	enabled: boolean;
+	/** See ResurfaceSettings. */
+	resurface: ResurfaceSettings;
 }
 
 export const DEFAULT_SETTINGS: AdvisorSettings = {
 	enabled: true,
+	resurface: DEFAULT_RESURFACE_SETTINGS,
 };

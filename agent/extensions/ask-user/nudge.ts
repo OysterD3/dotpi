@@ -279,3 +279,41 @@ export const OPENING_NUDGE = [
 export function systemReminder(text: string): string {
 	return `<system-reminder>\n${text}\n</system-reminder>`;
 }
+
+/**
+ * The compliance follow-up: the second and last line of defence after the
+ * opening nudge above, and the one the benchmark this exists for never got to
+ * see. The opening nudge fires once, on the turn that opens the work — after
+ * that it is sitting in context exactly like the tool description and the
+ * guidelines it was written to work around, easy for a model that has decided
+ * to build to read past and not act on. The gpt-5.6-sol run did precisely
+ * that: the nudge rode in with the opening request, and the model spent
+ * $93 over 10 hours building on a guessed data source without ever calling
+ * ask_user.
+ *
+ * So this is gated on cost actually being spent, not on a clock or a turn
+ * count: index.ts tracks the DISTINCT files touched by write/edit tool calls
+ * session-wide, starting only once a nudge has actually gone out (before that
+ * there is nothing to be a backstop for), and clears that set — re-arming the
+ * latch — on every actual ask_user call. Reaching CONFIG.followUp.afterMutations
+ * distinct files with none in between means several files now exist that were
+ * never checked against the opening questions, which is exactly the state the
+ * codex run was in for ten hours straight. Distinct files, not calls: five
+ * edits to one file is one file still unchecked against the opening
+ * questions, not five, and a count of tool calls would say otherwise.
+ *
+ * Counted from tool_call, not tool_result: a write that later errors was
+ * still a decision made without asking, whether or not the file landed.
+ *
+ * The message names the count that actually tripped it, not the configured
+ * threshold, so it stays accurate if CONFIG.followUp.afterMutations changes —
+ * same reason guidance.ts interpolates CONFIG.maxQuestions instead of writing
+ * "four". It also names the concrete questions from OPENING_NUDGE (data
+ * source, schema, layout) rather than repeating the abstract categories,
+ * because by this point the model has stopped reading the abstract version.
+ */
+export function followUpReminder(fileCount: number): string {
+	return systemReminder(
+		`You have now created or edited ${fileCount} files without putting a single decision to the user. Re-check the opening questions (data source real vs fixture, schema, layout): if any decision is genuinely the user's, call ask_user NOW; otherwise state your assumptions in one line and continue.`,
+	);
+}

@@ -28,7 +28,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } = await import("./reminders.ts");
+const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
 const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
 const { createRun, readMeta } = await import("./store.ts");
@@ -557,6 +557,252 @@ console.log("\n--- restore from branch ---");
 	const arrayCase = makeCtx({ model: MODEL, branch: arrayBranch });
 	events.get("session_start")!({}, arrayCase.ctx);
 	check("array-content reminder restores announced state", await turn("go"), undefined);
+}
+
+// ------------------------------------------- opt-in persists across delivery
+
+console.log("\n--- opt-in persists across a workflow-result delivery ---");
+writeSettings({});
+{
+	// A background workflow's result is delivered via sendMessage's
+	// triggerTurn/followUp (tool.ts's deliverResult), and BOTH bypass
+	// before_agent_start — so nothing here ever records a reminder for that
+	// reactive turn. This mutates the SAME array makeCtx closed over, mirroring
+	// what pi's session manager actually appends as the session goes on.
+	const branch: Record<string, unknown>[] = [];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	const userMessage = (text: string) => branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
+	const resultMessage = () => branch.push({ type: "custom_message", customType: "workflow-result", content: "done", display: true });
+
+	userMessage("ultracode build the widget");
+	const first = await turn("ultracode build the widget", "interactive", ctx);
+	check("turn 1: keyword reminder fires as usual", first?.message?.content, `<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>`);
+
+	// The workflow settles and delivers — no before_agent_start pass for it.
+	resultMessage();
+
+	// Turn 2: no keyword typed, /ultracode never toggled on. Without part (A)
+	// this is exactly the silent turn the benchmark measured.
+	const second = await turn("what's next", "interactive", ctx);
+	check("turn 2: the opt-in still stands, sparse reminder", second?.message?.content, `<system-reminder>\n${ENTER_SPARSE}\n</system-reminder>`);
+	userMessage("what's next");
+
+	// Turn 3: no result arrived since turn 2's own pass — an ordinary quiet turn.
+	check("turn 3: quiet with no fresh result", await turn("and then", "interactive", ctx), undefined);
+}
+{
+	// The keyword alone, with no workflow ever having delivered anything, must
+	// not manufacture an opt-in the model never earned.
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	await turn("ultracode look into this", "interactive", ctx);
+	check("keyword fired but no result ever arrived: ordinary turn stays quiet", await turn("continue", "interactive", ctx), undefined);
+}
+{
+	// A workflow result with the keyword never having fired this session is not
+	// evidence of a standing opt-in — the request that produced the workflow
+	// might have come from mode, which this session also never turned on.
+	const branch: Record<string, unknown>[] = [
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "do the thing" }] } },
+		{ type: "custom_message", customType: "workflow-result", content: "done", display: true },
+	];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	check("no keyword this session: a stray result does not opt anything in", await turn("what happened", "interactive", ctx), undefined);
+}
+{
+	// /ultracode's own cadence already reminds independent of workflow timing,
+	// so this path is gated off entirely while the mode is on — it must not
+	// fire a SECOND reminder alongside the one mode.reminderForTurn() gives.
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	thinkingLevel = "medium";
+	await commands.get("ultracode")!.handler("on", ctx);
+	await turn("start working", "interactive", ctx); // consumes the full enter reminder
+	for (let i = 0; i < 8; i++) await turn(`quiet ${i}`, "interactive", ctx); // land on a quiet cadence turn
+	check("mode on, quiet cadence turn: no extra reminder from part (A)", await turn("still quiet", "interactive", ctx), undefined);
+	await commands.get("ultracode")!.handler("off", ctx);
+	await turn("done", "interactive", ctx); // drain the exit reminder
+}
+{
+	// FIX: an explicit /ultracode off must beat keyword history. Without
+	// clearing keywordFiredThisSession in the disable path, this shape —
+	// keyword fires while the mode is on, the mode is then explicitly turned
+	// off, and only THEN does the workflow's result land — re-enters the
+	// opt-in-persistence branch on the next turn and injects ENTER_SPARSE
+	// ("Ultracode is still on"), asserting the opposite of the EXIT reminder
+	// the model was just given.
+	const branch: Record<string, unknown>[] = [];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	const userMessage = (text: string) => branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
+	const resultMessage = () => branch.push({ type: "custom_message", customType: "workflow-result", content: "done", display: true });
+
+	await commands.get("ultracode")!.handler("on", ctx);
+	userMessage("ultracode build the widget");
+	const first = await turn("ultracode build the widget", "interactive", ctx);
+	check(
+		"turn 1: keyword and the full enter reminder both fire; keywordFiredThisSession is now set",
+		first?.message?.content,
+		`<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>\n<system-reminder>\n${ENTER_FULL}\n</system-reminder>`,
+	);
+
+	await commands.get("ultracode")!.handler("off", ctx);
+	userMessage("stop for now");
+	const exitTurn = await turn("stop for now", "interactive", ctx);
+	check("turn 2: explicit off delivers EXIT and nothing else", exitTurn?.message?.content, `<system-reminder>\n${EXIT}\n</system-reminder>`);
+
+	// The workflow settles and delivers in the background AFTER the explicit
+	// off — no before_agent_start pass for it, same as the "opt-in persists"
+	// scenario above.
+	resultMessage();
+
+	check(
+		"turn 3: explicit off wins — no stale ENTER_SPARSE from keyword history",
+		await turn("what's next", "interactive", ctx),
+		undefined,
+	);
+}
+
+console.log("\n--- opt-in persistence survives a resume ---");
+{
+	// The keyword fired in a process that is now gone; the ONLY trace of it is
+	// the reminder entry pi persisted. The result arrived, and no turn since
+	// has said anything — the exact shape a crash mid-hour-2 would leave.
+	const branch = [
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "ultracode build the widget" }] } },
+		{
+			type: "custom_message",
+			customType: "ultracode",
+			content: `<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>`,
+			display: false,
+		},
+		{ type: "custom_message", customType: "workflow-result", content: "done", display: true },
+	];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	check(
+		"the first turn in the new process still opts in",
+		(await turn("what's the status", "interactive", ctx))?.message?.content,
+		`<system-reminder>\n${ENTER_SPARSE}\n</system-reminder>`,
+	);
+}
+{
+	// Same crash-and-resume shape, but the dead process also logged an
+	// explicit /ultracode off before it died — restoreFromBranch must honour
+	// that the same way the live disable() path does, or a resume can
+	// resurrect an opt-in the user already turned off.
+	const branch = [
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "ultracode build the widget" }] } },
+		{ type: "custom", customType: "ultracode", data: { action: "on" } },
+		{
+			type: "custom_message",
+			customType: "ultracode",
+			content: `<system-reminder>\n${KEYWORD_REMINDER}\n</system-reminder>\n<system-reminder>\n${ENTER_FULL}\n</system-reminder>`,
+			display: false,
+		},
+		{ type: "custom", customType: "ultracode", data: { action: "off" } },
+		{ type: "custom_message", customType: "ultracode", content: `<system-reminder>\n${EXIT}\n</system-reminder>`, display: false },
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "stop for now" }] } },
+		{ type: "custom_message", customType: "workflow-result", content: "done", display: true },
+	];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	check(
+		"an explicit off recorded before the crash beats keyword history on resume too",
+		await turn("what's next", "interactive", ctx),
+		undefined,
+	);
+}
+
+// --------------------------------------------------------- edit-streak nudge
+
+console.log("\n--- edit-streak nudge ---");
+writeSettings({});
+{
+	const { ctx } = makeCtx({ model: MODEL, idle: false });
+	events.get("session_start")!({}, ctx);
+	sent.length = 0;
+	const call = (toolName: string) =>
+		events.get("tool_call")!({ type: "tool_call", toolCallId: `c${sent.length}-${toolName}-${Math.random()}`, toolName, input: {} }, ctx);
+
+	// No opt-in has ever been standing: plain edits before either /ultracode or
+	// a Workflow call are ordinary work, not the failure this watches for.
+	for (let i = 0; i < 25; i++) await call("edit");
+	check("edits before any opt-in are not counted at all", sent.length, 0);
+
+	// A Workflow call establishes the opt-in for the rest of the session.
+	await call("workflow");
+	for (let i = 0; i < 19; i++) await call("edit");
+	check("19 edits after the opt-in: still quiet", sent.length, 0);
+	await call("edit"); // the 20th
+	check("the 20th edit nudges", sent.length, 1);
+	check("hidden, ultracode's own customType, the doctrine text", sent[0]?.message, {
+		customType: "ultracode",
+		content: `<system-reminder>\n${editStreakReminder(20)}\n</system-reminder>`,
+		display: false,
+	});
+	check("mid-turn delivery, same idiom as the result path", sent[0]?.options, { deliverAs: "followUp" });
+
+	for (let i = 0; i < 19; i++) await call("edit");
+	check("39 edits: still just the one nudge", sent.length, 1);
+	await call("edit"); // the 40th
+	check("the 40th edit nudges again — still within the per-turn cap of two", sent.length, 2);
+
+	for (let i = 0; i < 19; i++) await call("edit");
+	await call("edit"); // the 60th
+	check("a third nudge in one turn is capped away", sent.length, 2);
+
+	// Reading, shelling out, or grepping between edits neither resets the
+	// streak nor nudges on their own — only Workflow and edit/write matter.
+	await call("read");
+	await call("bash");
+	await call("grep");
+	check("unrelated tool calls do not nudge", sent.length, 2);
+
+	// A new turn resets the per-turn CAP, not the streak itself.
+	await turn("keep going", "interactive", ctx);
+	sent.length = 0;
+	for (let i = 0; i < 19; i++) await call("edit");
+	check("still short of the next multiple", sent.length, 0);
+	await call("edit"); // the 80th edit overall
+	check("a new turn allows a nudge again", sent.length, 1);
+	check(
+		"the streak kept climbing across the turn boundary rather than resetting",
+		sent[0]?.message.content,
+		`<system-reminder>\n${editStreakReminder(80)}\n</system-reminder>`,
+	);
+
+	// Delegated work — not solo grinding — ends the streak.
+	sent.length = 0;
+	await call("workflow");
+	for (let i = 0; i < 19; i++) await call("edit");
+	check("streak restarted from zero after another Workflow call", sent.length, 0);
+	await call("edit");
+	check("and reaches the threshold again from scratch", sent[0]?.message.content, `<system-reminder>\n${editStreakReminder(20)}\n</system-reminder>`);
+}
+
+console.log("\n--- edit-streak nudge: /ultracode mode alone starts the count ---");
+writeSettings({});
+{
+	const { ctx } = makeCtx({ model: MODEL, idle: true });
+	events.get("session_start")!({}, ctx);
+	thinkingLevel = "medium";
+	await commands.get("ultracode")!.handler("on", ctx);
+	await turn("start", "interactive", ctx); // consume the full enter reminder
+	sent.length = 0;
+	const call = (toolName: string) =>
+		events.get("tool_call")!({ type: "tool_call", toolCallId: `m${sent.length}-${toolName}-${Math.random()}`, toolName, input: {} }, ctx);
+	for (let i = 0; i < 20; i++) await call("edit");
+	check("mode on is enough on its own, with no Workflow call at all", sent.length, 1);
+	check("idle delivery, same idiom as the result path", sent[0]?.options, { triggerTurn: true });
+	await commands.get("ultracode")!.handler("off", ctx);
+	await turn("done", "interactive", ctx); // drain the exit reminder
+	// Leave `sent` clean for what follows — the workflow-tool sections below
+	// assert on it from an empty starting point, same as they did before any of
+	// this file's other sections started using it.
+	sent.length = 0;
 }
 
 // ------------------------------------------------------------- workflow tool

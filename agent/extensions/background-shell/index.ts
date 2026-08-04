@@ -34,7 +34,8 @@ import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding
 import { Text } from "@earendil-works/pi-tui";
 import { CONFIG, LINES_CHANNEL, REMINDER_MESSAGE, RESULT_MESSAGE } from "./config.ts";
 import { commandLabel, exitPhrase, exitReport, footerLines, formatElapsed, runningReminder, systemReminder } from "./render.ts";
-import { ShellRegistry, type KilledBy, type ShellConfig, type ShellJob, type ShellMeta } from "./shells.ts";
+import { loadSettings } from "./settings.ts";
+import { isSettled, ShellRegistry, type KilledBy, type ShellConfig, type ShellJob, type ShellMeta } from "./shells.ts";
 import { registerShellTools } from "./tools.ts";
 import { showShells } from "./tui.ts";
 
@@ -45,7 +46,7 @@ interface ExitDetails {
 	killedBy?: KilledBy;
 }
 
-function readShellBlock(path: string): ShellConfig {
+function readShellBlock(path: string): { shellPath?: string; commandPrefix?: string } {
 	try {
 		const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 		return {
@@ -62,15 +63,27 @@ function readShellBlock(path: string): ShellConfig {
  * way pi's SettingsManager resolves them: the project's `.pi/settings.json`
  * over the global file, and a leading `~` in shellPath expanded. Skipping
  * either would make the replaced bash silently ignore settings the built-in
- * honoured.
+ * honoured. These two are read unconditionally from both files, mirroring
+ * pi's own behaviour exactly — a project cannot do anything through them it
+ * could not already do to pi's built-in bash tool.
+ *
+ * `foregroundIdleKillMs` is different: this extension invented that key, so
+ * it goes through settings.ts's namespaced, trust-gated `backgroundShell`
+ * block instead of a bare top-level read — see settings.ts's doc comment for
+ * why an untrusted project must not be able to set it.
  */
-function loadShellConfig(agentDir: string, cwd: string): ShellConfig {
+function loadShellConfig(agentDir: string, cwd: string, projectTrusted: boolean): { config: ShellConfig; warnings: string[] } {
 	const user = readShellBlock(join(agentDir, "settings.json"));
 	const project = readShellBlock(join(cwd, ".pi", "settings.json"));
 	const shellPath = project.shellPath ?? user.shellPath;
+	const { settings, warnings } = loadSettings(agentDir, cwd, projectTrusted);
 	return {
-		shellPath: shellPath?.replace(/^~(?=$|\/)/, homedir()),
-		commandPrefix: project.commandPrefix ?? user.commandPrefix,
+		config: {
+			shellPath: shellPath?.replace(/^~(?=$|\/)/, homedir()),
+			commandPrefix: project.commandPrefix ?? user.commandPrefix,
+			foregroundIdleKillMs: settings.foregroundIdleKillMs,
+		},
+		warnings,
 	};
 }
 
@@ -137,6 +150,17 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const idle = ctx.isIdle();
 			const tail = job.output.tail(CONFIG.exitTailBytes).slice(-CONFIG.exitTailLines);
+			// Idle delivery is never queued behind a live turn: a panel kill goes
+			// out as "nextTurn" (spliced into the next prompt()'s messages
+			// unconditionally — clearAllQueues() never touches that array) and
+			// anything else starts a fresh turn with this message as its seed
+			// right now. Both are safe from the Escape/abort queue purge, so this
+			// IS "actually injected" for exitAnnounced's purposes. Mid-turn
+			// delivery always falls through to followUp — the exact queue an
+			// abort clears whole — so it must NOT be marked here; only the
+			// before_agent_start reminder's own (unconditional) injection may
+			// confirm delivery for that case.
+			if (idle) job.meta.exitAnnounced = true;
 			pi.sendMessage<ExitDetails>(
 				{
 					customType: RESULT_MESSAGE,
@@ -160,8 +184,11 @@ export default function (pi: ExtensionAPI) {
 	const builtinFor = (ctx: ExtensionContext): ReturnType<typeof createBashToolDefinition> => {
 		if (!builtin || builtin.cwd !== ctx.cwd) {
 			// A cwd change moves which project settings file applies, so the
-			// shell config travels with the delegate.
-			shellConfig = loadShellConfig(agentDir, ctx.cwd);
+			// shell config travels with the delegate. Warnings are not
+			// re-notified here: this reload also fires on the very first call
+			// after session_start (builtin starts undefined there), which would
+			// otherwise repeat the same warning session_start just showed.
+			shellConfig = loadShellConfig(agentDir, ctx.cwd, ctx.isProjectTrusted()).config;
 			builtin = {
 				cwd: ctx.cwd,
 				def: createBashToolDefinition(ctx.cwd, {
@@ -219,17 +246,52 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		uiCtx = ctx;
 		sessionId = ctx.sessionManager.getSessionId();
-		shellConfig = loadShellConfig(agentDir, ctx.cwd);
+		const loaded = loadShellConfig(agentDir, ctx.cwd, ctx.isProjectTrusted());
+		shellConfig = loaded.config;
+		for (const warning of loaded.warnings) ctx.ui.notify(warning, "warning");
 		builtin = undefined;
 		drawLines();
 	});
 
 	pi.on("before_agent_start", () => {
+		const now = Date.now();
+		// Every settled shell whose exit deliverExit could not confirm reached
+		// the model (see exitAnnounced's doc comment) — most often one that went
+		// out as a mid-turn followUp. That followUp is the COMMON case, and most
+		// of the time it WAS drained and seen: deliverExit itself has no way to
+		// know that afterward, but a delivered followUp persists in the session
+		// branch as its own custom_message entry (RESULT_MESSAGE, carrying this
+		// shell's id in `details`), so it can be confirmed here instead of
+		// re-flagged. Only a shell with no such entry is the genuinely purged
+		// case (an Escape/abort dropping the followUp queue whole before the
+		// model ever saw it) this reminder exists for.
+		const settled = registry.all().filter((job) => isSettled(job.meta.status) && !job.meta.exitAnnounced);
+		if (settled.length > 0 && uiCtx) {
+			try {
+				for (const entry of uiCtx.sessionManager.getBranch()) {
+					if (entry.type !== "custom_message" || entry.customType !== RESULT_MESSAGE) continue;
+					const shellId = (entry.details as ExitDetails | undefined)?.meta?.shellId;
+					if (!shellId) continue;
+					const job = settled.find((candidate) => candidate.meta.shellId === shellId);
+					if (job) job.meta.exitAnnounced = true;
+				}
+			} catch {
+				// An unreadable branch confirms nothing; the reminder below still
+				// catches every shell this pass could not clear.
+			}
+		}
+		// This handler's own return, below, IS delivery — unlike a followUp it
+		// is spliced into the next turn's messages unconditionally, so listing a
+		// shell here is itself the confirmation, and only here (or the branch
+		// scan above) is it safe to mark the flag.
+		const unannounced = settled.filter((job) => !job.meta.exitAnnounced);
 		const reminder = runningReminder(
 			registry.running().map((job) => job.meta),
-			Date.now(),
+			unannounced.map((job) => job.meta),
+			now,
 		);
 		if (!reminder) return;
+		for (const job of unannounced) job.meta.exitAnnounced = true;
 		return {
 			message: {
 				customType: REMINDER_MESSAGE,

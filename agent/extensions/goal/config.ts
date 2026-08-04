@@ -39,6 +39,29 @@ export const CONFIG = {
 	timeoutMs: 30_000,
 
 	/**
+	 * Minimum word count for an interactive prompt to spend `goal.autoCapture`'s
+	 * one-shot extraction attempt. Deliberately not a classifier of "is this a
+	 * real request" — that judgment is the extraction call's own job, and its
+	 * prompt is explicitly told to return null for quick questions and chats.
+	 * This only screens out messages too short to plausibly state a criterion at
+	 * all ("hi", "thanks"), so the one shot per session is not spent on those
+	 * before the message that actually opens work arrives.
+	 */
+	minCaptureWords: 4,
+
+	/**
+	 * Cap on the user message text sent to the auto-capture extraction call.
+	 * Unlike the evaluator, this reads one message rather than a budgeted
+	 * transcript (see judge.ts's extractCriteria), so a pasted spec or log dump
+	 * as the first message must not turn a one-shot screening call into a
+	 * transcript-sized bill. Longer text is truncated, not rejected outright:
+	 * unlike a user-typed `/goal` condition, this is scanned for criteria, not
+	 * stored verbatim, and a truncated scan that still finds "tests pass" is
+	 * strictly better than skipping capture altogether.
+	 */
+	maxCaptureChars: 6_000,
+
+	/**
 	 * Stop re-prompting after this many not-met verdicts, counted over the goal's
 	 * whole life rather than as a consecutive run — nothing resets the count, and
 	 * a condition judged unmet twenty times is worth giving up on however those

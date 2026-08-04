@@ -24,7 +24,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { AUTO, MODE_ORDER, type Mode, STRICTER_THAN_AUTO, isMode } from "./config.ts";
+import { AUTO, CONFIG, MODE_ORDER, type Mode, STRICTER_THAN_AUTO, isMode } from "./config.ts";
 import { join } from "node:path";
 
 /**
@@ -71,6 +71,17 @@ export type PermissionSettings = {
 	destructiveOverridesAllow: boolean;
 	/** What an "ask" becomes when there is no UI to ask with. */
 	askWithoutUi: "deny" | "allow";
+	/**
+	 * How long the human approval prompt waits before giving up, in ms. 0 waits
+	 * forever — the behaviour every session had before this setting existed.
+	 *
+	 * On expiry the call is BLOCKed, not allowed: with nobody confirmed to be
+	 * watching, failing open is not a safe direction to guess in, and a model
+	 * left running past the deadline needs a reason it can act on rather than a
+	 * fresh prompt it will also never see answered. See `timeoutReason` in
+	 * index.ts for what it is actually told.
+	 */
+	promptTimeoutMs: number;
 	/** Tunables for `auto` mode. Ignored unless `defaultMode` is `auto`. */
 	auto: AutoSettings;
 };
@@ -91,6 +102,7 @@ export const BUILTIN: PermissionSettings = {
 	allowDestructive: [],
 	destructiveOverridesAllow: true,
 	askWithoutUi: "deny",
+	promptTimeoutMs: CONFIG.promptTimeoutMs,
 	auto: { model: undefined, skipReadOnly: true, onError: "allow", timeoutMs: AUTO.timeoutMs },
 };
 
@@ -251,6 +263,17 @@ function applyFull(
 	}
 	if (source.askWithoutUi === "deny" || source.askWithoutUi === "allow") {
 		target.askWithoutUi = source.askWithoutUi;
+	}
+	if (source.promptTimeoutMs !== undefined) {
+		// Unlike permissions.auto.timeoutMs, 0 is accepted here rather than
+		// rejected — it is this field's documented way to ask for the old
+		// unbounded wait back, not a typo that would make every prompt fail
+		// before a human could ever see it.
+		if (typeof source.promptTimeoutMs === "number" && Number.isFinite(source.promptTimeoutMs) && source.promptTimeoutMs >= 0) {
+			target.promptTimeoutMs = source.promptTimeoutMs;
+		} else {
+			warnings.push(`${path}: permissions.promptTimeoutMs must be a non-negative number of milliseconds (0 waits forever)`);
+		}
 	}
 	if (source.auto !== undefined) applyAuto(target.auto, source.auto, warnings, path);
 }

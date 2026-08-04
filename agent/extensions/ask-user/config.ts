@@ -18,7 +18,7 @@
  * back where this started: a tool that exists and never gets used. The only
  * condition on it is a real user being present to answer, which is a fact about
  * the session rather than a choice. Everything below is a tunable — a cap, a
- * placeholder, a badge — not a switch.
+ * placeholder, a badge, a mutation threshold — not a switch.
  */
 
 /** The tool name the model calls. Snake_case, as requested. */
@@ -30,6 +30,14 @@ export const TOOL_NAME = "ask_user";
  * reminder already went out on an earlier turn.
  */
 export const NUDGE_ENTRY_TYPE = "ask-user-nudge";
+
+/**
+ * customType on the hidden message carrying the compliance follow-up (see
+ * CONFIG.followUp below and nudge.ts). Distinct from NUDGE_ENTRY_TYPE so the
+ * two are told apart in the session file — one is the opening reminder, the
+ * other is what fires when that reminder was read and ignored.
+ */
+export const FOLLOWUP_ENTRY_TYPE = "ask-user-followup";
 
 /**
  * pi.events channel announcing that a question owns the prompt. Payload:
@@ -87,4 +95,19 @@ export const CONFIG = {
 	 * same reminder in; the previous one is still in context and still applies.
 	 */
 	nudgeCooldownTurns: 8,
+	/**
+	 * The compliance follow-up: once the opening nudge has gone out, this is how
+	 * many files may be created or edited with zero ask_user calls in between
+	 * before a second, sharper reminder rides in. This is what closes the actual
+	 * benchmark gap — a model that reads the opening nudge and keeps building
+	 * regardless has no other checkpoint, and by the time it stops on its own
+	 * the wrong guess is already load-bearing across every file it touched.
+	 *
+	 * A threshold, not a toggle, for the same reason nudgeCooldownTurns is one:
+	 * tunable, but there is no value that turns it off, because a model that
+	 * never checks back in is exactly the failure this exists to catch.
+	 */
+	followUp: {
+		afterMutations: 5,
+	},
 } as const;

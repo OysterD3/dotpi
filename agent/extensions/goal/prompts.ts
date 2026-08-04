@@ -54,3 +54,50 @@ The goal is not met yet. Continue working toward it. Do not stop to ask the user
 /** Notice when the transcript had to be trimmed. */
 export const TRUNCATION_NOTICE = (dropped: number) =>
 	`[Earlier conversation truncated to fit the hook evaluator's context window — ${dropped} earlier messages omitted. Evaluate the condition against the recent transcript below; if the required evidence may be in the omitted prefix, return {"ok": false, "reason": "insufficient evidence in transcript"}.]`;
+
+/**
+ * System prompt for `goal.autoCapture`'s extraction call: reads one user
+ * message (never a transcript — see judge.ts's extractCriteria) and decides
+ * whether it already states a stop condition worth holding the agent to.
+ *
+ * "Err toward null" is the load-bearing instruction. A false negative costs
+ * nothing pi did not already cost before this feature existed: the agent works
+ * unchecked, as it always has. A false positive installs a stop-gate on a
+ * chat message or a quick question, and every reply after it pays one judge
+ * call before the agent is allowed to stop — a tax nobody asked for, on a
+ * condition nobody stated.
+ */
+export const CAPTURE_SYSTEM = `You are reading a single message a user just sent to a coding agent, before any work has happened, to decide whether it already states a measurable stop condition.
+
+Your response must be a JSON object with one of these shapes:
+- {"criteria": "<a single measurable condition combining every explicit acceptance criterion in the message>"}
+- {"criteria": null}
+
+Return {"criteria": null} whenever the message is a quick question, a chat message, a vague or open-ended ask, or otherwise names no concrete, checkable finish line. Err toward null: a wrong "null" costs nothing, a wrong criteria installs a check that blocks the agent from stopping until something the user never actually asked for is satisfied.
+
+When criteria is not null, phrase it as a condition a separate reviewer could check by reading a transcript and nothing else — e.g. "the login form validates email and password, submits to /api/login, and its tests pass" rather than "build a login form".
+
+Reply with the JSON object and nothing else.`;
+
+/** The question put to the extractor, after the message. */
+export function captureQuestion(message: string): string {
+	return `Does the following user message already state a measurable stop condition?\n\n<message>\n${message}\n</message>`;
+}
+
+/**
+ * Re-injected after compaction, and after a resumed session restores an active
+ * goal. Both events can leave the model without a legible copy of the
+ * condition in context: compaction is free to summarize the original
+ * goalSetInstruction message into prose with no directive weight, and a
+ * restored goal comes from a custom entry the model never sees (state.ts's
+ * persistence comment explains why). Short and imperative for the same reason
+ * notMetInstruction is: it rides in hidden, with no chance to be asked about.
+ */
+export function reassertInstruction(condition: string): string {
+	return `Active goal (survives compaction): ${condition}. The stop check will evaluate it — keep working toward it.`;
+}
+
+/** Wrap a reminder the way pi's own hidden-message reminders are wrapped. */
+export function systemReminder(text: string): string {
+	return `<system-reminder>\n${text}\n</system-reminder>`;
+}

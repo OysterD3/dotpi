@@ -154,6 +154,30 @@ export const CONFIG = {
 	screenReserve: 6,
 	/** Row count assumed when the host cannot report one (tests, odd terminals). */
 	assumedRows: 24,
+	/**
+	 * Consecutive main-session edit/write tool calls, with no Workflow call
+	 * between them, before the model is told it is grinding alone.
+	 *
+	 * The keyword's opt-in is per-turn and a background workflow's result is
+	 * delivered on a turn before_agent_start never fires for (see index.ts's
+	 * before_agent_start and mode.ts's hasMessageSinceLastUserTurn) — so once
+	 * that reminder decayed, nothing else was watching. The measured run hit
+	 * 360 solo edit/write calls across 69 files with no nudge at any point.
+	 * Twenty is not tuned against a second measurement; it is "clearly past
+	 * the last file of a small fix", the same order of magnitude as the
+	 * deepestAgentTurns >= 40 threshold this mirrors in tool.ts.
+	 */
+	editStreakNudge: 20,
+	/**
+	 * Cap on edit-streak nudges delivered within one turn.
+	 *
+	 * An unattended streak keeps incrementing forever; without this, a run
+	 * that never stops to read anything would get the same reminder every
+	 * twentieth call indefinitely — the tenth copy no more likely to be read
+	 * than the first. Two lets the model notice a repeat before the message
+	 * is muted for the rest of the turn.
+	 */
+	editStreakMaxNudgesPerTurn: 2,
 } as const;
 
 export interface UltracodeSettings {

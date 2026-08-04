@@ -166,18 +166,126 @@ check("maps counts and sums cost into total", toPiUsage({ input: 10, output: 20,
 
 console.log("\n--- settings ---");
 const { loadSettings } = await import("./index.ts");
+const { DEFAULT_RESURFACE_SETTINGS } = await import("./config.ts");
 const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ advisor: block }));
 
 writeSettings({});
-check("defaults: no model, enabled", loadSettings(AGENT), { model: undefined, enabled: true });
+check("defaults: no model, enabled, default resurface", loadSettings(AGENT), {
+	model: undefined,
+	enabled: true,
+	resurface: DEFAULT_RESURFACE_SETTINGS,
+});
 writeSettings({ model: "opus", enabled: false });
-check("model and kill switch parsed", loadSettings(AGENT), { model: "opus", enabled: false });
+check("model and kill switch parsed", loadSettings(AGENT), { model: "opus", enabled: false, resurface: DEFAULT_RESURFACE_SETTINGS });
 writeSettings({ model: "   " });
 check("blank model is treated as unset", loadSettings(AGENT).model, undefined);
 writeSettings({ enabled: "yes" });
 check("wrong-typed enabled falls back to true", loadSettings(AGENT).enabled, true);
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
-check("unreadable settings fall back", loadSettings(AGENT), { model: undefined, enabled: true });
+check("unreadable settings fall back", loadSettings(AGENT), {
+	model: undefined,
+	enabled: true,
+	resurface: DEFAULT_RESURFACE_SETTINGS,
+});
+
+console.log("\n--- resurface settings parsing ---");
+writeSettings({ resurface: { enabled: false, afterCalls: 5 } });
+check("resurface block overrides both fields", loadSettings(AGENT).resurface, { enabled: false, afterCalls: 5 });
+writeSettings({ resurface: { enabled: "nope" } });
+check("wrong-typed resurface.enabled falls back to true", loadSettings(AGENT).resurface.enabled, true);
+writeSettings({ resurface: { afterCalls: 0 } });
+check("afterCalls: 0 falls back to the default (0 would fire on the very next call)", loadSettings(AGENT).resurface.afterCalls, 15);
+writeSettings({ resurface: { afterCalls: -3 } });
+check("negative afterCalls falls back to the default", loadSettings(AGENT).resurface.afterCalls, 15);
+writeSettings({ resurface: { afterCalls: 2.5 } });
+check("non-integer afterCalls falls back to the default", loadSettings(AGENT).resurface.afterCalls, 15);
+writeSettings({ resurface: { afterCalls: "12" } });
+check("wrong-typed afterCalls falls back to the default", loadSettings(AGENT).resurface.afterCalls, 15);
+writeSettings({ resurface: "nope" });
+check("non-object resurface block falls back entirely", loadSettings(AGENT).resurface, DEFAULT_RESURFACE_SETTINGS);
+
+// ------------------------------------------------------------------ resurface
+
+console.log("\n--- resurface: advice-head truncation ---");
+{
+	const { truncateAdviceHead } = await import("./resurface.ts");
+	check("short advice is untouched", truncateAdviceHead("keep it simple"), "keep it simple");
+	check("surrounding whitespace is trimmed", truncateAdviceHead("  keep it simple  "), "keep it simple");
+	const long = "x".repeat(900);
+	const head = truncateAdviceHead(long);
+	check("head is capped at 800 chars plus an ellipsis marker", head, `${"x".repeat(800)}…`);
+	checkTrue("truncation is marked", head.endsWith("…"));
+	check("exactly at the cap is not marked", truncateAdviceHead("x".repeat(800)), "x".repeat(800));
+	check("a custom cap is honored", truncateAdviceHead("abcdefghij", 4), "abcd…");
+}
+
+console.log("\n--- resurface: the counter / re-arm state machine ---");
+{
+	const { isMutatingTool, markResurfaced, onConsult, recordMutatingCall, shouldResurface } = await import("./resurface.ts");
+
+	checkTrue("write is mutating", isMutatingTool("write"));
+	checkTrue("edit is mutating", isMutatingTool("edit"));
+	checkTrue("bash is mutating", isMutatingTool("bash"));
+	checkTrue("read is not", !isMutatingTool("read"));
+	checkTrue("grep is not", !isMutatingTool("grep"));
+	checkTrue("the advisor's own call is not", !isMutatingTool("advisor"));
+
+	const settings = { enabled: true, afterCalls: 3 };
+
+	let state = onConsult(7, "Fix the null check before anything else.");
+	check("a fresh consult starts at zero, unarmed", [state.mutatingCallsSince, state.resurfaced], [0, false]);
+	check("atCall records the call it was given at", state.atCall, 7);
+	check("adviceHead holds the (short) advice verbatim", state.adviceHead, "Fix the null check before anything else.");
+
+	checkTrue("below threshold, it does not resurface", !shouldResurface(state, settings));
+	state = recordMutatingCall(state);
+	checkTrue("one mutating call in, still below threshold (3)", !shouldResurface(state, settings));
+	state = recordMutatingCall(state);
+	state = recordMutatingCall(state);
+	check("three mutating calls reaches the threshold", state.mutatingCallsSince, 3);
+	checkTrue("at the threshold, it resurfaces", shouldResurface(state, settings));
+
+	state = markResurfaced(state);
+	checkTrue("marked, it will not resurface again", !shouldResurface(state, settings));
+	state = recordMutatingCall(state);
+	checkTrue("even well past the threshold", !shouldResurface(state, settings));
+
+	const rearmed = onConsult(20, "Different advice now.");
+	check("a new consult resets mutatingCallsSince to 0", rearmed.mutatingCallsSince, 0);
+	let reprimed = rearmed;
+	reprimed = recordMutatingCall(recordMutatingCall(recordMutatingCall(reprimed)));
+	checkTrue("...and re-arms the resurface after its own threshold", shouldResurface(reprimed, settings));
+
+	const disabled = { enabled: false, afterCalls: 3 };
+	const overThreshold = recordMutatingCall(recordMutatingCall(recordMutatingCall(onConsult(0, "x"))));
+	checkTrue("disabled settings never resurface, even over threshold", !shouldResurface(overThreshold, disabled));
+}
+
+console.log("\n--- resurface: wording ---");
+{
+	const { CLOSING_LINE, appendClosingLine, resurfaceReminder, systemReminder } = await import("./resurface.ts");
+
+	const reminder = resurfaceReminder("Fix the null check before anything else.");
+	checkTrue("names the advice head as a literal quote", reminder.includes('"Fix the null check before anything else."'));
+	checkTrue(
+		"asks for a one-line consistency check",
+		reminder.includes("in one line: are your actions since then consistent with it?"),
+	);
+	checkTrue(
+		"gives two ways out: comply or escalate",
+		reminder.includes("either comply or call the advisor again and surface the conflict explicitly"),
+	);
+
+	const wrapped = systemReminder("x");
+	checkTrue("systemReminder wraps in the tag pi's own reminders use", wrapped.startsWith("<system-reminder>\n") && wrapped.endsWith("\n</system-reminder>"));
+
+	check("the closing line is appended after a blank line", appendClosingLine("Do X first."), `Do X first.\n\n${CLOSING_LINE}`);
+	checkTrue(
+		"the closing line demands engagement without owning the opening",
+		CLOSING_LINE.includes("weigh this advice explicitly") && CLOSING_LINE.includes("state in one line why not"),
+	);
+	checkTrue("and does not dictate how the next message must start", !CLOSING_LINE.includes("Start your next message"));
+}
 
 // ------------------------------------------------------------------- progress
 
@@ -422,6 +530,7 @@ function makePi() {
 	const statuses: Array<[string, string | undefined]> = [];
 	const notices: Array<[string, string]> = [];
 	const events = new Map<string, Function>();
+	const sent: Array<{ message: any; options: any }> = [];
 	const pi = {
 		on: (event: string, handler: Function) => events.set(event, handler),
 		registerTool: (def: any) => {
@@ -433,18 +542,22 @@ function makePi() {
 		registerCommand: (name: string, def: any) => commands.set(name, def),
 		getActiveTools: () => active,
 		setActiveTools: (names: string[]) => (active = names),
+		sendMessage: (message: any, options: any) => sent.push({ message, options }),
 	};
-	const uiCtx = (model: { id: string; provider: string }) => ({
+	// isIdle defaults to false: a tool_call always lands mid-turn (see index.ts's
+	// resurface handler), so that is the realistic case to exercise by default.
+	const uiCtx = (model: { id: string; provider: string }, opts: { isIdle?: boolean } = {}) => ({
 		hasUI: true,
 		cwd: ROOT,
 		model,
 		modelRegistry: { getAll: () => MODELS },
+		isIdle: () => opts.isIdle ?? false,
 		ui: {
 			setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
 			notify: (message: string, level: string) => notices.push([level, message]),
 		},
 	});
-	return { pi, tools, flags, commands, events, getActive: () => active, statuses, notices, uiCtx };
+	return { pi, tools, flags, commands, events, getActive: () => active, statuses, notices, uiCtx, sent };
 }
 
 const extension = (await import("./index.ts")).default;
@@ -528,6 +641,91 @@ console.log("\n--- /advisor command ---");
 	extension(h.pi as never);
 	h.events.get("session_start")!({}, h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" }));
 	checkTrue("disabled keeps the tool off", !h.getActive().includes("advisor"));
+}
+
+console.log("\n--- resurfacing wired into tool_call / tool_result ---");
+{
+	const { CLOSING_LINE } = await import("./resurface.ts");
+
+	writeSettings({ model: "opus", resurface: { afterCalls: 2 } });
+	const h = makePi();
+	extension(h.pi as never);
+	const ctx = h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" });
+	h.events.get("session_start")!({}, ctx);
+
+	const toolCall = (toolName: string) =>
+		h.events.get("tool_call")!({ type: "tool_call", toolCallId: "t", toolName, input: {} }, ctx);
+	const toolResult = (toolName: string, content: unknown[], details: unknown, isError = false) =>
+		h.events.get("tool_result")!({ type: "tool_result", toolCallId: "t", toolName, input: {}, content, isError, details });
+
+	// A read before any consult: the standing-advice machinery has nothing to
+	// watch yet, so it must stay silent rather than resurface an absence.
+	toolCall("read");
+	check("no consult yet -> no resurface machinery fires", h.sent.length, 0);
+
+	// A tool_result for some other tool must not be mistaken for a consult.
+	const ignored = toolResult("bash", [{ type: "text", text: "ls output" }], undefined);
+	check("tool_result for a different tool is left alone", ignored, undefined);
+
+	// A successful consult: the result gets the closing line appended, and
+	// mutating calls start counting from zero for THIS advice.
+	const advice = "Fix the null check before touching the parser.";
+	const withClosing = toolResult(
+		"advisor",
+		[{ type: "text", text: advice }],
+		{ advisorModel: "anthropic/claude-opus-4-8", droppedMessages: 0, turns: 1 },
+	) as { content: Array<{ text: string }> };
+	checkTrue("a successful consult appends the closing line", withClosing.content[0]!.text.endsWith(CLOSING_LINE));
+	checkTrue("...on top of the original advice", withClosing.content[0]!.text.startsWith(advice));
+
+	// Reads don't count toward the threshold (afterCalls: 2).
+	toolCall("read");
+	check("a read does not move the counter -> no resurface yet", h.sent.length, 0);
+
+	// Two mutating calls reach the threshold and fire exactly once.
+	toolCall("write");
+	check("one mutating call, still below threshold 2", h.sent.length, 0);
+	toolCall("edit");
+	check("the second mutating call fires the resurface", h.sent.length, 1);
+
+	const first = h.sent[0]!;
+	check("delivered as a hidden custom message", first.message.display, false);
+	checkTrue(
+		"wrapped as a system-reminder",
+		first.message.content.startsWith("<system-reminder>\n") && first.message.content.endsWith("\n</system-reminder>"),
+	);
+	checkTrue("names the advice head", first.message.content.includes(advice));
+	// tool_call always lands mid-turn (isIdle() is false by default in this
+	// harness), so this is the followUp branch of the same idiom goal and
+	// stalled-turn use for injecting a message into a running turn.
+	check("mid-turn delivery uses the followUp idiom", first.options, { deliverAs: "followUp" });
+
+	toolCall("bash");
+	check("at most one resurface per consult -- a third mutating call does not fire again", h.sent.length, 1);
+
+	// A new consult re-arms it, with the NEW advice head.
+	h.sent.length = 0;
+	const advice2 = "Now check the second edge case before shipping.";
+	toolResult("advisor", [{ type: "text", text: advice2 }], { advisorModel: "anthropic/claude-opus-4-8", droppedMessages: 0, turns: 1 });
+	toolCall("write");
+	check("one mutating call after the new consult, still below threshold", h.sent.length, 0);
+	toolCall("write");
+	check("a fresh consult re-arms the resurface after its own threshold", h.sent.length, 1);
+	checkTrue("...with the new advice head, not the old one", h.sent[0]!.message.content.includes(advice2));
+
+	// A failed / unavailable consult holds no advice, so nothing is captured
+	// and the result is left untouched: appending "restate the advice" to a
+	// message that says there IS no advice would contradict itself.
+	h.sent.length = 0;
+	const failure = toolResult(
+		"advisor",
+		[{ type: "text", text: "Advisor unavailable: reviewer timed out. Proceeding without advice." }],
+		{ advisorModel: "anthropic/claude-opus-4-8", error: "reviewer timed out" },
+	);
+	check("an unavailable consult's content is left untouched", failure, undefined);
+	toolCall("write");
+	toolCall("write");
+	check("...and does not re-arm the resurface, so nothing fires for the old advice either", h.sent.length, 0);
 }
 
 console.log("\n--- spawn: a null byte must not disable the advisor ---");

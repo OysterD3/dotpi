@@ -59,3 +59,11 @@ export const BAR_TRACK = "·";
 /** Percentages at which the context meter changes colour. */
 export const WARN_ABOVE_PERCENT = 70;
 export const ERROR_ABOVE_PERCENT = 90;
+
+/**
+ * customType for the hidden budget-checkpoint reminder sent via
+ * pi.sendMessage — see budget.ts. `display: false` on that message means
+ * nothing ever registers a renderer for this; the string only has to be
+ * unique enough not to collide with another extension's customType.
+ */
+export const BUDGET_REMINDER_TYPE = "usage_budget_reminder";

@@ -209,6 +209,15 @@ export function stubText(record: EvictionRecord): string {
  *   - superseded reads: a later read of the same file replaced this copy, so
  *     what is being protected would be the *stale* version of a file the model
  *     is probably editing.
+ *
+ * A third protection sits outside age altogether: `pinned` (toolCallIds
+ * published on the "context-diet:pin" pi.events channel — see index.ts) marks
+ * a result as protected by an outside decision, not by recency. The
+ * motivating case is the inverse of the image rule above: a reference mockup
+ * that must survive precisely because it is *old* — it has to outlive every
+ * one of the agent's own newer, and by then more numerous, screenshots of its
+ * own work. Checked first, ahead of the image and supersession rules, so a
+ * pin wins over both rather than being folded into either.
  */
 export function collectCandidates(
 	messages: readonly AgentMessage[],
@@ -216,6 +225,7 @@ export function collectCandidates(
 	settings: DietSettings,
 	labels: ReadonlyMap<string, string>,
 	superseded: ReadonlySet<string> = new Set(),
+	pinned: ReadonlySet<string> = new Set(),
 ): EvictionRecord[] {
 	const results: { index: number; message: ToolResultMessage }[] = [];
 	for (const [index, message] of messages.entries()) {
@@ -232,6 +242,7 @@ export function collectCandidates(
 	for (const [position, { message }] of results.entries()) {
 		if (evicted.has(message.toolCallId)) continue;
 		if (message.isError) continue;
+		if (pinned.has(message.toolCallId)) continue;
 
 		const image = hasImage(message.content);
 		const stale = superseded.has(message.toolCallId);
@@ -280,8 +291,10 @@ export function planDiet(args: {
 	currentTokens: number;
 	contextWindow: number;
 	settings: DietSettings;
+	/** toolCallIds protected by an outside decision — see collectCandidates. */
+	pinned?: ReadonlySet<string>;
 }): DietPlan | null {
-	const { messages, evicted, currentTokens, contextWindow, settings } = args;
+	const { messages, evicted, currentTokens, contextWindow, settings, pinned = new Set() } = args;
 	if (!settings.enabled || contextWindow <= 0) return null;
 
 	const { highWater, target } = resolveBounds(contextWindow, settings);
@@ -289,7 +302,7 @@ export function planDiet(args: {
 
 	const labels = indexCallLabels(messages);
 	const superseded = findSupersededReads(messages, indexReadSpans(messages));
-	const candidates = collectCandidates(messages, evicted, settings, labels, superseded);
+	const candidates = collectCandidates(messages, evicted, settings, labels, superseded, pinned);
 
 	const records: EvictionRecord[] = [];
 	let projected = currentTokens;
@@ -342,6 +355,42 @@ export function dietLine(entry: DietEntry): string {
 	const noun = entry.dropped === 1 ? "stale result" : "stale results";
 	const reasoning = entry.reasoningDropped ? ` + reasoning from ${entry.reasoningDropped}` : "";
 	return `Context diet — dropped ${entry.dropped} ${noun}${reasoning}, ${formatTokens(entry.fromTokens)} → ${formatTokens(entry.toTokens)}`;
+}
+
+/**
+ * The hidden follow-up sent once per turn once rounds keep firing inside it —
+ * see session.ts's escalateAfterRounds and index.ts for how it is delivered.
+ * Wrapped like pi's other hidden reminders (ask-user's systemReminder is the
+ * precedent) so it never renders in the transcript but still reaches the
+ * model as an ordinary message in its own context.
+ *
+ * States the count and the approximate tokens because a bare "you are being
+ * trimmed" is easy for a model to read past; a specific, escalating number
+ * attached to its own recent behaviour is harder to. The delegation move is
+ * hedged on the Workflow tool actually being there: this reminder fires in
+ * any session, including ones with no Workflow tool at all or where its use
+ * is opt-in-gated, and an unconditional "delegate to workflow agents" would
+ * be advice the model cannot act on in exactly those cases. The other move —
+ * stop opening new files and let the working set shrink on its own — always
+ * applies, so it stays the fallback regardless.
+ */
+export function escalationReminder(roundsThisTurn: number, tokensThisTurn: number): string {
+	const body =
+		`Context has been trimmed ${roundsThisTurn} times this turn (~${formatTokens(tokensThisTurn)} tokens dropped). ` +
+		"You are reading faster than the window holds. Change strategy: delegate self-contained subtasks (if the " +
+		"Workflow tool is available), or finish and verify the current item before opening new files. " +
+		"Re-reading dropped results will re-trigger trimming.";
+	return `<system-reminder>\n${body}\n</system-reminder>`;
+}
+
+/**
+ * What an attended user sees for the same event, in the notification tray
+ * rather than a transcript line — a round on its own only ever prints a
+ * muted row (see render.ts), which is easy to miss exactly when it matters
+ * most: a turn that keeps re-triggering rounds instead of finishing.
+ */
+export function escalationNotice(roundsThisTurn: number, tokensThisTurn: number): string {
+	return `Context diet escalated — trimmed ${roundsThisTurn}× this turn (~${formatTokens(tokensThisTurn)} dropped so far). Told the model to change strategy.`;
 }
 
 /**

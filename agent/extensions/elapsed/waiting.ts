@@ -38,6 +38,20 @@ export class WaitClock {
 		return this.waited + (this.since === undefined ? 0 : Math.max(0, now - this.since));
 	}
 
+	/**
+	 * How long the wait open right now has lasted, or 0 when none is open.
+	 *
+	 * Distinct from waitedBy(): that is the turn's running total across every
+	 * wait so far, which is exactly what must stay frozen while a question is
+	 * up. This is the open wait's own clock, counting from when *this* prompt
+	 * appeared — what the live "Waiting on your answer… Xs" row and the
+	 * waitAlertMs notifier both need, so a second wait in the same turn is
+	 * reported from zero rather than picking up where the first left off.
+	 */
+	openWaitMs(now: number): number {
+		return this.since === undefined ? 0 : Math.max(0, now - this.since);
+	}
+
 	/** True while a question is up. */
 	get waiting(): boolean {
 		return this.since !== undefined;

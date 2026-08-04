@@ -20,6 +20,16 @@
  * request that opens new work arrives, a hidden reminder rides in with it and
  * says to settle the open decisions now, or to state the assumption and start.
  *
+ * The opening nudge only fires once, though, and a model that reads past it
+ * anyway is left with no other checkpoint — which is exactly what happened in
+ * the benchmark this closes a gap for: ten hours and $93 built on a guessed
+ * data source, with ask_user never called once. So a second reminder watches
+ * tool_call for actual cost being spent (write/edit calls) rather than time
+ * passing, and speaks up once CONFIG.followUp.afterMutations distinct files
+ * have been touched with no ask_user call in between. See nudge.ts for the
+ * wording and the rationale, and the tool_call handler below for the set and
+ * latch.
+ *
  * There is no settings block and no off switch, by design. Asking when the
  * decision is genuinely the user's is behaviour, not a preference, and a knob
  * for it is only ever a way back to a tool that exists and goes unused. The one
@@ -31,9 +41,9 @@
  * Neither can turn anything off.
  */
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG, NUDGE_ENTRY_TYPE, TOOL_NAME } from "./config.ts";
+import { CONFIG, FOLLOWUP_ENTRY_TYPE, NUDGE_ENTRY_TYPE, TOOL_NAME } from "./config.ts";
 import { type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
-import { OPENING_NUDGE, opensWork, systemReminder } from "./nudge.ts";
+import { followUpReminder, OPENING_NUDGE, opensWork, systemReminder } from "./nudge.ts";
 import { showAsk } from "./prompt.ts";
 import { registerAskUserTool } from "./tool.ts";
 
@@ -43,6 +53,23 @@ export default function (pi: ExtensionAPI) {
 	// Interactive turns since the last nudge went out. Infinity so the first
 	// work-opening request of a session is never inside the cooldown.
 	let turnsSinceNudge = Number.POSITIVE_INFINITY;
+
+	// Whether the opening nudge has gone out at least once this session. The
+	// compliance follow-up below is a backstop for exactly the case where it
+	// did and was ignored, so it has nothing to watch for before that.
+	let nudgeHasFired = false;
+	// Distinct files touched by write/edit tool calls since the last ask_user
+	// call — session-wide, not per turn, because a model that keeps building
+	// across many turns without asking is precisely what this counts. A Set,
+	// not a count of calls: five edits to one file is one file still unchecked
+	// against the opening questions, and the follow-up message says "N files"
+	// — it would be false to count tool calls and print that word. Cleared by
+	// an actual ask_user call, which re-arms the latch below.
+	let mutatedFilesSinceAsk = new Set<string>();
+	// One-shot per arming: true once the follow-up has fired, so it does not
+	// repeat on every mutation after the first. Only cleared by an ask_user
+	// call (see the tool_call handler), same as the set above.
+	let followUpDelivered = false;
 
 	registerAskUserTool(pi);
 
@@ -95,7 +122,47 @@ export default function (pi: ExtensionAPI) {
 		// tool it would reach for is not even offered.
 		if (!isAvailable(ctx)) return;
 		turnsSinceNudge = 0;
+		nudgeHasFired = true;
 		return { message: { customType: NUDGE_ENTRY_TYPE, content: systemReminder(OPENING_NUDGE), display: false } };
+	});
+
+	// The compliance follow-up. Watched on tool_call (before execution), not
+	// tool_result: a write that later errors was still a decision acted on
+	// without asking, whether or not the file ended up on disk, and the model
+	// that never calls ask_user is exactly the one that never learns whether
+	// its writes succeeded either.
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName === TOOL_NAME) {
+			// An actual ask_user call re-arms the latch: whatever was built
+			// without asking is now accounted for, and the set starts over for
+			// whatever comes next.
+			mutatedFilesSinceAsk = new Set();
+			followUpDelivered = false;
+			return;
+		}
+		// Nothing to be a backstop for until the opening nudge has actually gone
+		// out, and nobody to hand the reminder to without a UI — the same
+		// condition the nudge itself is gated on in before_agent_start.
+		if (!nudgeHasFired || !ctx.hasUI || followUpDelivered) return;
+		if (event.toolName !== "write" && event.toolName !== "edit") return;
+
+		// write and edit both carry `path: string`; cast defensively rather than
+		// relying on narrowing away CustomToolCallEvent's wide `toolName: string`.
+		const path = (event.input as Record<string, unknown>).path;
+		if (typeof path === "string") mutatedFilesSinceAsk.add(path);
+		if (mutatedFilesSinceAsk.size < CONFIG.followUp.afterMutations) return;
+
+		followUpDelivered = true;
+		// Same two shapes stalled-turn uses to re-enter the loop mid-run: pi's
+		// sendMessage tests deliverAs before triggerTurn, so "nextTurn" would
+		// just park this on a queue nothing drains until the next human prompt.
+		// tool_call fires while a tool is about to execute, so the agent is by
+		// construction not idle here — the triggerTurn branch is a backstop
+		// against that assumption changing, not a path this takes today.
+		pi.sendMessage(
+			{ customType: FOLLOWUP_ENTRY_TYPE, content: followUpReminder(mutatedFilesSinceAsk.size), display: false },
+			ctx.isIdle() ? { triggerTurn: true } : { deliverAs: "followUp" },
+		);
 	});
 
 	const describeStatus = (ctx: ExtensionContext): string =>

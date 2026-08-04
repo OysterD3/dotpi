@@ -18,7 +18,7 @@ import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, 
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
-import { UltracodeMode } from "./mode.ts";
+import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
@@ -47,9 +47,10 @@ import {
 	type RunMeta,
 	sessionActivity,
 } from "./store.ts";
-import { resolveScript, resolveThinking, safeStringify } from "./tool.ts";
+import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
+import { resolveScript, resolveThinking, safeStringify, WORKFLOW_TOOL_NAME } from "./tool.ts";
 import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
-import { ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
+import { editStreakReminder, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
 /** The session the panel fixtures below belong to. */
@@ -2493,6 +2494,125 @@ console.log("\n--- mode: reminder cadence ---");
 	const mode = new UltracodeMode();
 	mode.restore({ on: true, announced: true, turnsSinceReminder: 0, exitPending: true });
 	check("exitPending ignored while on", mode.reminderForTurn(), null);
+}
+
+// -------------------------------------------------- opt-in across a delivery
+
+console.log("\n--- mode: a workflow result since the last real turn ---");
+{
+	const userMsg = (text: string) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }] } });
+	const resultMsg = () => ({ type: "custom_message", customType: "workflow-result", content: "done", display: true });
+	const assistantMsg = () => ({ type: "message", message: { role: "assistant", content: [] } });
+
+	check("empty branch -> nothing to find", hasMessageSinceLastUserTurn([], "workflow-result"), false);
+	check(
+		"a result with no user turn since -> true",
+		hasMessageSinceLastUserTurn([userMsg("go"), resultMsg(), assistantMsg()], "workflow-result"),
+		true,
+	);
+	check(
+		"a user turn after the result -> false (that turn already got its own reminder pass)",
+		hasMessageSinceLastUserTurn([resultMsg(), userMsg("go")], "workflow-result"),
+		false,
+	);
+	check(
+		"a result with no messages at all after it still counts",
+		hasMessageSinceLastUserTurn([userMsg("go"), resultMsg()], "workflow-result"),
+		true,
+	);
+	check(
+		"an older result, superseded by a later user turn, does not leak forward",
+		hasMessageSinceLastUserTurn([resultMsg(), userMsg("first"), assistantMsg(), userMsg("second")], "workflow-result"),
+		false,
+	);
+	// Reminders ride in as a "custom_message" of a DIFFERENT customType (never a
+	// "message" entry) — the scan must see past one to find the result, rather
+	// than mistaking it for a user-turn boundary.
+	check(
+		"an unrelated custom_message in between does not block the scan",
+		hasMessageSinceLastUserTurn(
+			[resultMsg(), { type: "custom_message", customType: "ultracode", content: "x", display: false }],
+			"workflow-result",
+		),
+		true,
+	);
+	check("the customType must match", hasMessageSinceLastUserTurn([resultMsg()], "some-other-type"), false);
+}
+
+// ------------------------------------------------------------ streak: state
+
+console.log("\n--- streak: EditStreak counting and cadence ---");
+{
+	const streak = new EditStreak();
+	check("starts at zero", streak.current(), 0);
+	for (let i = 0; i < 19; i++) check(`call ${i + 1} of 19 is quiet`, streak.recordEdit(20, 2), null);
+	check("the 20th call reports the streak", streak.recordEdit(20, 2), 20);
+	check("current() reflects it", streak.current(), 20);
+	for (let i = 0; i < 19; i++) streak.recordEdit(20, 2);
+	check("the 40th call reports again, still within the per-turn cap", streak.recordEdit(20, 2), 40);
+	for (let i = 0; i < 19; i++) streak.recordEdit(20, 2);
+	check("a third nudge in the same turn is capped away", streak.recordEdit(20, 2), null);
+	check("but the count keeps climbing underneath the cap", streak.current(), 60);
+	streak.newTurn();
+	for (let i = 0; i < 19; i++) streak.recordEdit(20, 2);
+	check("a new turn resets the per-turn cap, not the streak", streak.recordEdit(20, 2), 80);
+}
+{
+	const streak = new EditStreak();
+	for (let i = 0; i < 20; i++) streak.recordEdit(20, 2);
+	check("a streak in progress", streak.current(), 20);
+	streak.reset();
+	check("a Workflow call ends it", streak.current(), 0);
+	check("and the cadence restarts from scratch", (() => {
+		for (let i = 0; i < 19; i++) streak.recordEdit(20, 2);
+		return streak.recordEdit(20, 2);
+	})(), 20);
+}
+{
+	const streak = new EditStreak();
+	streak.restore(19);
+	check("restore seeds the count", streak.current(), 19);
+	check("the next call completes the streak from where it left off", streak.recordEdit(20, 2), 20);
+}
+
+console.log("\n--- streak: restoreEditStreak from a branch ---");
+{
+	const toolResult = (toolName: string) => ({ type: "message", message: { role: "toolResult", toolName } });
+	const other = () => ({ type: "message", message: { role: "assistant" } });
+
+	check("empty branch -> nothing ran, nothing counted", restoreEditStreak([], "workflow"), { count: 0, workflowRan: false });
+	check(
+		"edit/write results extend the count",
+		restoreEditStreak([toolResult("edit"), toolResult("write"), toolResult("edit")], "workflow"),
+		{ count: 3, workflowRan: false },
+	);
+	check(
+		"a workflow result resets the count and is remembered",
+		restoreEditStreak([toolResult("edit"), toolResult("edit"), toolResult("workflow"), toolResult("edit")], "workflow"),
+		{ count: 1, workflowRan: true },
+	);
+	check(
+		"reads/greps/bash between edits do not reset or extend it",
+		restoreEditStreak([toolResult("edit"), toolResult("read"), toolResult("bash"), toolResult("edit")], "workflow"),
+		{ count: 2, workflowRan: false },
+	);
+	check("everything unrelated to a toolResult message is ignored", restoreEditStreak([other(), { type: "custom" }], "workflow"), {
+		count: 0,
+		workflowRan: false,
+	});
+	check("EDIT_STREAK_TOOLS names exactly edit and write", [...EDIT_STREAK_TOOLS].sort(), ["edit", "write"]);
+	check("the workflow tool's own registered name is what restoreEditStreak is called with in index.ts", WORKFLOW_TOOL_NAME, "workflow");
+}
+
+console.log("\n--- reminders: the edit-streak nudge names the streak and cites the doctrine ---");
+{
+	const text = editStreakReminder(20);
+	check("names the count", text.includes("made 20 consecutive hand-edits"), true);
+	// The reminder exists so the model applies its OWN fan-out rule to itself;
+	// asserting the phrase is present is what would catch a future edit that
+	// softened "that includes you" back into generic advice.
+	check("cites the model's own doctrine back at it", text.includes("that includes you"), true);
+	check("names the concrete remedy", text.includes("one agent per deliverable, shell()-gated"), true);
 }
 
 // ------------------------------------- panel budget: headings vs agent rows

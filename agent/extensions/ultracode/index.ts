@@ -30,6 +30,24 @@
  * before_agent_start — pi's own plan-mode pattern — so they reach the model as
  * <system-reminder> blocks without appearing in the transcript UI.
  *
+ * Two things watch the opt-in itself, not just the request that grants it:
+ *   - a background workflow's result is delivered via sendMessage's
+ *     triggerTurn/followUp, and BOTH bypass before_agent_start entirely (see
+ *     mode.ts's hasMessageSinceLastUserTurn) — so the reactive turn that
+ *     processed a result carried no reminder, and if the keyword is not
+ *     retyped, neither did every turn after it. Once the keyword has fired
+ *     this session, the next real turn that follows a workflow result is
+ *     still treated as opted in and gets the sparse reminder;
+ *   - the keyword's tool description forbids un-opted-in workflow use, which
+ *     made solo grinding the only path the model's own rules still allowed
+ *     once that opt-in had decayed. A run of consecutive main-session
+ *     edit/write calls (streak.ts), gated on the opt-in having ever been
+ *     standing this session, gets a hidden mid-turn nudge every
+ *     CONFIG.editStreakNudge calls, capped per turn.
+ * Both are responses to the same measured run: a keyword that fired once, a
+ * workflow that ran once, then 69 files hand-edited across 360 solo tool
+ * calls with nothing left to say so.
+ *
  * Known gaps, documented in README.md: no worktree isolation, no keyword
  * dismissal shortcut, and the keyword is detected on the pre-expansion text of
  * interactive input only.
@@ -45,15 +63,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { COLLECT_CHANNEL, DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
+import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
-import { UltracodeMode } from "./mode.ts";
+import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
-import { KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
+import { editStreakReminder, ENTER_SPARSE, KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
+import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
 import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir, unresumedInterrupted } from "./store.ts";
-import { registerWorkflowTool, usableModels } from "./tool.ts";
+import { registerWorkflowTool, RESULT_MESSAGE, usableModels, WORKFLOW_TOOL_NAME } from "./tool.ts";
 import { showWorkflows } from "./tui.ts";
 
 const BADGE = "✦ ultracode";
@@ -77,25 +96,39 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 	}
 }
 
+export interface RestoredBranchState {
+	/** Thinking level to restore on /ultracode off, if the mode is on. */
+	previousLevel: string | undefined;
+	/**
+	 * Whether the keyword reminder has gone out at least once this session.
+	 * Read alongside hasMessageSinceLastUserTurn to decide whether a turn
+	 * following a workflow-result delivery is still opted in.
+	 */
+	keywordFired: boolean;
+}
+
 /**
  * Rebuild mode state from a resumed branch: toggle entries (type "custom") and
  * delivered reminders, which pi persists as type "custom_message" entries —
  * that is how before_agent_start-injected messages land in the session file.
- * Returns the thinking level to restore on /ultracode off, if the mode is on.
  */
-export function restoreFromBranch(
-	mode: UltracodeMode,
-	branch: Array<Record<string, any>>,
-): string | undefined {
+export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<string, any>>): RestoredBranchState {
 	let on = false;
 	let announced = false;
 	let turns = 0;
 	let previousLevel: string | undefined;
+	let keywordFired = false;
 	for (const entry of branch) {
 		if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
 			const data = entry.data as ToggleEntry | undefined;
 			on = data?.action === "on";
 			previousLevel = on ? data?.previousLevel : undefined;
+			// An explicit off (this entry is /ultracode off's or
+			// thinking_level_select's own log, both append it) wins over keyword
+			// history recorded earlier in the branch — mirrors the live-session
+			// reset in disable() / thinking_level_select below, so a resume can't
+			// resurrect an opt-in the user already turned off.
+			if (!on) keywordFired = false;
 		} else if (entry.type === "custom_message" && entry.customType === ENTRY_TYPE) {
 			const content = entry.content;
 			const text =
@@ -109,6 +142,11 @@ export function restoreFromBranch(
 				announced = true;
 				turns = 0;
 			}
+			// Reminders combine onto one message (keyword first, see
+			// before_agent_start below), so this is a substring check, not an
+			// equality — a turn that also carried a routing or mode reminder
+			// still counts.
+			if (text.includes(KEYWORD_REMINDER)) keywordFired = true;
 		} else if (entry.type === "message" && entry.message?.role === "user" && on && announced) {
 			turns++;
 		}
@@ -116,17 +154,27 @@ export function restoreFromBranch(
 	// A pending exit: the mode is off but the model was told it is on and the
 	// exit notice never went out before the session ended.
 	mode.restore({ on, announced, turnsSinceReminder: turns, exitPending: announced });
-	return on ? previousLevel : undefined;
+	return { previousLevel: on ? previousLevel : undefined, keywordFired };
 }
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	const mode = new UltracodeMode();
 	const registry = new RunRegistry();
+	const editStreak = new EditStreak();
 	let settings: UltracodeSettings = loadSettings(agentDir);
 	let keywordThisTurn = false;
 	let settingLevel = false;
 	let previousLevel: string | undefined;
+	/** Whether the keyword reminder has fired at least once this session — see restoreFromBranch. */
+	let keywordFiredThisSession = false;
+	/**
+	 * Whether the Workflow tool has been called at least once this session —
+	 * the OTHER standing condition (besides /ultracode mode) that gates the
+	 * edit-streak nudge in streak.ts. Sticky for the rest of the session once
+	 * true: "has run" does not un-happen because the mode was toggled off.
+	 */
+	let workflowRanThisSession = false;
 	/** Runs a dead session left in flight; the store knows this as fact. */
 	let interruptedNote: string | undefined;
 	/** The level ultracode actually applied ("xhigh", or "max" when clamped up). */
@@ -281,7 +329,16 @@ export default function (pi: ExtensionAPI) {
 			sessionId = undefined;
 		}
 		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
-		previousLevel = restoreFromBranch(mode, branch);
+		const restored = restoreFromBranch(mode, branch);
+		previousLevel = restored.previousLevel;
+		keywordFiredThisSession = restored.keywordFired;
+		// A separate scan (streak.ts owns the tool-name vocabulary; restoreFromBranch
+		// owns ENTRY_TYPE messages) rebuilds the OTHER piece of resumed state: how
+		// far into an edit streak this session already was, and whether a workflow
+		// has ever run in it — both keyed off toolResult entries, not custom ones.
+		const editState = restoreEditStreak(branch, WORKFLOW_TOOL_NAME);
+		editStreak.restore(editState.count);
+		workflowRanThisSession = editState.workflowRan;
 		appliedLevel = mode.isOn() ? pi.getThinkingLevel() : undefined;
 		// Background runs do not survive a session ending. The store records
 		// which ones died with their process, so the correction can be said out
@@ -335,9 +392,16 @@ export default function (pi: ExtensionAPI) {
 	// the session-mode reminder.
 	pi.on("before_agent_start", (event, ctx) => {
 		uiCtx = ctx;
+		// Once per turn, so the edit-streak nudge's per-turn cap (streak.ts)
+		// resets here rather than at a tool-call boundary that does not exist
+		// for a turn triggered by a workflow-result delivery (see below).
+		editStreak.newTurn();
 		const parts: string[] = [];
 		const triggered = keywordThisTurn && settings.keywordTrigger;
-		if (triggered) parts.push(KEYWORD_REMINDER);
+		if (triggered) {
+			parts.push(KEYWORD_REMINDER);
+			keywordFiredThisSession = true;
+		}
 		keywordThisTurn = false;
 
 		// Routing is said in the request, so it is read off the request. Only
@@ -356,6 +420,18 @@ export default function (pi: ExtensionAPI) {
 		}
 		const modeReminder = mode.reminderForTurn();
 		if (modeReminder) parts.push(modeReminder);
+		// Opt-in persistence across a workflow-result delivery. Skipped once
+		// `mode.isOn()` — the reminder above already covers that case on its own
+		// cadence, independent of workflow timing — so this path exists only for
+		// a keyword-only opt-in that /ultracode never turned into a standing
+		// mode. "A workflow has run this session" is not tracked separately here:
+		// finding its result in the branch already proves it, so checking for
+		// the result IS the check (workflowRanThisSession is still tracked, for
+		// streak.ts's independent need in the tool_call handler below).
+		if (!triggered && !mode.isOn() && keywordFiredThisSession) {
+			const currentBranch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
+			if (hasMessageSinceLastUserTurn(currentBranch, RESULT_MESSAGE)) parts.push(ENTER_SPARSE);
+		}
 		if (parts.length === 0) return;
 		return {
 			message: {
@@ -366,12 +442,44 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
+	// The edit-streak nudge. Fires only for MAIN-session tool calls: subagents
+	// run as separate `pi --no-extensions` processes (spawn.ts), so this
+	// extension is never even loaded there — nothing here can see, let alone
+	// count, a subagent's edits. "Main-session" in streak.ts's own doc comment
+	// is therefore automatic, not something this handler has to check for.
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName === WORKFLOW_TOOL_NAME) {
+			// Delegated work, not solo grinding: the streak ends, and the opt-in
+			// this session claims for the rest of the edit-streak gate is no
+			// longer hypothetical.
+			editStreak.reset();
+			workflowRanThisSession = true;
+			return;
+		}
+		// Gated on the opt-in being standing at all — plain single-file work
+		// before either has ever been true is not the failure this watches for.
+		if (!EDIT_STREAK_TOOLS.has(event.toolName) || !(mode.isOn() || workflowRanThisSession)) return;
+		const streak = editStreak.recordEdit(CONFIG.editStreakNudge, CONFIG.editStreakMaxNudgesPerTurn);
+		if (streak === null) return;
+		pi.sendMessage(
+			{ customType: ENTRY_TYPE, content: systemReminder(editStreakReminder(streak)), display: false },
+			// Same idiom as advisor.ts's resurfaced-advice nudge: a tool call always
+			// lands mid-turn in practice, but isIdle() is checked rather than
+			// assumed, matching every other extension that injects a message from
+			// inside a running turn.
+			ctx.isIdle() ? { triggerTurn: true } : { deliverAs: "followUp" },
+		);
+	});
+
 	// Leaving the applied level exits the mode. Our own setThinkingLevel call is
 	// guarded out. The user's explicit choice stands: no restore.
 	pi.on("thinking_level_select", (event, ctx) => {
 		if (settingLevel || !mode.isOn()) return;
 		if (event.level === appliedLevel) return;
 		mode.disable();
+		// An explicit off, same as /ultracode off below: stale keyword history
+		// must not resurrect the opt-in the user just left.
+		keywordFiredThisSession = false;
 		previousLevel = undefined;
 		appliedLevel = undefined;
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "off" });
@@ -424,6 +532,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		mode.disable();
+		// The keyword's opt-in-persistence path (before_agent_start, below) would
+		// otherwise read this session's earlier "ultracode" keyword as proof the
+		// opt-in still stands, and resurrect ENTER_SPARSE on the next background
+		// workflow-result delivery — asserting the opposite of the off the user
+		// just asked for. An explicit off wins over keyword history.
+		keywordFiredThisSession = false;
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "off" });
 		if (previousLevel && previousLevel !== appliedLevel) {
 			setLevel(previousLevel);

@@ -24,27 +24,59 @@
  * capability rank for arbitrary providers.
  *
  * Settings (agent settings.json):
- *   advisor.model    string, a pi model reference for the reviewer (required to
- *                    enable the tool).
- *   advisor.enabled  boolean, default true. Kill switch.
+ *   advisor.model               string, a pi model reference for the reviewer
+ *                                (required to enable the tool).
+ *   advisor.enabled              boolean, default true. Kill switch.
+ *   advisor.resurface.enabled    boolean, default true. Resurfacing kill switch —
+ *                                independent of advisor.enabled, see resurface.ts.
+ *   advisor.resurface.afterCalls number, default 15. Mutating tool calls after a
+ *                                consult before the standing advice resurfaces.
  *
  * See guidance.ts for both prompts: the main-agent guidance that rides in the
- * tool description, and the authored reviewer-side prompt.
+ * tool description, and the authored reviewer-side prompt. See resurface.ts for
+ * the advice-resurfacing mechanism wired into the event handlers below.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type AdvisorSettings, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
+import { type AdvisorSettings, DEFAULT_RESURFACE_SETTINGS, DEFAULT_SETTINGS, SETTINGS_KEY, TOOL_NAME } from "./config.ts";
 import { modelRef, resolveModelReference, sameModel, resolveRole } from "./models.ts";
+import {
+	type AdviceState,
+	appendClosingLine,
+	isMutatingTool,
+	markResurfaced,
+	onConsult,
+	recordMutatingCall,
+	resurfaceReminder,
+	shouldResurface,
+	systemReminder,
+} from "./resurface.ts";
 import { registerAdvisorTool } from "./tool.ts";
+
+/** Custom-message type for the hidden resurface follow-up. Not rendered (display: false), so no message renderer is registered for it. */
+const RESURFACE_MESSAGE = "advisor_resurface";
 
 export function loadSettings(agentDir: string): AdvisorSettings {
 	try {
 		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
 		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
+		const resurfaceBlock = block?.resurface as Record<string, unknown> | undefined;
 		return {
 			model: typeof block?.model === "string" && block.model.trim() ? block.model.trim() : undefined,
 			enabled: typeof block?.enabled === "boolean" ? block.enabled : DEFAULT_SETTINGS.enabled,
+			resurface: {
+				enabled: typeof resurfaceBlock?.enabled === "boolean" ? resurfaceBlock.enabled : DEFAULT_RESURFACE_SETTINGS.enabled,
+				// Integer-only and >0: a fractional or zero-or-negative value has no
+				// sane reading as "calls to wait" and would either never fire cleanly
+				// or fire on the very next mutating call, indistinguishable from a typo.
+				afterCalls:
+					typeof resurfaceBlock?.afterCalls === "number" &&
+					Number.isInteger(resurfaceBlock.afterCalls) &&
+					resurfaceBlock.afterCalls > 0
+						? resurfaceBlock.afterCalls
+						: DEFAULT_RESURFACE_SETTINGS.afterCalls,
+			},
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -58,6 +90,17 @@ export default function (pi: ExtensionAPI) {
 	// off for the session even when a model is configured (/advisor off).
 	let sessionModel: string | undefined;
 	let sessionOff = false;
+
+	// Advice resurfacing (resurface.ts): the standing advice from the most
+	// recent successful consult, and how many mutating tool calls have landed
+	// since. Session-scoped like sessionModel/sessionOff above, and reset the
+	// same way — by the whole module reinitializing, since pi tears down and
+	// rebuilds the extension runtime on every /resume (and /reload).
+	let adviceState: AdviceState | undefined;
+	// Every tool call, not just mutating ones — gives AdviceState.atCall an
+	// audit position ("advised at call 12") independent of the
+	// mutatingCallsSince count that actually gates the resurface.
+	let toolCallCount = 0;
 
 	pi.registerFlag("advisor", {
 		description: "Reviewer model for the advisor tool (e.g. --advisor opus)",
@@ -169,5 +212,50 @@ export default function (pi: ExtensionAPI) {
 				"info",
 			);
 		},
+	});
+
+	// Capture the standing advice from every successful consult, and append the
+	// closing line that forces the next message to engage with it. Fires for
+	// every tool, so the advisor's own toolName is checked first.
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== TOOL_NAME) return;
+
+		// tool.ts's SubagentError branch does not throw — it returns a normal
+		// result carrying `details.error` — so `isError` alone (which reflects
+		// whether execute() threw) does not catch it. Neither "no model
+		// configured" nor "reviewer unreachable" left any advice to hold or
+		// restate, so both are skipped the same way.
+		if (event.isError || (event.details as { error?: string } | undefined)?.error) return;
+
+		const advice = event.content
+			.filter((block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string")
+			.map((block) => block.text)
+			.join("\n")
+			.trim();
+		if (!advice) return;
+
+		adviceState = onConsult(toolCallCount, advice);
+		return { content: [{ type: "text", text: appendClosingLine(advice) }] };
+	});
+
+	// Watch every tool call to count mutating ones since the last consult, and
+	// resurface the standing advice once the threshold passes with no newer
+	// consult in between.
+	pi.on("tool_call", (event, ctx) => {
+		toolCallCount++;
+		if (!adviceState || !isMutatingTool(event.toolName)) return;
+
+		adviceState = recordMutatingCall(adviceState);
+		if (!shouldResurface(adviceState, settings.resurface)) return;
+
+		adviceState = markResurfaced(adviceState);
+		pi.sendMessage(
+			{ customType: RESURFACE_MESSAGE, content: systemReminder(resurfaceReminder(adviceState.adviceHead)), display: false },
+			// Same idiom as goal/stalled-turn: a tool call always lands mid-turn,
+			// so this is followUp in practice, but isIdle() is checked anyway
+			// rather than assumed, matching every other extension that injects a
+			// message from inside a running turn.
+			ctx.isIdle() ? { triggerTurn: true } : { deliverAs: "followUp" },
+		);
 	});
 }

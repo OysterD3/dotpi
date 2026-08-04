@@ -35,6 +35,16 @@ export const CONFIG = {
 	tickMs: 1000,
 	/** pi's own default text; the timer is appended to it. */
 	workingMessage: "Working...",
+	/**
+	 * Replaces the working message while a question or permission ask is open.
+	 * A frozen "Working... 4m 12s" and an open "Waiting on your answer...
+	 * 4m 12s" are visually identical at a glance — the whole point of this row
+	 * is to make the one moment the agent is NOT working, and IS waiting on the
+	 * person reading it, look different from every other moment it is. "Answer",
+	 * not "approval": the same open wait covers an ask-user question as much as
+	 * a permission prompt, and a question is not something you approve.
+	 */
+	waitingMessage: "Waiting on your answer...",
 	/** Past-tense verb pool for the end-of-turn line. One is drawn per turn. */
 	verbs: ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"] as const,
 } as const;
@@ -49,10 +59,23 @@ export interface ElapsedSettings {
 	 * turn; a few seconds keeps quick exchanges from accumulating noise.
 	 */
 	minTurnMs: number;
+	/**
+	 * How long a question or permission ask may sit open before ctx.ui.notify()
+	 * and a terminal bell escalate it, repeating at every further interval past
+	 * that. 0 turns the alert off (the live row still changes; only the nag
+	 * stops). Traced from a benchmark run where permission prompts sat
+	 * unanswered for 10-17 minutes: the TUI's only sign of a pending ask was a
+	 * frozen counter, indistinguishable from a long-running tool call, so
+	 * nothing ever drew the person back to the terminal. Default of two minutes
+	 * is long enough that a prompt answered promptly never nags, short enough
+	 * that an abandoned one does not go unmentioned for a coffee break.
+	 */
+	waitAlertMs: number;
 }
 
 export const DEFAULT_SETTINGS: ElapsedSettings = {
 	workingTimer: true,
 	showTurnDuration: true,
 	minTurnMs: 0,
+	waitAlertMs: 120_000,
 };

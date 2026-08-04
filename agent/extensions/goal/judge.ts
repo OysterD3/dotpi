@@ -32,6 +32,12 @@
  *      verdict we can read, in favour of a heuristic about how it was billed,
  *      would be strictly worse.
  *   3. only an unreadable response is diagnosed — overflow, then error.
+ *
+ * `extractCriteria`, at the bottom, is `goal.autoCapture`'s call: a different
+ * question ("does this message already state a stop condition?") asked with
+ * the same model-selection, auth and error/abort/overflow machinery, because
+ * it is the same judge concept — a cheap model reading a bounded amount of
+ * text and returning bare JSON — pointed at a smaller input.
  */
 
 import { completeSimple, isContextOverflow } from "@earendil-works/pi-ai/compat";
@@ -39,7 +45,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
 import { resolveModel, resolveRole } from "./model.ts";
-import { JUDGE_SYSTEM, judgeQuestion } from "./prompts.ts";
+import { CAPTURE_SYSTEM, captureQuestion, JUDGE_SYSTEM, judgeQuestion } from "./prompts.ts";
 import { buildSections, fitSections, type TranscriptEntry } from "./transcript.ts";
 
 export type Verdict =
@@ -114,6 +120,38 @@ export function toVerdict(parsed: unknown): Verdict {
 	if (record.ok) return { kind: "met", reason };
 	if (record.impossible === true) return { kind: "impossible", reason };
 	return { kind: "not_met", reason };
+}
+
+/** Outcome of one `goal.autoCapture` extraction call — see extractCriteria below. */
+export type Extraction =
+	| { kind: "criteria"; criteria: string }
+	| { kind: "none" }
+	| { kind: "error"; reason: string }
+	/** The user interrupted, or the turn moved on before the call returned. */
+	| { kind: "aborted" };
+
+/**
+ * Validate the parsed object into an Extraction. Unrecognised shapes are
+ * errors, for the same reason toVerdict's are: an extractor response we
+ * cannot read must not be able to set a goal, silently or otherwise.
+ */
+export function toExtraction(parsed: unknown): Extraction {
+	if (!parsed || typeof parsed !== "object") {
+		return { kind: "error", reason: "extractor did not return a JSON object" };
+	}
+
+	const record = parsed as Record<string, unknown>;
+	if (!("criteria" in record)) {
+		return { kind: "error", reason: "extractor response had no 'criteria' field" };
+	}
+	if (record.criteria === null) return { kind: "none" };
+	if (typeof record.criteria === "string") {
+		const trimmed = record.criteria.trim();
+		// A blank string means the same thing as null here — nothing to capture —
+		// and must not become a goal with an empty condition.
+		return trimmed.length > 0 ? { kind: "criteria", criteria: trimmed } : { kind: "none" };
+	}
+	return { kind: "error", reason: "extractor response had a non-string, non-null 'criteria'" };
 }
 
 /** Pick the model the evaluator runs on: `goal.model` if set and resolvable. */
@@ -245,4 +283,89 @@ function fitsSmaller(sections: string[], contextWindow: number): boolean {
 		fitSections(sections, contextWindow, CONFIG.retryBudgetFraction).text.length <
 		fitSections(sections, contextWindow, CONFIG.transcriptBudgetFraction).text.length
 	);
+}
+
+/**
+ * `goal.autoCapture`'s extraction call: given the user's own message, decide
+ * whether it already states a measurable stop condition.
+ *
+ * Deliberately not a small variant of evaluate() sharing its retry path: this
+ * reads one message, not a budgeted transcript, because the whole point is to
+ * run before there is a transcript worth reading — on the first work-opening
+ * prompt of the session, index.ts's before_agent_start handler calls this
+ * instead of waiting for anything to happen first. Model selection, auth and
+ * the error/abort/overflow read order are shared with evaluate() on purpose:
+ * this is the same judge concept pointed at a different, smaller question.
+ */
+export async function extractCriteria(
+	ctx: ExtensionContext,
+	message: string,
+	signal: AbortSignal | undefined,
+	modelReference: string | undefined,
+	onSpend?: (spend: SpendReport) => void,
+): Promise<Extraction> {
+	const selected = selectModel(ctx, modelReference);
+	if ("error" in selected) return { kind: "error", reason: selected.error };
+	const model = selected.model;
+
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!auth.ok) return { kind: "error", reason: auth.error };
+
+	// Capped to the message itself, not budgeted against the model's context
+	// window: see CONFIG.maxCaptureChars for why a paste-bombed first message
+	// must not turn a one-shot screening call into a transcript-sized bill.
+	const capped =
+		message.length > CONFIG.maxCaptureChars ? `${message.slice(0, CONFIG.maxCaptureChars)}…` : message;
+
+	try {
+		const response = await completeSimple(
+			model,
+			{
+				systemPrompt: CAPTURE_SYSTEM,
+				messages: [{ role: "user", content: [{ type: "text", text: captureQuestion(capped) }], timestamp: Date.now() }],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers,
+				env: auth.env,
+				signal,
+				timeoutMs: CONFIG.timeoutMs,
+				// A single classify-and-quote read, same as the evaluator's call.
+				reasoning: "minimal",
+			},
+		);
+
+		onSpend?.({
+			input: response.usage?.input ?? 0,
+			output: response.usage?.output ?? 0,
+			cacheRead: response.usage?.cacheRead ?? 0,
+			cacheWrite: response.usage?.cacheWrite ?? 0,
+			reasoning: response.usage?.reasoning ?? 0,
+			cost: response.usage?.cost?.total ?? 0,
+		});
+
+		// Same read order as evaluate(), and for the same reasons: an abort beats
+		// everything, a parsed response beats an overflow heuristic, and only an
+		// unreadable response gets diagnosed at all.
+		if (response.stopReason === "aborted" || signal?.aborted) return { kind: "aborted" };
+
+		const text = response.content
+			.filter((block): block is { type: "text"; text: string } => block.type === "text")
+			.map((block) => block.text)
+			.join("\n");
+		const parsed = extractJson(text);
+		if (parsed !== undefined) return toExtraction(parsed);
+
+		if (isContextOverflow(response, model.contextWindow)) {
+			return { kind: "error", reason: "message too long for the extractor" };
+		}
+		if (response.stopReason === "error") {
+			return { kind: "error", reason: response.errorMessage?.trim() || "extractor call failed" };
+		}
+		return toExtraction(undefined);
+	} catch (error) {
+		// Only transport-level failures reach here: timeout, socket, timeoutMs.
+		if (signal?.aborted) return { kind: "aborted" };
+		return { kind: "error", reason: error instanceof Error ? error.message : String(error) };
+	}
 }
