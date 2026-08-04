@@ -111,7 +111,9 @@ ${CONFIG.simplifyAngles}-agent fan-out, so whoever reads it isn't misled about w
 in a single parallel phase so they run concurrently. Run it in the background
 (omit \`wait\`) and END YOUR TURN once it is away — the user keeps the prompt for
 other work, and the "workflow-result" message brings the findings back for
-Phase 2.`
+Phase 2. (Exception: in a one-shot session that ends with your turn —
+print/json mode — pass \`wait: true\` instead, or the result message has no
+turn to land in.)`
 			: `Launch **${CONFIG.simplifyAngles} independent review agents** via the \`task\` tool, all in a
 single message so they run concurrently.`;
 
@@ -230,9 +232,12 @@ finder returns, rather than waiting for the slowest finder.
 
 Run it in the background (omit \`wait\`): the call returns a run id immediately.
 Tell the user the review fleet is running and END YOUR TURN — no polling, no
-predicted findings; the user is free to prompt other work meanwhile. The phases
-after this one resume when the "workflow-result" message arrives carrying the
-script's return value.`
+predicted findings; the user is free to prompt other work meanwhile. The script
+performs the Find and Verify phases below itself; when the
+"workflow-result" message arrives carrying its verdicts, resume from the phase
+AFTER Verify — do not re-verify what the fleet already verified. (Exception: in
+a one-shot session that ends with your turn — print/json mode — pass
+\`wait: true\` instead, or the result message has no turn to land in.)`
 			: `Launch **${count(finders, "finder agent")}** via the \`task\` tool in a single message.
 When they return, launch one **verifier** agent per surviving candidate — again
 in a single message — whose job is to refute it.`;

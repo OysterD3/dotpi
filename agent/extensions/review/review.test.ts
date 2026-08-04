@@ -117,6 +117,7 @@ console.log("\n--- /simplify ---");
 	check("workflow variant resumes on the result message", workflow.includes('"workflow-result" message'), true);
 	check("task variant still waits inline", simplifyPrompt("task", "").includes(`Wait for all ${CONFIG.simplifyAngles} agents`), true);
 	check("workflow variant does not wait inline", workflow.includes("Wait for all"), false);
+	check("workflow variant carries the one-shot exception", workflow.includes("one-shot session"), true);
 
 	const inline = simplifyPrompt("none", "");
 	check("inline still carries every angle", ["### Reuse", "### Simplification", "### Efficiency", "### Altitude"].every((a) => inline.includes(a)), true);
@@ -144,6 +145,10 @@ console.log("\n--- /code-review ---");
 	check("workflow shape runs in the background", max.includes("END YOUR TURN"), true);
 	check("workflow shape resumes on the result message", max.includes('"workflow-result" message'), true);
 	check("task shape carries no background contract", codeReviewPrompt("low", "task", "", 2, false).includes("END YOUR TURN"), false);
+	// The script already verified; resuming must not repeat that pass. And a
+	// one-shot session has no later turn for the result, so it waits instead.
+	check("resume point skips the in-script verify", max.includes("AFTER Verify — do not re-verify"), true);
+	check("one-shot sessions are told to wait", max.includes("one-shot session"), true);
 
 	const low = codeReviewPrompt("low", "task", "", 2, false);
 	check("low caps lower", low.includes("at most 5 objects"), true);

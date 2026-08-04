@@ -136,6 +136,11 @@ export default function (pi: ExtensionAPI) {
 		// /new arrived, whose killedBy label a shutdown check would miss and
 		// whose late exit would otherwise land in the NEXT session.
 		if (job.suppressExit) return;
+		// And the flag-race backstop: whatever the suppression flags say, an
+		// exit may only be delivered to the session that started the shell.
+		// uiCtx rebinds on every session_start, so a straggler dying after
+		// /new would otherwise post into a session that never knew it.
+		if (job.meta.sessionId !== sessionId) return;
 		const ctx = uiCtx;
 		if (!ctx) return;
 		try {
@@ -180,7 +185,13 @@ export default function (pi: ExtensionAPI) {
 	registerShellTools(pi, {
 		agentDir,
 		registry,
-		shellConfig: () => shellConfig,
+		// Route through builtinFor so a cwd change reloads the project's shell
+		// settings before the background spawn, exactly as it would for a
+		// foreground delegation.
+		shellConfig: (ctx) => {
+			builtinFor(ctx);
+			return shellConfig;
+		},
 		builtinFor,
 		sessionId: () => sessionId,
 		onExit: deliverExit,

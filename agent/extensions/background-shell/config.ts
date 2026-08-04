@@ -62,11 +62,20 @@ export const CONFIG = {
 	/** How much of output.log the panel's detail view reads. */
 	panelTailBytes: 65_536,
 	/**
-	 * Cap on one bash_output read. A firehose that wrote more than this since
-	 * the last check is skipped to its tail — the end is what you want from a
-	 * shell, and truncateTail trims further to pi's usual 2000/50KB.
+	 * Cap on one FILTERED bash_output read — the regex deserves the widest
+	 * window, since matching lines may sit anywhere in it. A firehose that
+	 * wrote more than this since the last check is skipped to its tail — the
+	 * end is what you want from a shell, and truncateTail trims further to
+	 * pi's usual 2000/50KB.
 	 */
 	readCapBytes: 2_000_000,
+	/**
+	 * Cap on an UNFILTERED bash_output read. truncateTail keeps at most 50KB
+	 * anyway, so reading the full 2MB window would be decode work discarded
+	 * on arrival; this is that cap plus slack, with the skip note covering
+	 * whatever the smaller window leaves behind.
+	 */
+	unfilteredReadCapBytes: 65_536,
 	/** Settled shell directories kept on disk, newest first. */
 	retainShells: 30,
 	/** Panel refresh tick. Elapsed times only change once a second. */

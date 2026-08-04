@@ -47,7 +47,7 @@ const {
 } = await import("./store.ts");
 const { killJob, resolveShell, ShellRegistry, startShell } = await import("./shells.ts");
 const { commandLabel, exitReport, footerLines, interruptedNotice, runningReminder, statusLabel } = await import("./render.ts");
-const { ShellsPanel } = await import("./tui.ts");
+const { ShellsPanel, showShells } = await import("./tui.ts");
 const { CONFIG, RESULT_MESSAGE } = await import("./config.ts");
 import type { ShellMeta } from "./store.ts";
 import type { ShellJob } from "./shells.ts";
@@ -120,7 +120,18 @@ console.log("--- store ---");
 		text: "",
 		nextOffset: second.nextOffset,
 		skipped: 0,
+		lastLineStart: second.nextOffset,
 	});
+	check("lastLineStart is byte-exact after a newline", second.lastLineStart, second.nextOffset);
+
+	// A torn multibyte character must not distort the rewind target:
+	// lastLineStart is computed from BYTES, where the decoded fragment lies.
+	const torn = meta({});
+	writeMeta(AGENT, torn);
+	appendOutput(AGENT, torn.shellId, Buffer.from([0x63, 0x61, 0x66, 0xc3]));
+	const tornRead = readOutputFrom(AGENT, torn.shellId, 0, 1024);
+	check("torn multibyte line starts at byte 0", tornRead.lastLineStart, 0);
+	check("torn read decodes with a replacement char", tornRead.text.length, 4);
 
 	// Firehose: more unread than the cap skips ahead, tail-biased.
 	const hose = meta({});
@@ -149,6 +160,13 @@ console.log("--- store ---");
 	writeMeta(AGENT, noisy);
 	appendOutput(AGENT, noisy.shellId, "\u001B[31mred\u001B[0m\rprog 50%\rprog 100%\n\u001B[2K\u001B[1Adone\n");
 	check("ansi stripped and CR treated as line breaks", tailOutput(AGENT, noisy.shellId, 1024), ["red", "prog 50%", "prog 100%", "done"]);
+
+	// Colon-form SGR and <=>-parameter CSIs are legal and must strip whole,
+	// not leave their bodies behind once the control-strip eats the ESC.
+	const colon = meta({});
+	writeMeta(AGENT, colon);
+	appendOutput(AGENT, colon.shellId, "\u001B[38:5:196mcrimson\u001B[0m\n\u001B[<1;2;3Mmouse\n");
+	check("colon-form SGR strips whole", tailOutput(AGENT, colon.shellId, 1024), ["crimson", "mouse"]);
 
 	// Prune drops settled shells beyond the keep count, never running ones.
 	const settled = meta({ status: "done", startedAt: 2 });
@@ -366,6 +384,18 @@ console.log("--- wiring against a fake pi ---");
 	check("non-matching lines are filtered out", complete.content[0].text.includes("noise"), false);
 	await tools.get("kill_shell").execute("tf3", { shell_id: filteredId }, undefined, undefined, ctx);
 
+	// A torn multibyte character must not push the cursor negative — the
+	// rewind target comes from bytes, not from the decoded fragment.
+	const mb = await tools.get("bash").execute("mb", { command: "sleep 30", run_in_background: true }, undefined, undefined, ctx);
+	const mbId = mb.details.shellId;
+	appendOutput(AGENT, mbId, Buffer.from([0x63, 0x61, 0x66, 0xc3]));
+	const mb1 = await tools.get("bash_output").execute("mb1", { shell_id: mbId, filter: "café" }, undefined, undefined, ctx);
+	check("torn multibyte fragment is held back", mb1.content[0].text.includes("(no new output)"), true);
+	appendOutput(AGENT, mbId, Buffer.from([0xa9, 0x0a]));
+	const mb2 = await tools.get("bash_output").execute("mb2", { shell_id: mbId, filter: "café" }, undefined, undefined, ctx);
+	check("reassembled multibyte line matches whole", mb2.content[0].text.includes("café"), true);
+	await tools.get("kill_shell").execute("mb3", { shell_id: mbId }, undefined, undefined, ctx);
+
 	// kill_shell reports the death itself, so no exit message follows it.
 	const sentBefore = sent.length;
 	const bg2 = await tools.get("bash").execute("t7", { command: "sleep 30", run_in_background: true }, undefined, undefined, ctx);
@@ -389,6 +419,18 @@ console.log("--- wiring against a fake pi ---");
 	check("shutdown exits are not delivered", sent.length, sentBeforeShutdown);
 	check("shutdown empties the registry view", events.get("before_agent_start")![0]!({}, ctx), undefined);
 	void bg3;
+
+	// With the registry cleared, a re-rendered background result row must read
+	// the store's final status rather than claiming the shell just "started".
+	const idTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	const historical = tools.get("bash").renderResult(
+		{ content: [], details: { background: true, shellId: bg2.details.shellId, command: "sleep 30" } },
+		{ expanded: false, isPartial: false },
+		idTheme,
+		{} as never,
+	);
+	check("historical background row reads the store", historical.render(200).join(" ").includes("was killed"), true);
+	check("and does not claim it just started", historical.render(200).join(" ").includes("started"), false);
 
 	// The interrupted notice is owed to the OWNING project and delivered
 	// exactly once: another cwd's session start must not consume it, and the
@@ -492,6 +534,56 @@ console.log("--- panel ---");
 	tiny.handleInput("e");
 	check("q close survives a tiny terminal with a status up", tiny.render(120).some((line) => line.includes("q close")), true);
 	tiny.dispose();
+
+	// An orphaned mount must neutralize its close: after onDetached, an
+	// ask-user announcement may not resolve the dead mount's done() — that
+	// would evict whatever component holds the editor slot now.
+	{
+		const bus = new Map<string, Array<(data: unknown) => void>>();
+		const fakePi = {
+			events: {
+				emit: (channel: string, data: unknown) => {
+					for (const handler of [...(bus.get(channel) ?? [])]) handler(data);
+				},
+				on: (channel: string, handler: (data: unknown) => void) => {
+					bus.set(channel, [...(bus.get(channel) ?? []), handler]);
+					return () => bus.set(channel, (bus.get(channel) ?? []).filter((h) => h !== handler));
+				},
+			},
+		};
+		let dones = 0;
+		const mountCtx = () => {
+			const slot: { panel?: any } = {};
+			return {
+				slot,
+				ctx: {
+					ui: {
+						custom: (factory: any) => {
+							slot.panel = factory({ requestRender() {}, terminal: { rows: 24 } }, theme, undefined, () => dones++);
+							return new Promise(() => {});
+						},
+					},
+				},
+			};
+		};
+
+		const orphaned = mountCtx();
+		void showShells(fakePi as never, orphaned.ctx as never, { agentDir: AGENT, registry: host.registry, notify: () => {} } as never);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		orphaned.slot.panel.host.onDetached();
+		for (const handler of [...(bus.get("ask-user:asking") ?? [])]) handler({ active: true });
+		check("orphaned panel never resolves its dead done", dones, 0);
+		check("orphaned panel dropped its ask subscription", (bus.get("ask-user:asking") ?? []).length, 0);
+		orphaned.slot.panel.dispose();
+
+		// The ordinary path still closes for a question.
+		const live = mountCtx();
+		void showShells(fakePi as never, live.ctx as never, { agentDir: AGENT, registry: host.registry, notify: () => {} } as never);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		for (const handler of [...(bus.get("ask-user:asking") ?? [])]) handler({ active: true });
+		check("a live panel still closes for a question", dones, 1);
+		live.slot.panel.dispose();
+	}
 }
 
 rmSync(ROOT, { recursive: true, force: true });

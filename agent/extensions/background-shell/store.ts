@@ -197,6 +197,15 @@ export interface OutputRead {
 	nextOffset: number;
 	/** Bytes skipped between the cursor and where reading began (firehose case). */
 	skipped: number;
+	/**
+	 * Absolute BYTE offset where the read's final (possibly torn) line begins —
+	 * the position just after the last newline, or where reading began when the
+	 * whole read is one line. Byte-exact by construction (newline is a single
+	 * byte in UTF-8), which is what makes it safe to rewind a cursor to: byte
+	 * lengths recomputed from the DECODED text overcount when the read tore a
+	 * multibyte character, since the torn bytes decode to a replacement char.
+	 */
+	lastLineStart: number;
 }
 
 /**
@@ -215,17 +224,24 @@ export function readOutputFrom(agentDir: string, shellId: string, offset: number
 		const fd = openSync(outputPath(agentDir, shellId), "r");
 		try {
 			const size = fstatSync(fd).size;
-			if (size <= offset) return { text: "", nextOffset: size, skipped: 0 };
+			if (size <= offset) return { text: "", nextOffset: size, skipped: 0, lastLineStart: size };
 			const unread = size - offset;
 			const start = unread > capBytes ? size - capBytes : offset;
 			const buffer = Buffer.alloc(size - start);
 			const bytes = readSync(fd, buffer, 0, buffer.length, start);
-			return { text: buffer.subarray(0, bytes).toString("utf8"), nextOffset: size, skipped: start - offset };
+			const read = buffer.subarray(0, bytes);
+			const lastNewline = read.lastIndexOf(0x0a);
+			return {
+				text: read.toString("utf8"),
+				nextOffset: size,
+				skipped: start - offset,
+				lastLineStart: start + (lastNewline >= 0 ? lastNewline + 1 : 0),
+			};
 		} finally {
 			closeSync(fd);
 		}
 	} catch {
-		return { text: "", nextOffset: offset, skipped: 0 };
+		return { text: "", nextOffset: offset, skipped: 0, lastLineStart: offset };
 	}
 }
 
@@ -235,7 +251,7 @@ export function readOutputFrom(agentDir: string, shellId: string, offset: number
  * and none of it may reach the editor slot, where pi-tui passes it through
  * verbatim and a stray cursor-move corrupts the whole frame.
  */
-const ANSI_PATTERN = /[\u001B\u009B](?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|[@-Z\\-_])/g;
+const ANSI_PATTERN = /[\u001B\u009B](?:\[[0-9;:<=>?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|[@-Z\\-_])/g;
 
 /**
  * Raw shell output → display lines: escapes stripped, a lone CR treated as a

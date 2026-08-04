@@ -920,7 +920,9 @@ mid-turn, a turn of its own if the session is idle, so results get processed the
 notification would. Needing the result for the next phase is deliberately NOT a reason to block:
 the description steers the model to start the run, end its turn, and resume on the result message,
 so the prompt stays yours while a fleet works. `wait: true` is reserved for runs you explicitly ask
-to block on; only those attach their spend to the tool result as `usage`, which is
+to block on — and for one-shot sessions (`pi -p`, print/json mode), where ending the turn ends the
+process and a result message would have no turn to land in. Only waited runs attach their spend to
+the tool result as `usage`, which is
 what puts them in `/usage` under their tool name (a background run's tool result is long gone by the
 time money is spent, so its spend arrives on the `usage:spend` channel instead).
 

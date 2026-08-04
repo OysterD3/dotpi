@@ -26,14 +26,19 @@ import { Type } from "typebox";
 import { CONFIG, RESULT_MESSAGE } from "./config.ts";
 import { commandLabel, startedText, statusLabel } from "./render.ts";
 import { startShell, type ShellConfig, type ShellJob, type ShellRegistry } from "./shells.ts";
-import { isSettled, newShellId, readOutputFrom, type ShellMeta } from "./store.ts";
+import { isSettled, newShellId, readMeta, readOutputFrom, type ShellMeta } from "./store.ts";
 
 type BashDefinition = ReturnType<typeof createBashToolDefinition>;
 
 export interface ToolsHost {
 	agentDir: string;
 	registry: ShellRegistry;
-	shellConfig: () => ShellConfig;
+	/**
+	 * Shell config for THIS call's cwd — resolved per context, not cached from
+	 * session_start, or a background bash issued first after a cwd change would
+	 * spawn under the previous project's shellPath/commandPrefix.
+	 */
+	shellConfig: (ctx: ExtensionContext) => ShellConfig;
 	/** The built-in bash definition for this session's cwd — the foreground delegate. */
 	builtinFor: (ctx: ExtensionContext) => BashDefinition;
 	sessionId: () => string | undefined;
@@ -159,7 +164,7 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			const job = startShell({
 				agentDir: host.agentDir,
 				meta,
-				config: host.shellConfig(),
+				config: host.shellConfig(ctx),
 				env: backgroundEnv(host.agentDir, ctx),
 				timeoutSeconds: params.timeout,
 				onExit: host.onExit,
@@ -182,9 +187,14 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 		},
 		renderResult(result, options, theme, context) {
 			if (isBackgroundDetails(result.details)) {
+				// The registry only knows this session's shells; a re-rendered
+				// transcript row after /new or a resume must fall back to the
+				// store, or a long-dead server reads as freshly "started".
 				const job = host.registry.get(result.details.shellId);
-				const label = job ? statusLabel(job.meta, Date.now()) : "started";
-				return new Text(`${theme.fg("accent", "◆")} background shell ${result.details.shellId} ${theme.fg("muted", `· ${label}`)}`, 0, 0);
+				const meta = job?.meta ?? readMeta(host.agentDir, result.details.shellId);
+				const label = meta ? statusLabel(meta, Date.now()) : "started";
+				const mark = meta && meta.status !== "running" ? theme.fg("muted", "◆") : theme.fg("accent", "◆");
+				return new Text(`${mark} background shell ${result.details.shellId} ${theme.fg("muted", `· ${label}`)}`, 0, 0);
 			}
 			return donor.renderResult!(result as never, options, theme, context);
 		},
@@ -217,7 +227,11 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 				}
 			}
 
-			const read = readOutputFrom(host.agentDir, job.meta.shellId, job.readOffset, CONFIG.readCapBytes);
+			// Unfiltered reads only ever keep truncateTail's own tail, so reading
+			// the full window would be I/O and decode work thrown straight away;
+			// the skip note reports whatever the smaller window leaves behind.
+			const cap = regex ? CONFIG.readCapBytes : CONFIG.unfilteredReadCapBytes;
+			const read = readOutputFrom(host.agentDir, job.meta.shellId, job.readOffset, cap);
 			job.readOffset = read.nextOffset;
 
 			let text = read.text;
@@ -225,13 +239,13 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			// a filter that is harmless — the model concatenates. With one, the
 			// fragment would be judged as if it were a whole line and lost for
 			// good, so hold the cursor back and re-read it complete next time.
-			if (regex && job.meta.status === "running" && text.length > 0 && !text.endsWith("\n")) {
-				const cut = text.lastIndexOf("\n") + 1;
-				const fragment = text.slice(cut);
-				if (fragment) {
-					text = text.slice(0, cut);
-					job.readOffset = read.nextOffset - Buffer.byteLength(fragment, "utf8");
-				}
+			// The rewind target is lastLineStart, a BYTE offset the store found —
+			// recomputing it from the decoded fragment overcounts when the read
+			// tore a multibyte character, and a cursor pushed negative that way
+			// would pin every later read on ERR_OUT_OF_RANGE.
+			if (regex && job.meta.status === "running" && text.length > 0 && !text.endsWith("\n") && read.lastLineStart < read.nextOffset) {
+				text = text.slice(0, text.lastIndexOf("\n") + 1);
+				job.readOffset = read.lastLineStart;
 			}
 			if (regex) {
 				text = text
@@ -281,7 +295,11 @@ export function registerShellTools(pi: ExtensionAPI, host: ToolsHost): void {
 			host.registry.kill(job.meta.shellId, "tool");
 			job.suppressExit = true;
 			await Promise.race([job.settled, sleep(CONFIG.killWaitCapMs)]);
-			if (!isSettled(job.meta.status)) job.suppressExit = false;
+			// Restore only while the shell's own session is still the live one:
+			// a /new during this wait ran session_shutdown, which suppressed
+			// every job on purpose — un-silencing it here would let a
+			// stubborn group's eventual death post into the next session.
+			if (!isSettled(job.meta.status) && job.meta.sessionId === host.sessionId()) job.suppressExit = false;
 
 			const text = isSettled(job.meta.status)
 				? `Killed shell ${job.meta.shellId} (\`${commandLabel(job.meta.command)}\`): ${statusLabel(job.meta, Date.now())}.`

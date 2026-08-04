@@ -130,8 +130,14 @@ export function startShell(request: StartRequest): ShellJob {
 		if (finalized) return;
 		finalized = true;
 		if (timeoutTimer) clearTimeout(timeoutTimer);
-		meta.status = job.killedBy ? "killed" : code === 0 ? "done" : "failed";
-		if (job.killedBy === "timeout") meta.timedOut = true;
+		// "killed" only when the process actually died of a signal. A kill can
+		// lose the race: the process exits cleanly at the same moment a timeout
+		// or kill_shell fires, the SIGTERM hits nothing, and the close event
+		// then delivers a real exit code — that run completed and must not be
+		// reported as killed, let alone "timed out", for succeeding.
+		const bySignal = code === null;
+		meta.status = job.killedBy && bySignal ? "killed" : code === 0 ? "done" : "failed";
+		if (job.killedBy === "timeout" && meta.status === "killed") meta.timedOut = true;
 		meta.exitCode = code;
 		meta.endedAt = Date.now();
 		writeMeta(agentDir, meta);

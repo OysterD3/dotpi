@@ -306,10 +306,16 @@ export async function showShells(pi: ExtensionAPI, ctx: ExtensionContext, host: 
 	pi.events.emit(PANEL_OPEN_CHANNEL, { active: true });
 
 	let close: ((value: undefined) => void) | undefined;
-	const unsubscribe = pi.events.on(ASK_CHANNEL, (data) => {
+	let unsubscribed = false;
+	const unsub = pi.events.on(ASK_CHANNEL, (data) => {
 		if ((data as { active?: boolean } | undefined)?.active !== true) return;
 		close?.(undefined);
 	});
+	const unsubscribe = () => {
+		if (unsubscribed) return;
+		unsubscribed = true;
+		unsub();
+	};
 
 	try {
 		await ctx.ui.custom<undefined>(
@@ -320,7 +326,18 @@ export async function showShells(pi: ExtensionAPI, ctx: ExtensionContext, host: 
 						...host,
 						requestRender: () => tui.requestRender(),
 						rows: () => tui.terminal?.rows ?? CONFIG.assumedRows,
-						onDetached: () => pi.events.emit(PANEL_OPEN_CHANNEL, { active: false }),
+						onDetached: () => {
+							// An orphaned mount's done() must never fire again:
+							// pi keeps no slot bookkeeping, so resolving it later
+							// (say, from the ask-user handler below) would tear
+							// down whatever component holds the slot NOW. The
+							// promise above stays pending forever by design, so
+							// the finally never runs — drop the close and the
+							// subscription here or they leak with it.
+							close = undefined;
+							unsubscribe();
+							pi.events.emit(PANEL_OPEN_CHANNEL, { active: false });
+						},
 					},
 					theme,
 					done,
