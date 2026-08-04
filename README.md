@@ -21,9 +21,10 @@ cmux's own generated bridge rather than one of ours — see `agent/extensions/cm
 
 **`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
-provider reports any. Below those, one line per active workflow run, while any is in flight —
-ultracode announces them on a `pi.events` channel and the footer appends them, so background
-fleets stay visible without opening the control panel. Nothing renders when nothing is running.
+provider reports any. Below those, one line per active workflow run and one per running
+background shell, while any is in flight — ultracode and background-shell announce them on
+`pi.events` channels and the footer appends them, so background fleets and dev servers stay
+visible without opening a control panel. Nothing renders when nothing is running.
 
 The footer draws nothing at all while `ask_user` has a question up (announced the same way, on
 `ask-user:asking`): the question takes the editor's place, and the statusline stands down so it
@@ -31,7 +32,8 @@ has the bottom of the screen to itself. ask-user cannot do that from its side �
 means restoring pi's *built-in* one, which would retire this statusline for the rest of the session.
 The workflow control panel takes the editor's place too and announces itself the same way, on
 `ultracode:panel-open`, so the run lines above stand down with the rest of the footer — the panel
-is showing them in full while it is up.
+is showing them in full while it is up. The background-shell panel (shift+up) does the same on
+`background-shell:panel-open`.
 
 | File | Role |
 | --- | --- |
@@ -1101,6 +1103,64 @@ the model to always await.
 | `description.ts` | The tool's LLM-facing contract |
 | `config.ts` | Constants and pi-side tunables |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
+
+**`agent/extensions/background-shell/`** — background shells, shaped after Claude Code's: `bash`
+gains `run_in_background`, and a dev server stops costing the turn it runs in.
+
+pi's built-in bash always awaits exit, so a long-running process either eats the turn or gets
+backgrounded blind with `&` — no output, no handle, no cleanup. This replaces the `bash` tool with
+one that adds a single optional flag. A foreground call delegates to pi's own definition
+(`createBashToolDefinition`, fed the same `shellPath`/`shellCommandPrefix` settings pi reads), so
+the everyday path is the built-in behaviour exactly, rendering included. A background call spawns
+the command detached in its own process group, returns immediately with a shell id, and the exit
+arrives later the way ultracode's background workflows do: a custom message that wakes an idle
+agent or rides the current turn as a follow-up, carrying the output tail so short jobs need no
+follow-up read. Two companion tools complete Claude Code's surface: `bash_output` returns what a
+shell wrote since the last check (cursor-based over the on-disk log, optional regex filter), and
+`kill_shell` SIGTERMs the group with a SIGKILL five seconds behind — the group, not the pid,
+because sh does not exec compound commands and signalling the leader alone leaves the real work
+running with the pipes held open.
+
+**Replacing `bash` rather than adding a `bash_background` is the load-bearing choice**: the tool
+name and its `command` parameter stay the same, so every `Bash(...)` rule in the permissions
+extension — and its destructive-command gate — applies to background commands with nothing added
+there. The trade is that this extension owns the foreground path too; delegation is what makes
+that a pass-through rather than a fork.
+
+**shift+up opens the shells panel** — no slash command, deliberately. It is ultracode's `/workflows`
+panel mechanics with shells in the rows: the editor's slot, rules above and below, `↑↓` select,
+`→` drills into a live output tail, `c` kills, `e` shows the output file path, `q`/Esc/ctrl+c out.
+The statusline stands down while it is up (announced on `background-shell:panel-open`) and appends
+one line per running shell the rest of the time (announced on `background-shell:lines`), so a
+running server stays visible without opening anything.
+
+Shells die with the session — session_shutdown kills every group, so `/new` cannot inherit a
+stranger's dev server and quitting pi does not leave port squatters. What survives is the record:
+`agent/background-shells/<id>/` holds `shell.json` and `output.log`, a crashed pi's leftovers are
+reconciled by owner-pid liveness at the next session_start, and the model gets a hidden reminder
+naming them — including the orphan's pid when the process outlived its owner, which is the one
+fact worth acting on. A hidden per-turn reminder also lists running shells, so the model does not
+forget the server it started twenty turns ago. Killed-by-user exits wait for the next turn instead
+of waking the agent; killed-by-kill_shell exits are reported in that tool's own result and stay
+out of the message stream entirely.
+
+```
+$ npm run dev  (background)
+◆ background shell sh-mgk2j4l8a-1 · running · 4m12s        the tool row, live
+◆ shell npm run dev · 4m                                   in the footer meanwhile
+✓ background shell npm run build · exited with code 0 · 34s    the exit message
+```
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Wiring: lifecycle, exit delivery, footer announcements, the shortcut |
+| `tools.ts` | The three tools — `bash` (replacement), `bash_output`, `kill_shell` |
+| `shells.ts` | One shell as a detached process group; spawn, kill ladder, registry |
+| `store.ts` | The on-disk store: shell.json, output.log, cursors, pid reconcile |
+| `tui.ts` | **The shift+up shells panel** — list, live tail, kill |
+| `render.ts` | Rows, footer lines, the exit report and reminders (pure) |
+| `config.ts` | Channels, message types, tunables |
+| `background-shell.test.ts` | Unit and wiring coverage (spawns real short-lived processes) |
 
 **`agent/extensions/elapsed/`** — how long the agent has been working, and how long it took.
 

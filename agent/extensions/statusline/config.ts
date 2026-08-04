@@ -43,6 +43,16 @@ export const ASK_CHANNEL = "ask-user:asking";
  */
 export const WORKFLOW_PANEL_CHANNEL = "ultracode:panel-open";
 
+/**
+ * pi.events channels the background-shell extension announces on, mirroring
+ * ultracode's pair exactly: one carries a line per running shell to append
+ * below everything else (`{ lines: string[] | undefined }`), the other says
+ * its shift+up panel holds the editor slot (`{ active: boolean }`) so this
+ * footer stands down for it. Declared here rather than imported, as above.
+ */
+export const SHELL_CHANNEL = "background-shell:lines";
+export const SHELL_PANEL_CHANNEL = "background-shell:panel-open";
+
 /** Bar glyphs. The track is a mid dot so an empty meter reads as empty, not solid. */
 export const BAR_FILL = "█";
 export const BAR_TRACK = "·";
