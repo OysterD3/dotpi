@@ -50,11 +50,12 @@ owns.`;
 }
 
 /**
- * The apply step, shared by both /simplify shapes.
+ * The apply step, shared by every /simplify shape.
  *
- * `lead` is the only thing that differs between them (the fan-out variant waits
- * for its agents first), so it is a parameter rather than an excuse to retype
- * the paragraph — the skip rule below is the part that must not drift.
+ * `opening` is the only thing that differs between them — the task variant
+ * waits for its agents, the workflow variant resumes on the result message,
+ * the inline variant just dedups — so it is a parameter rather than an excuse
+ * to retype the paragraph; the skip rule below is the part that must not drift.
  */
 function applyFixesSection(opening = "Dedup"): string {
 	return `## Phase 2 — Apply the fixes
@@ -107,7 +108,10 @@ ${CONFIG.simplifyAngles}-agent fan-out, so whoever reads it isn't misled about w
 	const spawn =
 		fanOut === "workflow"
 			? `Run **${CONFIG.simplifyAngles} independent review agents** with the \`workflow\` tool, one per angle,
-in a single parallel phase so they run concurrently.`
+in a single parallel phase so they run concurrently. Run it in the background
+(omit \`wait\`) and END YOUR TURN once it is away — the user keeps the prompt for
+other work, and the "workflow-result" message brings the findings back for
+Phase 2.`
 			: `Launch **${CONFIG.simplifyAngles} independent review agents** via the \`task\` tool, all in a
 single message so they run concurrently.`;
 
@@ -124,7 +128,11 @@ findings with \`file\`, \`line\`, a one-line \`summary\`, and the concrete cost
 (what is duplicated, wasted, or harder to maintain).
 
 ${angles}
-${applyFixesSection(`Wait for all ${CONFIG.simplifyAngles} agents to complete, then dedup`)}
+${applyFixesSection(
+	fanOut === "workflow"
+		? `When the "workflow-result" message arrives, dedup`
+		: `Wait for all ${CONFIG.simplifyAngles} agents to complete, then dedup`,
+)}
 `;
 }
 
@@ -218,7 +226,13 @@ independent verify pass, so its coverage isn't mistaken for the full run.
 			? `Author a \`workflow\` script that runs **${count(finders, "finder agent")}** concurrently,
 then pipelines each candidate into an independent **verifier** agent whose job is
 to refute it. Use \`pipeline()\` so a candidate starts verifying as soon as its
-finder returns, rather than waiting for the slowest finder.`
+finder returns, rather than waiting for the slowest finder.
+
+Run it in the background (omit \`wait\`): the call returns a run id immediately.
+Tell the user the review fleet is running and END YOUR TURN — no polling, no
+predicted findings; the user is free to prompt other work meanwhile. The phases
+after this one resume when the "workflow-result" message arrives carrying the
+script's return value.`
 			: `Launch **${count(finders, "finder agent")}** via the \`task\` tool in a single message.
 When they return, launch one **verifier** agent per surviving candidate — again
 in a single message — whose job is to refute it.`;

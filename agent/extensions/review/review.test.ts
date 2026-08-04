@@ -111,6 +111,12 @@ console.log("\n--- /simplify ---");
 
 	const workflow = simplifyPrompt("workflow", "");
 	check("workflow variant names workflow", workflow.includes("`workflow` tool"), true);
+	// The async contract: a workflow fleet must not hold the turn hostage —
+	// the agent ends its turn and resumes on the result message.
+	check("workflow variant runs in the background", workflow.includes("END YOUR TURN"), true);
+	check("workflow variant resumes on the result message", workflow.includes('"workflow-result" message'), true);
+	check("task variant still waits inline", simplifyPrompt("task", "").includes(`Wait for all ${CONFIG.simplifyAngles} agents`), true);
+	check("workflow variant does not wait inline", workflow.includes("Wait for all"), false);
 
 	const inline = simplifyPrompt("none", "");
 	check("inline still carries every angle", ["### Reuse", "### Simplification", "### Efficiency", "### Altitude"].every((a) => inline.includes(a)), true);
@@ -134,6 +140,10 @@ console.log("\n--- /code-review ---");
 	check("states the cap twice over", max.includes("at most 15 objects") && max.includes("keep the 15 most"), true);
 	check("allows uncertainty", max.includes("Include PLAUSIBLE findings"), true);
 	check("explains how cleanup ranks against bugs", max.includes("Correctness bugs always outrank"), true);
+	// The async contract, same as /simplify's workflow shape.
+	check("workflow shape runs in the background", max.includes("END YOUR TURN"), true);
+	check("workflow shape resumes on the result message", max.includes('"workflow-result" message'), true);
+	check("task shape carries no background contract", codeReviewPrompt("low", "task", "", 2, false).includes("END YOUR TURN"), false);
 
 	const low = codeReviewPrompt("low", "task", "", 2, false);
 	check("low caps lower", low.includes("at most 5 objects"), true);

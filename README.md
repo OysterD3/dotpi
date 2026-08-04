@@ -209,6 +209,11 @@ fleet with a real verify stage and is preferred; `task` (from `subagents`) spawn
 time; with neither active the review still runs inline. The inline variants are told to *say* they
 ran inline, so a single pass is never written up as though the fleet had run.
 
+The workflow shape is also **asynchronous**: the prompt tells the agent to start the fleet in the
+background and end its turn, so the prompt stays yours while the review runs — ask about something
+else, keep working — and the report (and `--fix` pass) resumes when the `workflow-result` message
+lands. The `task` shape has no background mode, so only it still holds the turn.
+
 Effort scales four things. Angles: `low` gets a line-by-line scan, `max` adds the removed-behavior
 audit, cross-file tracing, language pitfalls and wrapper correctness, plus the cleanup and
 conventions angles. Findings cap: 5 at `low` up to 15 at `max`, which forces ranking rather than a
@@ -912,8 +917,10 @@ itself — it announces the lines on the `ultracode:panel` event channel and the
 them, the same decoupling `permissions` → `cmux-notify` uses. When a run settles
 its outcome comes back to the model as a `workflow-result` message: a follow-up if the agent is
 mid-turn, a turn of its own if the session is idle, so results get processed the way a task
-notification would. The model can pass `wait: true` for the rare workflow whose result it needs
-before doing anything else; only those attach their spend to the tool result as `usage`, which is
+notification would. Needing the result for the next phase is deliberately NOT a reason to block:
+the description steers the model to start the run, end its turn, and resume on the result message,
+so the prompt stays yours while a fleet works. `wait: true` is reserved for runs you explicitly ask
+to block on; only those attach their spend to the tool result as `usage`, which is
 what puts them in `/usage` under their tool name (a background run's tool result is long gone by the
 time money is spent, so its spend arrives on the `usage:spend` channel instead).
 
