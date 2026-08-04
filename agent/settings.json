@@ -84,6 +84,12 @@
         "frontier": "qoder/ultimate",
         "fast": "qoder/lite",
         "cheap": "qoder/lite"
+      },
+      "deepseek": {
+        "session": "deepseek/deepseek-v4-flash",
+        "frontier": "deepseek/deepseek-v4-flash",
+        "fast": "deepseek/deepseek-v4-flash",
+        "cheap": "deepseek/deepseek-v4-flash"
       }
     }
   },
@@ -92,7 +98,5 @@
     "readAdvice": true,
     "guideline": true
   },
-  "retry": {
-    "enabled": true
-  }
+  "hideThinkingBlock": true
 }
