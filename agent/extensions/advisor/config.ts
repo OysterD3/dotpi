@@ -23,8 +23,15 @@ export const CONFIG = {
 	 * Fraction of the reviewer model's context window spent on the forwarded
 	 * transcript. The reviewer also needs room for its own reply and its system
 	 * prompt, so this stays well under 1. Same shape as the recap extension.
+	 *
+	 * 0.2, down from 0.5, priced from session 019fcad1: seven consults sent 614k
+	 * input tokens — advisor calls spawn fresh, so none of it was cached, and the
+	 * over-window ones billed at gpt-5.6's doubled long-context rate — $3.20 for
+	 * transcript alone. Advice quality lives in recent state, and the transcript
+	 * already drops oldest-first, so the cheap 80% is the stale 80%. On sol
+	 * (272k window) this still forwards ~54k tokens ≈ the last 190k characters.
 	 */
-	transcriptBudgetFraction: 0.5,
+	transcriptBudgetFraction: 0.2,
 	/** Rough chars-per-token for budgeting the transcript (recap uses the same). */
 	charsPerToken: 3.5,
 	/** Context window assumed when the reviewer model does not report one. */

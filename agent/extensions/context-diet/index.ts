@@ -38,14 +38,18 @@
  * 270 subagent calls cost $5.35 between them, because each one starts empty.
  *
  * Settings (agent settings.json), under "contextDiet":
- *   enabled            boolean, default true
- *   highWaterRatio     number, default 0.8   — fraction of the window that triggers a round
- *   targetRatio        number, default 0.55  — fraction a round trims down to
- *   highWaterTokens    number, default 0     — absolute override for the above
- *   targetTokens       number, default 0
- *   keepRecentResults  number, default 24    — newest results never touched
- *   keepImages         number, default 3     — newest screenshots never touched
- *   minResultBytes     number, default 512   — below this a stub would not pay
+ *   enabled              boolean, default true
+ *   highWaterRatio       number, default 0.8   — fraction of the window that triggers a round
+ *   targetRatio          number, default 0.55  — fraction a round trims down to
+ *   highWaterTokens      number, default 0     — absolute override for the above
+ *   targetTokens         number, default 0
+ *   keepRecentResults    number, default 24    — newest results never touched
+ *   keepImages           number, default 3     — newest screenshots never touched
+ *   minResultBytes       number, default 512   — below this a stub would not pay
+ *   dropOldReasoning     boolean, default false — EXPERIMENTAL; rounds also strip old
+ *                        thinking blocks. May be rejected by the Responses API
+ *                        (see config.ts); validate on one live session first
+ *   keepRecentReasoning  number, default 10    — newest assistant messages keep theirs
  */
 
 import { readFileSync } from "node:fs";

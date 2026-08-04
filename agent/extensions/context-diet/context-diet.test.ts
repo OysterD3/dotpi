@@ -24,13 +24,17 @@
 import { DEFAULT_SETTINGS, resolveSettings } from "./config.ts";
 import {
 	applyDiet,
+	assistantKey,
 	collectCandidates,
+	collectReasoningDrops,
 	describeCall,
 	dietLine,
 	type EvictionRecord,
+	findSupersededReads,
 	formatBytes,
 	formatTokens,
 	indexCallLabels,
+	indexReadSpans,
 	planDiet,
 	resolveBounds,
 	stubText,
@@ -47,10 +51,14 @@ function check(label: string, got: unknown, want: unknown) {
 /** Stands in for AgentMessage; the fixtures below only fill the fields the diet reads. */
 type Msg = any;
 
-const assistant = (calls: { id: string; name: string; arguments: unknown }[]): Msg => ({
+let clock = 0;
+const assistant = (calls: { id: string; name: string; arguments: unknown }[], thinkingChars = 0): Msg => ({
 	role: "assistant",
-	content: calls.map((c) => ({ type: "toolCall", ...c })),
-	timestamp: 0,
+	content: [
+		...(thinkingChars > 0 ? [{ type: "thinking", thinking: "t".repeat(80), thinkingSignature: "s".repeat(thinkingChars) }] : []),
+		...calls.map((c) => ({ type: "toolCall", ...c })),
+	],
+	timestamp: ++clock,
 });
 
 const result = (id: string, toolName: string, text: string, opts: { isError?: boolean; image?: number } = {}): Msg => ({
@@ -62,11 +70,20 @@ const result = (id: string, toolName: string, text: string, opts: { isError?: bo
 	content: [{ type: "text", text }, ...(opts.image ? [{ type: "image", data: "x".repeat(opts.image), mimeType: "image/png" }] : [])],
 });
 
-/** n read calls and their results, each body `bodyBytes` long. */
-function conversation(n: number, bodyBytes = 40_000, opts: { image?: number; errorAt?: number[] } = {}): Msg[] {
+/**
+ * n read calls and their results, each body `bodyBytes` long. `fileAt` remaps a
+ * call's target so re-reads can be staged; `spanAt` adds offset/limit args;
+ * `thinking` puts a reasoning block of that many chars on every assistant turn.
+ */
+function conversation(
+	n: number,
+	bodyBytes = 40_000,
+	opts: { image?: number; errorAt?: number[]; fileAt?: Record<number, string>; spanAt?: Record<number, object>; thinking?: number } = {},
+): Msg[] {
 	const messages: Msg[] = [];
 	for (let i = 0; i < n; i++) {
-		messages.push(assistant([{ id: `call_${i}`, name: "read", arguments: { file_path: `src/file-${i}.ts` } }]));
+		const path = opts.fileAt?.[i] ?? `src/file-${i}.ts`;
+		messages.push(assistant([{ id: `call_${i}`, name: "read", arguments: { path, ...(opts.spanAt?.[i] ?? {}) } }], opts.thinking ?? 0));
 		messages.push(
 			result(`call_${i}`, "read", "b".repeat(bodyBytes), {
 				isError: opts.errorAt?.includes(i),
@@ -127,6 +144,69 @@ console.log("\n--- what a round selects ---");
 	const already = new Map<string, EvictionRecord>([["call_0", { toolCallId: "call_0", label: "read x", bytes: 10, savedTokens: 1 }]]);
 	const ids = collectCandidates(messages, already, SETTINGS, indexCallLabels(messages)).map((c) => c.toolCallId);
 	check("already-dropped are not re-selected", ids.includes("call_0"), false);
+}
+
+console.log("\n--- duplicate reads ---");
+{
+	// call_1 and call_6 read the same file; the later read supersedes the earlier.
+	const messages = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" } });
+	const superseded = findSupersededReads(messages, indexReadSpans(messages));
+	check("older copy superseded", [...superseded], ["call_1"]);
+}
+{
+	// Identical (path, offset, limit) → exact duplicate, superseded.
+	const messages = conversation(8, 40_000, {
+		fileAt: { 6: "src/file-1.ts" },
+		spanAt: { 1: { offset: 10, limit: 50 }, 6: { offset: 10, limit: 50 } },
+	});
+	check("identical partial re-read supersedes", [...findSupersededReads(messages, indexReadSpans(messages))], ["call_1"]);
+}
+{
+	// A later whole-file read covers an earlier partial one...
+	const partial = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" }, spanAt: { 1: { offset: 10, limit: 50 } } });
+	check("whole read covers earlier partial", [...findSupersededReads(partial, indexReadSpans(partial))], ["call_1"]);
+	// ...but a later partial does NOT cover an earlier whole read — the model may
+	// still be using the rest of the file.
+	const inverse = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" }, spanAt: { 6: { offset: 10, limit: 50 } } });
+	check("partial does not cover earlier whole", [...findSupersededReads(inverse, indexReadSpans(inverse))], []);
+}
+{
+	// An errored re-read supersedes nothing: it delivered no newer copy.
+	const messages = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" }, errorAt: [6] });
+	check("failed re-read supersedes nothing", [...findSupersededReads(messages, indexReadSpans(messages))], []);
+}
+{
+	// The superseded copy sits inside the recency window (keepRecentResults: 8
+	// covers all of these) — staleness must reach in anyway.
+	const messages = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" } });
+	const wide = { ...SETTINGS, keepRecentResults: 8 };
+	const superseded = findSupersededReads(messages, indexReadSpans(messages));
+	const ids = collectCandidates(messages, new Map(), wide, indexCallLabels(messages), superseded).map((c) => c.toolCallId);
+	check("superseded read loses recency protection", ids, ["call_1"]);
+}
+{
+	// Over the mark with the target already met by ordinary evictions, the stale
+	// copy is swept anyway — the round is paying for its cache break regardless.
+	// call_20 sits well past where the target is reached (~call_11), so it can
+	// only be in the plan through the supersession sweep.
+	const messages = conversation(40, 40_000, { fileAt: { 30: "src/file-20.ts" } });
+	const plan = planDiet({ messages, evicted: new Map(), currentTokens: 260_000, contextWindow: 272_000, settings: SETTINGS })!;
+	const stale = plan.records.find((r) => r.toolCallId === "call_20");
+	check("stale copy swept past the target", stale !== undefined, true);
+	check("and marked so its stub explains itself", stale!.superseded, true);
+	check("its stub points at the newer read", stubText(stale!).includes("newer read of this file"), true);
+	check("ordinary stubs are unchanged", stubText(plan.records[0]).includes("Re-run the tool"), true);
+	check("unsuperseded results past the target still survive", plan.records.some((r) => r.toolCallId === "call_21"), false);
+}
+{
+	// Under the high-water mark nothing happens — duplicates never trigger a
+	// round on their own, they only ride along on one.
+	const messages = conversation(8, 40_000, { fileAt: { 6: "src/file-1.ts" } });
+	check(
+		"duplicates alone trigger nothing",
+		planDiet({ messages, evicted: new Map(), currentTokens: 100_000, contextWindow: 272_000, settings: SETTINGS }),
+		null,
+	);
 }
 
 console.log("\n--- thresholds ---");
@@ -288,9 +368,80 @@ console.log("\n--- across calls ---");
 	check("and the request goes through whole", diet.step({ messages, contextWindow: 272_000, reportedTokens: 50_000 }), {});
 }
 
+console.log("\n--- reasoning drops (flag off by default) ---");
+{
+	check("the flag defaults off", DEFAULT_SETTINGS.dropOldReasoning, false);
+	// Off means untouched even at 40 turns of reasoning over the mark.
+	const diet = createDiet({ ...SETTINGS, highWaterTokens: 1_000, targetTokens: 500 });
+	const messages = conversation(40, 600, { thinking: 2_000 });
+	const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	const thinkingLeft = (step.messages ?? messages).filter((m: Msg) => m.role === "assistant" && m.content.some((c: Msg) => c.type === "thinking"));
+	check("flag off leaves every thinking block", thinkingLeft.length, 40);
+	check("entry does not mention reasoning", step.entry?.reasoningDropped, undefined);
+}
+{
+	check("keys come from the first tool call", assistantKey({ role: "assistant", content: [{ type: "toolCall", id: "call_3" }], timestamp: 5 } as never), "call_3");
+	check("no tool call falls back to timestamp", assistantKey({ role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 5 } as never), "ts:5");
+}
+{
+	const messages = conversation(40, 600, { thinking: 2_000 });
+	const drops = collectReasoningDrops(messages, new Set(), 10);
+	check("all but the newest keepRecentReasoning are picked", drops.keys.length, 30);
+	check("oldest first, newest kept", [drops.keys[0], drops.keys.at(-1), drops.keys.includes("call_30")], ["call_0", "call_29", false]);
+	check("savings estimated from the blocks", drops.savedTokens, 30 * Math.ceil(2_080 / 4));
+	check("already-dropped are not re-picked", collectReasoningDrops(messages, new Set(drops.keys), 10).keys.length, 0);
+	// Messages without reasoning don't count against the keep budget.
+	const bare = conversation(12, 600);
+	check("nothing to drop when no reasoning exists", collectReasoningDrops(bare, new Set(), 10).keys, []);
+}
+{
+	const on = { ...SETTINGS, dropOldReasoning: true, keepRecentReasoning: 10 };
+	const diet = createDiet(on);
+	const messages = conversation(40, 40_000, { thinking: 2_000 });
+	const first = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	check("a round reports the reasoning it stripped", first.entry!.reasoningDropped, 30);
+	const kept = first.messages!.filter((m: Msg) => m.role === "assistant" && m.content.some((c: Msg) => c.type === "thinking"));
+	check("newest keepRecentReasoning still think", kept.length, 10);
+	const stripped = first.messages!.find((m: Msg) => m.role === "assistant" && m.content.every((c: Msg) => c.type !== "thinking")) as Msg;
+	check("tool calls survive the strip", stripped.content.some((c: Msg) => c.type === "toolCall"), true);
+	check("projection counts the reasoning savings", first.entry!.toTokens < 149_600, true);
+
+	// Sticky and byte-stable, exactly like result stubs: the next call renders
+	// the same strip without a new round, even as context shrinks.
+	const second = diet.step({ messages, contextWindow: 272_000, reportedTokens: first.entry!.toTokens });
+	check("no second round", second.entry, undefined);
+	check("same render either way", JSON.stringify(second.messages), JSON.stringify(first.messages));
+	diet.reset();
+	check("reset restores reasoning too", diet.step({ messages, contextWindow: 272_000, reportedTokens: 50_000 }), {});
+}
+{
+	// No result candidates at all (bodies under minResultBytes), still over the
+	// mark: reasoning carries a round alone rather than the diet declaring
+	// itself out of moves.
+	const on = { ...SETTINGS, dropOldReasoning: true, keepRecentReasoning: 5 };
+	const diet = createDiet(on);
+	const messages = conversation(10, 300, { thinking: 4_000 });
+	const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	check("reasoning-only round happens", [step.entry?.dropped, step.entry?.reasoningDropped], [0, 5]);
+	check("and rewrites the request", step.messages !== undefined, true);
+}
+{
+	// resolveSettings guards the new keys.
+	check("dropOldReasoning read from settings", resolveSettings({ dropOldReasoning: true }).dropOldReasoning, true);
+	check("keepRecentReasoning floor of 1", resolveSettings({ keepRecentReasoning: 0 }).keepRecentReasoning, DEFAULT_SETTINGS.keepRecentReasoning);
+	check("valid keepRecentReasoning taken", resolveSettings({ keepRecentReasoning: 25 }).keepRecentReasoning, 25);
+}
+
 console.log("\n--- the transcript line ---");
 check("plural", dietLine({ dropped: 38, fromTokens: 221_400, toTokens: 149_100 }), "Context diet — dropped 38 stale results, 221k → 149k");
 check("singular", dietLine({ dropped: 1, fromTokens: 1_000, toTokens: 900 }), "Context diet — dropped 1 stale result, 1k → 900");
+check(
+	"with reasoning",
+	dietLine({ dropped: 38, reasoningDropped: 52, fromTokens: 221_400, toTokens: 141_000 }),
+	"Context diet — dropped 38 stale results + reasoning from 52, 221k → 141k",
+);
+// Entries written before the flag existed have no reasoningDropped field.
+check("old entries render unchanged", dietLine({ dropped: 2, fromTokens: 5_000, toTokens: 3_000 }), "Context diet — dropped 2 stale results, 5k → 3k");
 check("token format", [formatTokens(999), formatTokens(1_500)], ["999", "2k"]);
 
 console.log(`\n${failures === 0 ? "all passed" : `${failures} FAILED`}`);

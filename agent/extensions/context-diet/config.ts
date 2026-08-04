@@ -50,6 +50,23 @@ export interface DietSettings {
 	keepImages: number;
 	/** Results smaller than this are left alone; the stub would not pay for itself. */
 	minResultBytes: number;
+	/**
+	 * EXPERIMENTAL, default off. Rounds also strip thinking blocks (the encrypted
+	 * reasoning signatures) from all but the newest `keepRecentReasoning`
+	 * assistant messages. In the measured session those blobs were 1MB across 455
+	 * messages — on the order of 10–25% of peak context, re-read on every call.
+	 *
+	 * Off by default because the risk is a hard failure, not a quality dip: for
+	 * reasoning models the OpenAI Responses API can reject a replayed
+	 * function_call whose paired reasoning item is missing ("... was provided
+	 * without its required reasoning item"). Whether that check applies to
+	 * long-completed rounds or only the call being answered is not documented;
+	 * the flag exists to find out on a real session. If a turn dies with that
+	 * error, turn this back off — nothing else changes, the session is intact.
+	 */
+	dropOldReasoning: boolean;
+	/** Newest N assistant messages keep their reasoning when the flag is on. */
+	keepRecentReasoning: number;
 }
 
 export const DEFAULT_SETTINGS: DietSettings = {
@@ -61,6 +78,8 @@ export const DEFAULT_SETTINGS: DietSettings = {
 	keepRecentResults: 24,
 	keepImages: 3,
 	minResultBytes: 512,
+	dropOldReasoning: false,
+	keepRecentReasoning: 10,
 };
 
 /**
@@ -94,5 +113,9 @@ export function resolveSettings(raw: unknown): DietSettings {
 		keepRecentResults: Math.floor(num("keepRecentResults", 0, 1000)),
 		keepImages: Math.floor(num("keepImages", 0, 1000)),
 		minResultBytes: Math.floor(num("minResultBytes", 0, Number.MAX_SAFE_INTEGER)),
+		dropOldReasoning: bool("dropOldReasoning"),
+		// Floor of 1: keeping zero reasoning would strip the message the model is
+		// mid-thought on, which no configuration should be able to say.
+		keepRecentReasoning: Math.floor(num("keepRecentReasoning", 1, 1000)),
 	};
 }

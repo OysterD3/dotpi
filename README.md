@@ -1261,6 +1261,12 @@ The main-agent guidance (when and how to call it) lives in the tool description 
 system prompt. The reviewer-side prompt is authored here, reconstructed from the documented
 behaviour of server-side implementations, whose instructions never ship in a client.
 
+The transcript budget is 20% of the reviewer's window (down from 50%), priced from session
+`019fcad1`: seven consults forwarded 614k input tokens — advisor spawns are fresh processes, so
+none of it cached, and the over-window ones billed at gpt-5.6's doubled long-context rate — $3.20
+of transcript for seven answers. Advice quality lives in recent state and the transcript already
+drops oldest-first, so the cheap 80% is the stale 80%; on sol this still forwards ~54k tokens.
+
 ```jsonc
 {
   "advisor": {
@@ -1455,9 +1461,26 @@ killing a 2.7-hour harness run to save tokens is not a trade worth making.
 
 Over the high-water mark (80% of the window) a round drops the bodies of old tool results, oldest
 first, down to a target of 55%. Errors are never dropped, nor are the newest 24 results — the live
-working set. Screenshots are the exception to that last rule: only the newest 3 survive, because one
-goes stale the moment the next is taken and costs ~1.2k tokens to keep saying so. Each dropped body
-becomes one line naming the call and its size, so the model can re-run what it actually wants.
+working set. Two kinds of staleness reach inside that recent window anyway: screenshots (only the
+newest 3 survive, because one goes stale the moment the next is taken and costs ~1.2k tokens to
+keep saying so) and superseded reads — when a file has been read again, every older copy is a
+*stale* version of something the model is probably editing, so rounds sweep those even past the
+target. "Superseded" is deliberately narrow: a later whole-file read covers any earlier read of
+that path, an identical (path, offset, limit) covers its exact duplicate, and a later partial read
+covers nothing — the model may still be using the rest. The measured session read three of its own
+source files three times each. Each dropped body becomes one line naming the call and its size —
+and for a superseded read, saying the fresh copy is below — so the model can find what it actually
+wants.
+
+`dropOldReasoning` (default **off**, experimental) lets rounds also strip thinking blocks from all
+but the newest 10 assistant messages. The measured session carried 1MB of encrypted reasoning
+signatures across 455 messages — on the order of 10–25% of peak context, re-read on every call;
+replaying with the flag on saves another ~$6 (est., likely high — the replay prices signatures at
+chars/4 and the API bills the decoded reasoning). Off by default because the failure mode is a hard
+400, not a quality dip: the Responses API can reject a replayed `function_call` whose paired
+reasoning item is missing, and whether that check reaches long-completed rounds is undocumented.
+Validation plan: turn it on for one real harness session; if a turn dies with "was provided without
+its required reasoning item", turn it back off — nothing else changes and the session is intact.
 
 Two invariants carry the whole thing, and both are asserted directly:
 
@@ -1487,11 +1510,11 @@ empty.
 | File | Role |
 | --- | --- |
 | `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
-| `session.ts` | The per-session eviction set — stickiness and hysteresis (pure) |
+| `session.ts` | The per-session eviction sets — stickiness and hysteresis (pure) |
 | `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
-| `index.ts` | The `context` hook, and the resets that clear the set |
+| `index.ts` | The `context` hook, and the resets that clear the sets |
 | `render.ts` | The one-line transcript entry |
-| `context-diet.test.ts` | 65 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
+| `context-diet.test.ts` | 101 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
 
 **`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
 

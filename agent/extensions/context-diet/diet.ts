@@ -31,6 +31,8 @@ export interface EvictionRecord {
 	bytes: number;
 	/** What dropping it saves, net of the stub. Planning only. */
 	savedTokens: number;
+	/** True when a later read of the same file made this one redundant. Changes the stub's wording. */
+	superseded?: boolean;
 }
 
 export interface DietPlan {
@@ -45,6 +47,8 @@ export interface DietEntry {
 	dropped: number;
 	fromTokens: number;
 	toTokens: number;
+	/** Assistant messages whose reasoning was stripped this round. Absent before the flag existed. */
+	reasoningDropped?: number;
 }
 
 type ResultContent = (TextContent | ImageContent)[];
@@ -115,7 +119,76 @@ export function indexCallLabels(messages: readonly AgentMessage[]): Map<string, 
 	return labels;
 }
 
+interface ReadSpan {
+	path: string;
+	offset: number | null;
+	limit: number | null;
+}
+
+/** toolCallId → what a read call asked for, off the same assistant messages. */
+export function indexReadSpans(messages: readonly AgentMessage[]): Map<string, ReadSpan> {
+	const spans = new Map<string, ReadSpan>();
+	for (const message of messages) {
+		if (!isAssistant(message)) continue;
+		for (const block of message.content) {
+			if (block.type !== "toolCall" || block.name !== "read") continue;
+			const a = (block.arguments ?? {}) as Record<string, unknown>;
+			if (typeof a.path !== "string" || a.path === "") continue;
+			spans.set(block.id, {
+				path: a.path,
+				offset: typeof a.offset === "number" ? a.offset : null,
+				limit: typeof a.limit === "number" ? a.limit : null,
+			});
+		}
+	}
+	return spans;
+}
+
+/**
+ * Which read results a later read of the same file makes redundant.
+ *
+ * A session that edits a file re-reads it — the measured one read three of its
+ * own source files three times each — and every older copy is pure waste. Worse
+ * than waste: it is a *stale* copy of a file the model has since changed, kept
+ * verbatim in context. So superseded reads lose the recency protection in
+ * collectCandidates and are always swept by a round, even when the target is
+ * already met — see planDiet.
+ *
+ * "Makes redundant" is deliberately narrow: a later whole-file read covers any
+ * earlier read of that path, and a later identical (path, offset, limit) covers
+ * its exact duplicate. A later *partial* read does not cover an earlier whole
+ * read — the model may still be using the rest of the file — so that direction
+ * is left alone.
+ */
+export function findSupersededReads(messages: readonly AgentMessage[], spans: ReadonlyMap<string, ReadSpan>): Set<string> {
+	const ordered: { id: string; span: ReadSpan }[] = [];
+	for (const message of messages) {
+		if (!isToolResult(message) || message.isError) continue;
+		const span = spans.get(message.toolCallId);
+		if (span) ordered.push({ id: message.toolCallId, span });
+	}
+
+	// Walk newest → oldest: a read is superseded if a strictly later one covers it.
+	const superseded = new Set<string>();
+	const wholeSeen = new Set<string>();
+	const exactSeen = new Set<string>();
+	for (let i = ordered.length - 1; i >= 0; i--) {
+		const { id, span } = ordered[i];
+		const whole = span.offset === null && span.limit === null;
+		const exact = `${span.path}\u0000${span.offset}\u0000${span.limit}`;
+		if (wholeSeen.has(span.path) || exactSeen.has(exact)) superseded.add(id);
+		if (whole) wholeSeen.add(span.path);
+		exactSeen.add(exact);
+	}
+	return superseded;
+}
+
 export function stubText(record: EvictionRecord): string {
+	// Superseded reads get told why: "this was a stale copy, the fresh one is
+	// below" steers the model toward the newer read instead of a pointless re-run.
+	if (record.superseded) {
+		return `[stale copy dropped — ${record.label}, ${formatBytes(record.bytes)}. A newer read of this file appears later in the conversation.]`;
+	}
 	return `[older output dropped to keep this session inside its context window — ${record.label}, ${formatBytes(record.bytes)}. Re-run the tool if you still need it.]`;
 }
 
@@ -126,17 +199,23 @@ export function stubText(record: EvictionRecord): string {
  * model has not yet reacted to is the last thing to take away), and the newest
  * `keepRecentResults` — the live working set.
  *
- * Images are the exception to that last rule. A screenshot goes stale the
- * moment the next one is taken, and costs ~1.2k tokens to keep saying so, so
- * only the newest `keepImages` of them survive even when they sit inside the
- * recent window. In practice that only bites during a visual-iteration burst,
- * which is exactly when it should.
+ * Two exceptions reach inside that recent window, because both mark content
+ * that is stale *now* regardless of age:
+ *
+ *   - images: a screenshot goes stale the moment the next one is taken, and
+ *     costs ~1.2k tokens to keep saying so, so only the newest `keepImages`
+ *     survive. In practice that only bites during a visual-iteration burst,
+ *     which is exactly when it should.
+ *   - superseded reads: a later read of the same file replaced this copy, so
+ *     what is being protected would be the *stale* version of a file the model
+ *     is probably editing.
  */
 export function collectCandidates(
 	messages: readonly AgentMessage[],
 	evicted: ReadonlyMap<string, EvictionRecord>,
 	settings: DietSettings,
 	labels: ReadonlyMap<string, string>,
+	superseded: ReadonlySet<string> = new Set(),
 ): EvictionRecord[] {
 	const results: { index: number; message: ToolResultMessage }[] = [];
 	for (const [index, message] of messages.entries()) {
@@ -155,14 +234,15 @@ export function collectCandidates(
 		if (message.isError) continue;
 
 		const image = hasImage(message.content);
+		const stale = superseded.has(message.toolCallId);
 		const recent = position >= recentFrom;
-		if (recent && (!image || protectedImages.has(position))) continue;
+		if (recent && !stale && (!image || protectedImages.has(position))) continue;
 
 		const bytes = contentBytes(message.content);
 		if (bytes < settings.minResultBytes) continue;
 
 		const label = labels.get(message.toolCallId) ?? message.toolName;
-		const record: EvictionRecord = { toolCallId: message.toolCallId, label, bytes, savedTokens: 0 };
+		const record: EvictionRecord = { toolCallId: message.toolCallId, label, bytes, savedTokens: 0, ...(stale ? { superseded: true } : {}) };
 		const saved = contentTokens(message.content) - Math.ceil(stubText(record).length / CONFIG.charsPerToken);
 		if (saved <= 0) continue;
 
@@ -188,6 +268,11 @@ export function resolveBounds(contextWindow: number, settings: DietSettings): { 
  * eviction no matter how many follow. Given that, the right move is to take
  * everything old in one go and buy a long stable run afterwards, rather than
  * trim a little on every call and pay the same penalty each time.
+ *
+ * Superseded reads are swept even once the target is met: the round is paying
+ * for a cache break anyway, and what they hold is a stale copy of a file a
+ * later read replaced. They still never *trigger* a round on their own —
+ * below the high-water mark they sit untouched, costing nothing extra.
  */
 export function planDiet(args: {
 	messages: readonly AgentMessage[];
@@ -203,12 +288,13 @@ export function planDiet(args: {
 	if (currentTokens <= highWater) return null;
 
 	const labels = indexCallLabels(messages);
-	const candidates = collectCandidates(messages, evicted, settings, labels);
+	const superseded = findSupersededReads(messages, indexReadSpans(messages));
+	const candidates = collectCandidates(messages, evicted, settings, labels, superseded);
 
 	const records: EvictionRecord[] = [];
 	let projected = currentTokens;
 	for (const candidate of candidates) {
-		if (projected <= target) break;
+		if (projected <= target && !candidate.superseded) continue;
 		records.push(candidate);
 		projected -= candidate.savedTokens;
 	}
@@ -218,20 +304,32 @@ export function planDiet(args: {
 }
 
 /**
- * Swap every evicted result for its stub. Returns the input array untouched
- * when nothing is evicted, so the no-op path allocates nothing.
+ * Swap every evicted result for its stub, and strip thinking blocks from every
+ * reasoning-dropped assistant message. Returns the input array untouched when
+ * there is nothing to do, so the no-op path allocates nothing.
  *
  * Messages that survive are passed through by reference: pi hands this hook a
  * structuredClone and uses the return value for the request only, so sharing is
  * safe and session state is never what gets edited.
  */
-export function applyDiet(messages: readonly AgentMessage[], evicted: ReadonlyMap<string, EvictionRecord>): AgentMessage[] {
-	if (evicted.size === 0) return messages as AgentMessage[];
+export function applyDiet(
+	messages: readonly AgentMessage[],
+	evicted: ReadonlyMap<string, EvictionRecord>,
+	reasoningDropped: ReadonlySet<string> = new Set(),
+): AgentMessage[] {
+	if (evicted.size === 0 && reasoningDropped.size === 0) return messages as AgentMessage[];
 	return messages.map((message) => {
-		if (!isToolResult(message)) return message;
-		const record = evicted.get(message.toolCallId);
-		if (!record) return message;
-		return { ...message, content: [{ type: "text", text: stubText(record) }] } satisfies ToolResultMessage;
+		if (isToolResult(message)) {
+			const record = evicted.get(message.toolCallId);
+			if (!record) return message;
+			return { ...message, content: [{ type: "text", text: stubText(record) }] } satisfies ToolResultMessage;
+		}
+		if (isAssistant(message) && reasoningDropped.has(assistantKey(message))) {
+			const content = message.content.filter((block) => block.type !== "thinking");
+			if (content.length === message.content.length) return message;
+			return { ...message, content };
+		}
+		return message;
 	});
 }
 
@@ -242,7 +340,58 @@ export function formatTokens(tokens: number): string {
 /** "Context diet — dropped 38 stale results, 221k → 149k". */
 export function dietLine(entry: DietEntry): string {
 	const noun = entry.dropped === 1 ? "stale result" : "stale results";
-	return `Context diet — dropped ${entry.dropped} ${noun}, ${formatTokens(entry.fromTokens)} → ${formatTokens(entry.toTokens)}`;
+	const reasoning = entry.reasoningDropped ? ` + reasoning from ${entry.reasoningDropped}` : "";
+	return `Context diet — dropped ${entry.dropped} ${noun}${reasoning}, ${formatTokens(entry.fromTokens)} → ${formatTokens(entry.toTokens)}`;
+}
+
+/**
+ * A stable identity for an assistant message, so a reasoning drop can stick to
+ * it across calls. Assistant messages carry no id; the first tool call's id is
+ * unique and immutable, and the rare assistant message without one (the final
+ * answer of a turn) falls back to its timestamp. A collision there could only
+ * make two messages drop reasoning together — never resurrect any.
+ */
+export function assistantKey(message: AssistantMessage): string {
+	for (const block of message.content) {
+		if (block.type === "toolCall") return block.id;
+	}
+	return `ts:${message.timestamp}`;
+}
+
+/**
+ * Which assistant messages a round should strip reasoning from: everything but
+ * the newest `keepRecent`, minus what is already stripped.
+ *
+ * Decided only inside a round, exactly like result evictions. Deciding this
+ * per call — "always the newest N" — would move the boundary forward on every
+ * assistant message, mutating position N-from-the-end each call and breaking
+ * the prompt cache there every single time. Sticky-and-swept-in-rounds is the
+ * whole reason the diet saves money; reasoning follows the same rule.
+ */
+export function collectReasoningDrops(
+	messages: readonly AgentMessage[],
+	alreadyDropped: ReadonlySet<string>,
+	keepRecent: number,
+): { keys: string[]; savedTokens: number } {
+	const withReasoning: { key: string; chars: number }[] = [];
+	for (const message of messages) {
+		if (!isAssistant(message)) continue;
+		let chars = 0;
+		for (const block of message.content) {
+			if (block.type === "thinking") chars += (block.thinking?.length ?? 0) + (block.thinkingSignature?.length ?? 0);
+		}
+		if (chars > 0) withReasoning.push({ key: assistantKey(message), chars });
+	}
+
+	const cutoff = Math.max(0, withReasoning.length - Math.max(0, keepRecent));
+	const keys: string[] = [];
+	let savedTokens = 0;
+	for (const { key, chars } of withReasoning.slice(0, cutoff)) {
+		if (alreadyDropped.has(key)) continue;
+		keys.push(key);
+		savedTokens += Math.ceil(chars / CONFIG.charsPerToken);
+	}
+	return { keys, savedTokens };
 }
 
 /**

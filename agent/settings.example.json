@@ -99,7 +99,9 @@
     "targetRatio": 0.55,
     "keepRecentResults": 24,
     "keepImages": 3,
-    "minResultBytes": 512
+    "minResultBytes": 512,
+    "dropOldReasoning": false,
+    "keepRecentReasoning": 10
   },
   "stalledTurn": {
     "enabled": true,
