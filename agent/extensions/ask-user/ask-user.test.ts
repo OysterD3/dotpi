@@ -571,6 +571,12 @@ function makePi(active: string[] = []) {
 	};
 }
 const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => undefined };
+// session_start now reads settings.json (settings.ts, for style.ts's contract
+// pattern list) — every fake ctx that reaches it needs the two fields that
+// reads, same as the real ExtensionContext. No file lives at ROOT/.pi, so
+// this always resolves to CONFIG.contractModels' default, same as before
+// this extension read settings.json at all.
+const sessionStartCtx = { cwd: ROOT, isProjectTrusted: () => true };
 
 {
 	const h = makePi();
@@ -591,14 +597,14 @@ const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => unde
 	checkTrue("the always-on snippet advertises the batch", /\b(4|four)\b/.test(tool.promptSnippet));
 	checkTrue("so do the guidelines", tool.promptGuidelines.some((line: string) => /one ask_user call/.test(line)));
 
-	h.handlers.get("session_start")!({}, { hasUI: true, ui: uiStub });
+	h.handlers.get("session_start")!({}, { hasUI: true, ui: uiStub, ...sessionStartCtx });
 	checkTrue("active when enabled and interactive", h.active().includes("ask_user"));
 }
 {
 	// The one condition on the tool, and the only one: somebody to answer.
 	const h = makePi(["ask_user"]);
 	extension(h.pi as never);
-	h.handlers.get("session_start")!({}, { hasUI: false, ui: uiStub });
+	h.handlers.get("session_start")!({}, { hasUI: false, ui: uiStub, ...sessionStartCtx });
 	checkTrue("inactive in a headless session", !h.active().includes("ask_user"));
 }
 {
@@ -606,7 +612,7 @@ const uiStub = { setStatus: () => {}, notify: () => {}, custom: async () => unde
 	// every argument it does not recognise falls through to reporting status.
 	const h = makePi();
 	extension(h.pi as never);
-	const ctx = { hasUI: true, ui: uiStub };
+	const ctx = { hasUI: true, ui: uiStub, ...sessionStartCtx };
 	h.handlers.get("session_start")!({}, ctx);
 	const cmd = h.commands.get("ask-user");
 	await cmd.handler("off", ctx);

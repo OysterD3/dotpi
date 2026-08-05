@@ -36,6 +36,27 @@
  * breath as the instruction to ask. A false negative costs what it already cost:
  * a task built on a guess. That asymmetry is why the verb list is generous and
  * the guards are cheap, rather than the other way round.
+ *
+ * All of the above assumes the model is willing to be moved by wording at all,
+ * and that assumption held for exactly one side of an A/B benchmark run in this
+ * harness. claude-opus-5, given OPENING_NUDGE below on a task with a real open
+ * decision, asked four batched questions at minute six — the nudge worked
+ * precisely as designed. gpt-5.6-sol, same task, same nudge, and a user prompt
+ * that additionally said outright "if you don't understand anything, ask before
+ * you do", called ask_user zero times across ten hours, guessed wrong on the one
+ * question that mattered (a real data source vs. a demo fixture), and burned $93
+ * building on the guess. The nudge did not arrive late — it rode in on turn one,
+ * same as always — and it was not unread; it was read and not acted on. Every
+ * sentence in OPENING_NUDGE is a judgment call dressed as an instruction ("if
+ * any exist, ask"; "if none exist, do not ask"), and a judgment call is exactly
+ * the shape of guidance OpenAI-family models are trained to weigh against
+ * finishing the task, and lose. What survived that same training, the benchmark
+ * suggests, is the opposite shape: an unconditional protocol with a mandatory,
+ * checkable output artifact — no "if", a forced choice between calling ask_user
+ * and printing a visible block, every time. style.ts scopes that wording
+ * (CONTRACT_NUDGE, below) to the models it was built for rather than replacing
+ * OPENING_NUDGE outright: a model that already asks does not need to be handed a
+ * rigid protocol in place of the judgment call it was already making correctly.
  */
 
 /**
@@ -275,6 +296,40 @@ export const OPENING_NUDGE = [
 	"If none exist — the common case — do not ask. Say in one line what you are assuming and get on with the work.",
 ].join("\n");
 
+/**
+ * The contract style's opening nudge — style.ts's other wording, delivered at
+ * the exact same point as OPENING_NUDGE above (see index.ts's
+ * before_agent_start handler, which picks one or the other fresh on every
+ * turn rather than caching the choice). Where OPENING_NUDGE offers a
+ * judgment call, this offers a forced choice with a checkable artifact,
+ * because a judgment call is what the benchmark this file's header describes
+ * showed OpenAI-family models routing around.
+ *
+ * No "if any exist, ask": every request gets one of the two things below, and
+ * (b)'s exact marker line — "ASSUMPTIONS:" — is what index.ts's
+ * hasAssumptionsBlock, below, actually looks for in the model's own output,
+ * so this is not merely instructing the model, it is defining the thing
+ * compliance is checked against. The six decision kinds are OPENING_NUDGE's
+ * three bullets, split further and made concrete enough to name without
+ * reading a sentence twice — a model that is not going to weigh "is this
+ * genuinely the user's to decide" on its own needs the list to be
+ * recognisable at a glance, not argued for.
+ *
+ * The mid-task re-application is the other half of the same fix as the
+ * compliance follow-up in index.ts: the opening nudge, of either style, only
+ * fires once, and a model that stops finding new decisions after turn one
+ * needs telling that the gate is not a one-time formality.
+ */
+export const CONTRACT_NUDGE = [
+	"Decision gate — complete ONE of these before your first file write, not after:",
+	"(a) Call ask_user ONCE, batching every decision below that applies to this request; or",
+	"(b) Print a visible block starting with the exact line 'ASSUMPTIONS:' — one numbered line per assumption, each naming the decision, the choice you are making, and what becomes wrong if the user disagrees.",
+	"",
+	"Decisions that always qualify: data source (real system vs mock/fixture/demo); schema, API, or contract shapes other work will build on; framework/library/dependency choices; file and module layout; scope boundaries (what you will NOT do); any instruction with two materially different readings.",
+	"",
+	"This gate re-applies MID-TASK: the moment you discover a new decision of these kinds, ask or extend ASSUMPTIONS before building on it. Silent assumptions are defects. If genuinely none apply, print 'ASSUMPTIONS: none — <one line why>' and proceed.",
+].join("\n");
+
 /** Wrap a reminder the way pi's own hidden-message reminders are wrapped. */
 export function systemReminder(text: string): string {
 	return `<system-reminder>\n${text}\n</system-reminder>`;
@@ -311,9 +366,101 @@ export function systemReminder(text: string): string {
  * "four". It also names the concrete questions from OPENING_NUDGE (data
  * source, schema, layout) rather than repeating the abstract categories,
  * because by this point the model has stopped reading the abstract version.
+ *
+ * This is the socratic style's version specifically — see style.ts. It stays
+ * word-for-word what it always was, one-shot per arming, because socratic
+ * models were never the gap this schedule closes. contractFollowUpReminder
+ * and hasAssumptionsBlock, below, are the contract style's versions of this
+ * same idea, with a re-arming schedule instead of a single latch — see
+ * CONFIG.followUp and index.ts for why that difference exists.
  */
 export function followUpReminder(fileCount: number): string {
 	return systemReminder(
 		`You have now created or edited ${fileCount} files without putting a single decision to the user. Re-check the opening questions (data source real vs fixture, schema, layout): if any decision is genuinely the user's, call ask_user NOW; otherwise state your assumptions in one line and continue.`,
 	);
+}
+
+/**
+ * The contract style's compliance follow-up — same trigger as
+ * followUpReminder above (index.ts's tool_call handler, CONFIG.followUp),
+ * different wording because a different thing is being checked for.
+ * followUpReminder's fallback ("state your assumptions in one line and
+ * continue") is prose the model merely claims to have followed; nothing
+ * downstream reads it back. CONTRACT_NUDGE asked for a checkable artifact
+ * instead, so this follow-up does not offer a fallback at all — it names the
+ * artifact and says print it now, and index.ts's hasAssumptionsBlock, below,
+ * is what actually checks whether that happened.
+ *
+ * Restates the exact marker line ('ASSUMPTIONS:'), not just the word: by the
+ * time this fires, several turns and CONFIG.followUp.afterMutations files
+ * separate the model from CONTRACT_NUDGE, and context compaction can drop the
+ * opening nudge entirely before this ever fires. Without the literal format
+ * repeated here, a model that still remembers there IS a gate has no spec
+ * left in context for what printing it correctly looks like.
+ */
+export function contractFollowUpReminder(fileCount: number): string {
+	return systemReminder(
+		`You have modified ${fileCount} files and neither asked a question nor printed an ASSUMPTIONS block. Print it NOW — a visible block starting with the exact line 'ASSUMPTIONS:', one numbered line per assumption you have already made silently (data source, schemas, layout), naming the decision and what becomes wrong if the user disagrees — then continue. If any line is genuinely the user's call, use ask_user instead.`,
+	);
+}
+
+/**
+ * Does `text` — an assistant message's text content, as index.ts extracts it
+ * from message_end — contain a visible ASSUMPTIONS block? This is the other
+ * half of contract-style compliance alongside an ask_user call (see
+ * index.ts's tool_call and message_end handlers): CONTRACT_NUDGE asks the
+ * model to print a block starting with the exact line "ASSUMPTIONS:", and
+ * this is what checks that it did.
+ *
+ * Line-start, not substring: matched against each line's trimmed text, not
+ * against the raw string. "I'll note my assumptions: this looks like mock
+ * data" mid-sentence is prose ABOUT assumptions, not the block the gate asks
+ * for — treating it as compliance would let the exact silent-assumption
+ * failure this style exists to catch (see the header above) count as having
+ * been caught.
+ *
+ * Not literal-exact, though: a line is stripped of one leading markdown
+ * heading ("#" through "######" plus a space) and one leading emphasis
+ * wrapper ("**", "__", or "*") before matching, and the marker itself is
+ * matched case-insensitively. CONTRACT_NUDGE asks for the artifact, not for
+ * markdown-free plain text, and a model that renders its own output as
+ * "**ASSUMPTIONS:**" or "## Assumptions:" has still printed the block the
+ * gate asked for — treating that as non-compliance would be exactly the kind
+ * of false accusation this style exists to avoid.
+ *
+ * Two further exclusions keep this from firing on text that merely CONTAINS
+ * the marker rather than asserting it: lines inside a fenced code block
+ * (``` or ~~~, tracked by toggling on any fence-delimiter line) and
+ * blockquote lines (leading ">"). Both are ways of quoting or citing the
+ * marker without printing it as this message's own compliance — the fenced
+ * case is not hypothetical: this very extension's test files contain over a
+ * dozen lines starting with "ASSUMPTIONS:" inside fenced examples, and a
+ * model that quotes the gate back (in an explanation, in a diff, in a code
+ * comment it is writing) must not register as having satisfied it.
+ *
+ * Pure and total, like opensWork above — no I/O, any string in, a boolean
+ * out — so index.ts's glue (finding the right event, pulling text out of
+ * content blocks) stays separate from the logic worth testing on its own.
+ * index.ts calls this once per content block rather than concatenating a
+ * message's blocks into one string first — see its message_end handler for
+ * why.
+ */
+export function hasAssumptionsBlock(text: string): boolean {
+	let inFence = false;
+	return text.split("\n").some((rawLine) => {
+		const trimmed = rawLine.trim();
+		// A fence delimiter line toggles the state rather than being matched
+		// itself — three or more backticks or tildes, optionally followed by a
+		// language tag, which is the entire line either way.
+		if (/^(`{3,}|~{3,})/.test(trimmed)) {
+			inFence = !inFence;
+			return false;
+		}
+		if (inFence || trimmed.startsWith(">")) return false;
+		// Strip one leading heading marker, then one leading emphasis wrapper —
+		// "## **ASSUMPTIONS:**" needs both, in that order, to expose the marker.
+		const unheaded = trimmed.replace(/^#{1,6}\s+/, "");
+		const unwrapped = unheaded.startsWith("**") || unheaded.startsWith("__") ? unheaded.slice(2) : unheaded.startsWith("*") ? unheaded.slice(1) : unheaded;
+		return /^assumptions:/i.test(unwrapped);
+	});
 }
