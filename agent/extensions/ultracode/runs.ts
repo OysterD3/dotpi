@@ -15,7 +15,16 @@ import type { RunStatus } from "./store.ts";
 export interface AgentRow {
 	index: number;
 	label: string;
-	status: "running" | "done" | "failed" | "replayed";
+	/**
+	 * "queued" is live-only: it means the engine has started this agent (a row
+	 * exists, `startedAt` is set) but its spawn is still waiting on the process
+	 * FairScheduler for a concurrency slot — see the pre/post flip around
+	 * `scheduler.run` in tool.ts. It never appears in a journal (only "done",
+	 * "failed" and "replayed" outcomes are ever written), so `progressFromJournal`
+	 * never produces it — only a run this process is actively driving can be
+	 * queued on ITS OWN scheduler.
+	 */
+	status: "running" | "queued" | "done" | "failed" | "replayed";
 	phase?: string;
 	model?: string;
 	agentType?: string;

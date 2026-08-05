@@ -935,26 +935,45 @@ function startRun(
 				// The ceiling is taken HERE, around the child process only — not
 				// around the validation and model resolution above, which are
 				// synchronous and would hold a slot for no reason.
+				//
+				// Marked "queued" going in and flipped back to "running" only once the
+				// task below actually starts, which — because scheduler.run() does not
+				// invoke it until acquire() has granted a slot — is the one moment that
+				// is true. Below the ceiling this flips back within the same tick, so
+				// nothing ever renders it; above the ceiling it is what tells the panel
+				// an agent that "started" (agentStart already ran, the row exists) is
+				// in fact waiting on a slot rather than working. No scheduler.ts change
+				// needed: `row` is captured by this closure, so the identity the queue
+				// itself has none of is supplied here instead.
+				if (row) {
+					row.status = "queued";
+					changed();
+				}
 				const result = await scheduler.run(
 					runId,
-					() =>
-					runSubagent({
-						prompt: SUBAGENT_PREAMBLE + prompt,
-						// The scope's directory when this agent is inside a
-						// withWorktree(), the project otherwise. Set by the engine, never
-						// by the script.
-						cwd: agentOptions.cwd ?? env.cwd,
-						model,
-						thinking,
-						tools,
-						appendSystemPrompt: type?.prompt,
-						sessionDir,
-						sessionId,
-						stderrPath: agentErrorPath(agentDir, runId, index),
-						approved: env.approved,
-						signal: spawnSignal,
-						onUsage,
-					}),
+					() => {
+						if (row) {
+							row.status = "running";
+							changed();
+						}
+						return runSubagent({
+							prompt: SUBAGENT_PREAMBLE + prompt,
+							// The scope's directory when this agent is inside a
+							// withWorktree(), the project otherwise. Set by the engine, never
+							// by the script.
+							cwd: agentOptions.cwd ?? env.cwd,
+							model,
+							thinking,
+							tools,
+							appendSystemPrompt: type?.prompt,
+							sessionDir,
+							sessionId,
+							stderrPath: agentErrorPath(agentDir, runId, index),
+							approved: env.approved,
+							signal: spawnSignal,
+							onUsage,
+						});
+					},
 					spawnSignal,
 				);
 				recordTranscript();

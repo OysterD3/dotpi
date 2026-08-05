@@ -8,7 +8,7 @@
  * installed, or pi's own package dir):
  *     jiti agent/extensions/ultracode/ultracode.test.ts
  */
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -18,6 +18,7 @@ import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, 
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
+import { SUBAGENT_PREAMBLE } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { resolveModelReference } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
@@ -33,11 +34,13 @@ import {
 import { addUsage, applyTurn, buildArgs, emptyUsage, scrubArg, stderrDetail, type ReportedUsage } from "./spawn.ts";
 import {
 	agentSessionId,
+	countToolCalls,
 	createRun,
 	isSettled,
 	listRuns,
 	newRunId,
 	pruneRuns,
+	readAgentPrompt,
 	readMeta,
 	reconcile,
 	appendJournalLine,
@@ -49,7 +52,17 @@ import {
 } from "./store.ts";
 import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
 import { resolveScript, resolveThinking, safeStringify, WORKFLOW_TOOL_NAME } from "./tool.ts";
-import { clipKeepingTail, ORPHAN_TICKS, packHints, WorkflowsPanel, type PanelResult } from "./tui.ts";
+import {
+	agentStatusIcon,
+	clipKeepingTail,
+	isAgentSettled,
+	ORPHAN_TICKS,
+	packHints,
+	SPLIT_MIN_WIDTH,
+	WorkflowsPanel,
+	zipColumns,
+	type PanelResult,
+} from "./tui.ts";
 import { editStreakReminder, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
@@ -2642,7 +2655,9 @@ console.log("\n--- a many-phase run still shows its agents ---");
 		theme,
 		() => {},
 	);
-	panel.handleInput("\r"); // open the run detail
+	// No keypress needed: this is the only run and it is "running", so the
+	// panel opens straight into its run detail (see the constructor's
+	// single-active-run jump).
 
 	const lines = panel.render(80);
 	const agentRows = lines.filter((line) => /agent-\d+-\d+/.test(line)).length;
@@ -2674,6 +2689,846 @@ console.log("\n--- a rendered line never contains a newline ---");
 	check("no element carries a newline", lines.filter((l) => l.includes("\n")).length, 0);
 	check("nor overflows the width", lines.filter((l) => visibleWidth(l) > 80).length, 0);
 	rmSync(dir, { recursive: true, force: true });
+}
+
+// ------------------------------------------------------------- two-pane TUI
+
+console.log("\n--- tui: agentStatusIcon picks one icon per status ---");
+{
+	const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+	check("done -> ✓", agentStatusIcon("done", theme), "✓");
+	check("failed -> ✗", agentStatusIcon("failed", theme), "✗");
+	check("replayed -> ⟲", agentStatusIcon("replayed", theme), "⟲");
+	check("queued -> ⧖ (slot wait, not just \"not started yet\")", agentStatusIcon("queued", theme), "⧖");
+	check("running -> ●", agentStatusIcon("running", theme), "●");
+}
+
+console.log("\n--- tui: isAgentSettled treats queued like running, not like done ---");
+{
+	// The regression this guards: before "queued" existed as its own status, a
+	// phase heading's "N/total" fraction counted anything that was not
+	// literally "running" as settled — which, once agents could be queued
+	// behind the scheduler's ceiling, counted a slot-starved agent that had not
+	// done anything yet as finished.
+	check("running is not settled", isAgentSettled("running"), false);
+	check("queued is not settled", isAgentSettled("queued"), false);
+	check("done is settled", isAgentSettled("done"), true);
+	check("failed is settled", isAgentSettled("failed"), true);
+	check("replayed is settled", isAgentSettled("replayed"), true);
+}
+
+console.log("\n--- tui: zipColumns joins two columns exactly, never over budget ---");
+{
+	// A themed fragment, the shape theme.fg produces — zipColumns has to stay
+	// exact with ANSI codes in the mix, not just on plain strings.
+	const ansi = (text: string) => `\x1b[32m${text}\x1b[0m`;
+	const leftWidth = 20;
+	const gutter = " │ ";
+	// Pre-padded to leftWidth, as truncateToWidth(…, pad: true) guarantees on
+	// the way in — zipColumns itself does not pad the left side.
+	const left = [truncateToWidth(ansi("▸ ✓ agent-one"), leftWidth, "", true), truncateToWidth("  ✗ agent-two", leftWidth, "", true)];
+	// Right rows of varying width, as wrapTextWithAnsi guarantees <= its own
+	// budget but never pads — the right is always the last column.
+	const right = [ansi("status  done"), "elapsed 3s"];
+
+	const zipped = zipColumns(left, right, leftWidth, gutter);
+	check("one joined line per row", zipped.length, 2);
+	check(
+		"every line is exactly left + gutter + right wide, ANSI codes stripped from the measurement",
+		zipped.every((line, i) => visibleWidth(line) === leftWidth + visibleWidth(gutter) + visibleWidth(right[i]!)),
+		true,
+	);
+	check("the left half is untouched", zipped[0]!.startsWith(left[0]!), true);
+	check("the gutter sits between the two halves", zipped[0]!.includes(gutter), true);
+
+	// A taller left column: the extra rows get a BLANK right half (nothing sits
+	// past the last column), and the left half stays exactly leftWidth wide.
+	const tallLeft = [...left, truncateToWidth("  ⧖ agent-three", leftWidth, "", true)];
+	const leftTaller = zipColumns(tallLeft, right.slice(0, 1), leftWidth, gutter);
+	check("a taller left pads the missing right rows", leftTaller.length, 3);
+	check("the padded row is still exactly left + gutter wide", visibleWidth(leftTaller[2]!), leftWidth + visibleWidth(gutter));
+	check("with nothing after the gutter", leftTaller[2]!.endsWith(gutter), true);
+
+	// A taller right column: the extra rows get a BLANK, exactly-leftWidth-wide
+	// left half (not the previous row's content), so the gutter still lines up
+	// vertically down the whole pane.
+	const tallRight = [...right, "still going"];
+	const rightTaller = zipColumns(left, tallRight, leftWidth, gutter);
+	check("a taller right pads the missing left rows with blank space", rightTaller.length, 3);
+	check("the padded row's left half is blank but still leftWidth wide", visibleWidth(rightTaller[2]!.split(gutter)[0]!), leftWidth);
+
+	check("two empty columns zip to nothing, not a crash", zipColumns([], [], leftWidth, gutter), []);
+}
+
+console.log("\n--- store: readAgentPrompt strips the preamble ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-prompt-"));
+	try {
+		const withPreamble = join(dir, "a.jsonl");
+		writeFileSync(
+			withPreamble,
+			[
+				JSON.stringify({ type: "session", id: "a" }),
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}review the diff for bugs` }] },
+				}),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }),
+			].join("\n") + "\n",
+			"utf8",
+		);
+		check("the preamble is stripped, the task text survives", readAgentPrompt(withPreamble)?.text, "review the diff for bugs");
+		check("and it is not reported as a chain-ordinal miss", readAgentPrompt(withPreamble)?.isChainOpenerFallback, false);
+
+		const stringShaped = join(dir, "b.jsonl");
+		writeFileSync(stringShaped, `${JSON.stringify({ type: "message", message: { role: "user", content: "plain string content" } })}\n`, "utf8");
+		check("string-shaped content (no preamble) works too", readAgentPrompt(stringShaped)?.text, "plain string content");
+
+		check("a session file that does not exist", readAgentPrompt(join(dir, "missing.jsonl")), undefined);
+
+		const garbage = join(dir, "c.jsonl");
+		writeFileSync(garbage, "not json at all\n{{{ broken\n", "utf8");
+		check("non-JSONL garbage is not a crash, just nothing found", readAgentPrompt(garbage), undefined);
+
+		// A torn line and an unrelated message ahead of the real one are both
+		// skipped rather than aborting the search.
+		const mixed = join(dir, "d.jsonl");
+		writeFileSync(
+			mixed,
+			[
+				"not json",
+				JSON.stringify({ type: "message", message: { role: "assistant", content: "not the one we want" } }),
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}second try` }] },
+				}),
+			].join("\n") + "\n",
+			"utf8",
+		);
+		check("garbage and a non-user message do not block finding the real one", readAgentPrompt(mixed)?.text, "second try");
+
+		// FINDING 1: a context-seeded agent's FIRST user message is the forked
+		// context bundle context.ts's seedAgentSession writes (no preamble) — the
+		// real task follows as a LATER message, always preamble-prefixed. Scanning
+		// for the preamble rather than trusting "first user message" is what keeps
+		// the panel from caching thousands of lines of forked context as "the
+		// prompt".
+		const seeded = join(dir, "e.jsonl");
+		const hugeBundle = "## Context\n\n" + "background line\n".repeat(500);
+		writeFileSync(
+			seeded,
+			[
+				JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: hugeBundle }] } }),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Context received. Send the task." }] } }),
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}fix the off-by-one in parser.ts` }] },
+				}),
+			].join("\n") + "\n",
+			"utf8",
+		);
+		const seededLookup = readAgentPrompt(seeded);
+		check("the real task is returned, not the context bundle", seededLookup?.text, "fix the off-by-one in parser.ts");
+		check("the bundle's own text never leaks through", seededLookup?.text?.includes("background line"), false);
+
+		// A context-seeded agent whose task turn has not landed yet (only the
+		// bundle exists so far) has nothing preamble-bearing to find at all; the
+		// bundle is the best available answer rather than "no prompt".
+		const bundleOnly = join(dir, "f.jsonl");
+		writeFileSync(
+			bundleOnly,
+			`${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "## Context\n\nnot a task yet" }] } })}\n`,
+			"utf8",
+		);
+		check("with no task turn yet, the bundle is the fallback", readAgentPrompt(bundleOnly)?.text, "## Context\n\nnot a task yet");
+		check("that fallback is not flagged as a chain-ordinal miss", readAgentPrompt(bundleOnly)?.isChainOpenerFallback, false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- store: readAgentPrompt's ordinal picks the k-th chained agent's task ---");
+{
+	// FINDING 3: a shared session's file carries one preamble-bearing task
+	// message per agent that ran in it, in the order they ran. `ordinal` is how
+	// a later agent in the chain finds ITS OWN task rather than the first one
+	// written to the file.
+	const dir = mkdtempSync(join(tmpdir(), "wf-prompt-ordinal-"));
+	try {
+		const chain = join(dir, "shared.jsonl");
+		writeFileSync(
+			chain,
+			[
+				JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}inspect auth.ts` }] } }),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "inspected" }] } }),
+				JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}now fix the bug` }] } }),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "fixed" }] } }),
+				JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}now verify it` }] } }),
+			].join("\n") + "\n",
+			"utf8",
+		);
+		check("ordinal 0 is the first agent's own task", readAgentPrompt(chain, 0)?.text, "inspect auth.ts");
+		check("ordinal 1 is the second agent's own task, not the first's", readAgentPrompt(chain, 1)?.text, "now fix the bug");
+		check("ordinal 2 is the third agent's own task", readAgentPrompt(chain, 2)?.text, "now verify it");
+		check("none of these are reported as a chain-ordinal miss", [0, 1, 2].map((o) => readAgentPrompt(chain, o)?.isChainOpenerFallback), [
+			false,
+			false,
+			false,
+		]);
+
+		// An ordinal past what the head-bound scan found (three chained agents
+		// asked for, only one task message actually written — e.g. the earlier
+		// agents' own long conversations pushed the rest out of PROMPT_HEAD_BYTES)
+		// falls back to the LAST one found rather than lying about which agent's
+		// task it is.
+		const truncated = join(dir, "truncated.jsonl");
+		writeFileSync(
+			truncated,
+			`${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}only this one was reachable` }] } })}\n`,
+			"utf8",
+		);
+		const fallback = readAgentPrompt(truncated, 2);
+		check("the fallback shows the last (only) task actually found", fallback?.text, "only this one was reachable");
+		check("and says so, rather than lying silently", fallback?.isChainOpenerFallback, true);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- store: countToolCalls resumes from where it left off ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-toolcount-"));
+	try {
+		const file = join(dir, "a.jsonl");
+		const toolLine = () => `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } })}\n`;
+		writeFileSync(file, toolLine(), "utf8");
+		const first = countToolCalls(file);
+		check("the first read counts what is already there", first.count, 1);
+		check("and remembers the file's size as the offset", first.offset, statSync(file).size);
+
+		appendFileSync(file, toolLine() + toolLine(), "utf8");
+		const second = countToolCalls(file, first);
+		check("an append is counted on top of the previous tally, not from 0", second.count, 3);
+
+		// Nothing appended: a size check, and the SAME tally back.
+		check("no growth -> the identical tally", countToolCalls(file, second), second);
+
+		// A schema retry starts a fresh attempt under a NEW session id rather
+		// than truncating this one, so a shrink is defensive rather than
+		// expected — but it must reset rather than go negative or wrong.
+		writeFileSync(file, toolLine(), "utf8");
+		const shrunk = countToolCalls(file, second);
+		check("a smaller file is treated as a different one and restarts from 0", shrunk.count, 1);
+
+		// One assistant turn can carry several tool calls at once (the preamble
+		// itself asks agents to batch independent calls) — each counts.
+		const multi = join(dir, "b.jsonl");
+		writeFileSync(
+			multi,
+			`${JSON.stringify({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "toolCall", name: "read" },
+						{ type: "toolCall", name: "grep" },
+					],
+				},
+			})}\n`,
+			"utf8",
+		);
+		check("multiple tool calls in one line are all counted", countToolCalls(multi).count, 2);
+
+		check("a missing file counts nothing rather than throwing", countToolCalls(join(dir, "missing.jsonl")).count, 0);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: the two-pane run view ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-split-"));
+	try {
+		const sessionFile = join(dir, "agent-a.jsonl");
+		writeFileSync(
+			sessionFile,
+			[
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}find every TODO in src/` }] },
+				}),
+				JSON.stringify({
+					type: "message",
+					message: { role: "assistant", content: [{ type: "toolCall", name: "grep", arguments: { pattern: "TODO" } }] },
+				}),
+			].join("\n") + "\n",
+			"utf8",
+		);
+
+		const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0.02, totalTokens: 4000, turns: 2 };
+		// The panel's run LIST is read from run.json on disk (listRuns); the
+		// live registry only overrides the PROGRESS of a run already in that
+		// list (see currentProgress) — a run known only to the registry is
+		// invisible to it, same as every other live-run fixture in this file.
+		createRun(dir, { runId: "wf-split", name: "sweep", status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 2, usage }, "s");
+		const progress = newProgress("wf-split", "sweep");
+		progress.phases.push({
+			title: "Find",
+			agents: [
+				{ index: 0, label: "runner", status: "running", phase: "Find", startedAt: 0, sessionFile, usage, model: "openai/gpt-5" },
+				{ index: 1, label: "waiter", status: "queued", phase: "Find", startedAt: 0 },
+			],
+		});
+		const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
+		const registry = new RunRegistry();
+		registry.add(run);
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: dir, registry, sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		// No keypress needed: this is the only run and it is "running", so the
+		// panel already opened straight into it (see the constructor).
+
+		const wideLines = panel.render(120);
+		const wide = wideLines.join("\n");
+		check("no rendered line exceeds the width it was given", wideLines.filter((l) => visibleWidth(l) > 120).length, 0);
+		check("the tree and the detail pane sit side by side", wide.includes("│"), true);
+		check("the running agent's prompt shows the stripped task, not the preamble", wide.includes("find every TODO in src/"), true);
+		check("the preamble boilerplate itself is not shown", wide.includes("You are a subagent"), false);
+		check("activity names a real tool call", /last \d+ of \d+ tool call/.test(wide), true);
+
+		check("just under SPLIT_MIN_WIDTH stays single-pane", panel.render(SPLIT_MIN_WIDTH - 1).join("\n").includes("│"), false);
+		check("at SPLIT_MIN_WIDTH it splits", panel.render(SPLIT_MIN_WIDTH).join("\n").includes("│"), true);
+
+		// ↓ selects the queued agent.
+		panel.handleInput("\x1b[B");
+		const queuedLines = panel.render(120);
+		const queued = queuedLines.join("\n");
+		check("a queued agent renders the wait icon", queued.includes("⧖"), true);
+		check("and explains itself in the header", queued.includes("queued (slot wait)"), true);
+		check("an agent with no session file yet says so, not \"missing\"", queued.includes("prompt pending first turn"), true);
+		check("still nothing overflows the width", queuedLines.filter((l) => visibleWidth(l) > 120).length, 0);
+
+		// Escape from the two-pane view goes straight to the runs list — not
+		// through an intermediate "agent" screen, unlike the narrow fallback.
+		panel.handleInput("\x1b"); // escape
+		check("escape from two-pane goes directly to the runs list", panel.render(120).join("\n").includes("✦ Workflows"), true);
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: below SPLIT_MIN_WIDTH the drill-down still works, with a prompt section ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-tui-narrow-prompt-"));
+	try {
+		const sessionFile = join(dir, "agent-a.jsonl");
+		writeFileSync(
+			sessionFile,
+			`${JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}summarise the auth module` }] },
+			})}\n`,
+			"utf8",
+		);
+		createRun(
+			dir,
+			{ runId: "wf-narrow", name: "solo", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 1000, agentCount: 1, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 1 } },
+			"s",
+		);
+		appendJournalLine(dir, "wf-narrow", { kind: "phase", seq: 1, t: 0, title: "Work" });
+		appendJournalLine(dir, "wf-narrow", {
+			kind: "agent", seq: 2, t: 0, index: 1, key: "k", label: "summariser", phase: "Work",
+			status: "done", startedAt: 0, endedAt: 500, sessionFile,
+		});
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		panel.handleInput("\x1b[C"); // -> run
+		panel.handleInput("\r"); // -> agent, narrow fallback only (width 80 below SPLIT_MIN_WIDTH)
+		const text = panel.render(80).join("\n");
+		check("the fallback drill-down still reaches a single agent's detail", text.includes("summariser") || text.includes("done"), true);
+		check("and it now shows the agent's prompt too", text.includes("summarise the auth module"), true);
+		check("under the section heading agentBody shares with the two-pane view", text.includes("Prompt ·"), true);
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// ------------------------------------------ shared-session chains (Finding 3)
+
+console.log("\n--- tui: shared-session chains pick each agent's OWN prompt by ordinal ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-chain-"));
+	try {
+		const shared = join(dir, "shared.jsonl");
+		writeFileSync(
+			shared,
+			[
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}first: inspect the module` }] },
+				}),
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "inspected" }] } }),
+				JSON.stringify({
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}second: apply the fix` }] },
+				}),
+			].join("\n") + "\n",
+			"utf8",
+		);
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 1 };
+		createRun(dir, { runId: "wf-chain", name: "chained", status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 2, usage }, "s");
+		appendJournalLine(dir, "wf-chain", { kind: "phase", seq: 1, t: 0, title: "Work" });
+		// The two rows share ONE sessionFile — the shape of a shared session
+		// (`agent(p, { session: "..." })`) — ordered by startedAt, second later.
+		appendJournalLine(dir, "wf-chain", { kind: "agent", seq: 2, t: 0, index: 1, key: "k1", label: "inspector", phase: "Work", status: "done", startedAt: 0, endedAt: 10, sessionFile: shared });
+		appendJournalLine(dir, "wf-chain", { kind: "agent", seq: 3, t: 0, index: 2, key: "k2", label: "fixer", phase: "Work", status: "done", startedAt: 100, endedAt: 200, sessionFile: shared });
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		// The only run and it is "running", so the constructor already opened it
+		// (see the single-active-run jump) with the first chained agent selected.
+		const first = panel.render(120).join("\n");
+		check("the first agent (ordinal 0) shows its OWN task", first.includes("first: inspect the module"), true);
+		check("not the second agent's — the bug this closes showed the chain's FIRST prompt for every agent in it", first.includes("second: apply the fix"), false);
+
+		panel.handleInput("\x1b[B"); // select the second chained agent
+		const second = panel.render(120).join("\n");
+		check("the second agent (ordinal 1) shows ITS OWN task", second.includes("second: apply the fix"), true);
+		check("not the chain's opener", second.includes("first: inspect the module"), false);
+		check("no chain-opener suffix — this agent's own task WAS found within the head bound", second.includes("(chain opener)"), false);
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: a chain past the head-bound scan falls back to the opener, labelled ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-chain-truncated-"));
+	try {
+		const shared = join(dir, "shared.jsonl");
+		// Only ONE task message reachable — standing in for an earlier agent's own
+		// long conversation pushing the rest of the chain's task turns past
+		// PROMPT_HEAD_BYTES.
+		writeFileSync(
+			shared,
+			`${JSON.stringify({
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}only the opener is reachable` }] } },
+			)}\n`,
+			"utf8",
+		);
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 1 };
+		createRun(dir, { runId: "wf-chain2", name: "chained2", status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 2, usage }, "s");
+		appendJournalLine(dir, "wf-chain2", { kind: "phase", seq: 1, t: 0, title: "Work" });
+		appendJournalLine(dir, "wf-chain2", { kind: "agent", seq: 2, t: 0, index: 1, key: "k1", label: "opener", phase: "Work", status: "done", startedAt: 0, endedAt: 10, sessionFile: shared });
+		appendJournalLine(dir, "wf-chain2", { kind: "agent", seq: 3, t: 0, index: 2, key: "k2", label: "later", phase: "Work", status: "done", startedAt: 100, endedAt: 200, sessionFile: shared });
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		panel.handleInput("\x1b[B"); // select the second ("later") chained agent — ordinal 1
+		const wide = panel.render(120).join("\n");
+		check("the fallback shows the only task actually found", wide.includes("only the opener is reachable"), true);
+		check("and labels it as the chain opener rather than lying silently", wide.includes("(chain opener)"), true);
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// -------------------------------------------- detail-pane budgeting (Finding 2)
+
+console.log("\n--- tui: layoutDetail shrinks the prompt before the activity tail goes under its floor ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-detailbudget-"));
+	const storeDir = mkdtempSync(join(tmpdir(), "wf-detailbudget-store-"));
+	try {
+		const sessionFile = join(dir, "agent.jsonl");
+		const taskLines = Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n");
+		const fileLines: string[] = [
+			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}${taskLines}` }] } }),
+		];
+		for (let i = 0; i < 10; i++) {
+			fileLines.push(
+				JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: `call${i}`, arguments: { command: `step-${i}` } }] } }),
+			);
+		}
+		writeFileSync(sessionFile, `${fileLines.join("\n")}\n`, "utf8");
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: storeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		const agent: AgentRow = { index: 0, label: "solo", status: "running", startedAt: 0, sessionFile };
+
+		// Identity "measure" — the narrow fallback's own convention (render()'s
+		// row() truncates each raw line to one terminal row rather than wrapping
+		// it), which lets this test predict exact row counts without depending on
+		// wrapTextWithAnsi's own line-breaking.
+		const identity = (ls: string[]) => ls;
+		const out: string[] = (panel as unknown as { layoutDetail(a: AgentRow, b: number, m: (ls: string[]) => string[]): string[] }).layoutDetail(
+			agent,
+			13,
+			identity,
+		);
+
+		check("stays within the 13-row budget", out.length <= 13, true);
+		check("the 12-line prompt shrank rather than swallowing the pane", out.filter((l) => /^line \d+$/.test(l)).length < 12, true);
+		check("the activity heading survives", out.some((l) => l.includes("Activity")), true);
+		const activityRows = out.filter((l) => /^ {2}call\d+ /.test(l));
+		check("the activity tail gets at least ACTIVITY_MIN_ROWS(4) rows worth of room (heading + events)", activityRows.length + 1 >= 4, true);
+		check("the newest tool call survives the squeeze", out.some((l) => l.includes("step-9")), true);
+		check("the oldest does not — never-shrinking room went to the tail, not the head", out.some((l) => l.includes("step-0")), false);
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(storeDir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- tui: layoutDetail's activity trim keeps the tail when wrapping outgrows its room ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-detailtrim-"));
+	const storeDir = mkdtempSync(join(tmpdir(), "wf-detailtrim-store-"));
+	try {
+		const sessionFile = join(dir, "agent.jsonl");
+		const fileLines: string[] = [
+			JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}short task` }] } }),
+		];
+		for (let i = 0; i < 6; i++) {
+			fileLines.push(
+				JSON.stringify({
+					type: "message",
+					message: { role: "assistant", content: [{ type: "toolCall", name: `call${i}`, arguments: { command: `oldest-to-newest-${i}` } }] },
+				}),
+			);
+		}
+		writeFileSync(sessionFile, `${fileLines.join("\n")}\n`, "utf8");
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: storeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		const agent: AgentRow = { index: 0, label: "solo", status: "running", startedAt: 0, sessionFile };
+
+		// A synthetic "measure" standing in for wrapping: every ACTIVITY line (the
+		// only ones with a leading two-space indent — see activitySection) turns
+		// into three rows instead of one, the way a long tool-call detail
+		// wrapping at a narrow pane width would. Header and prompt lines pass
+		// through untouched (neither starts with two spaces), so the numbers stay
+		// predictable without depending on wrapTextWithAnsi's own rules — the same
+		// reasoning countToolCalls' injectable chunk size below uses to exercise a
+		// real code path deterministically instead of hoping the OS cooperates.
+		const explode = (ls: string[]) => ls.flatMap((l) => (l.startsWith("  ") ? [l, `${l} (cont 1)`, `${l} (cont 2)`] : [l]));
+
+		const out: string[] = (panel as unknown as { layoutDetail(a: AgentRow, b: number, m: (ls: string[]) => string[]): string[] }).layoutDetail(
+			agent,
+			10,
+			explode,
+		);
+		check("stays within budget even though activity exploded 3x", out.length <= 10, true);
+		check("the newest fetched call survives the clip", out.some((l) => l.includes("oldest-to-newest-5")), true);
+		check("the second-newest, fetched but not fit after exploding, is trimmed — the tail wins, not the head", out.some((l) => l.includes("oldest-to-newest-4")), false);
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(storeDir, { recursive: true, force: true });
+	}
+}
+
+// --------------------------------------------------- key gating (Finding 5)
+
+console.log("\n--- tui: g and PgUp/PgDn are gated to the view where their effect is visible ---");
+{
+	const activeDir = mkdtempSync(join(tmpdir(), "wf-keygate-active-"));
+	const doneDir = mkdtempSync(join(tmpdir(), "wf-keygate-done-"));
+	try {
+		const sessionFile = join(activeDir, "agent.jsonl");
+		const longTask = Array.from({ length: 20 }, (_, i) => `step ${i}`).join("\n");
+		writeFileSync(
+			sessionFile,
+			`${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}${longTask}` }] } })}\n`,
+			"utf8",
+		);
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 1 };
+		createRun(activeDir, { runId: "wf-1", name: "one", status: "running", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, agentCount: 1, usage }, "s");
+		appendJournalLine(activeDir, "wf-1", { kind: "phase", seq: 1, t: 0, title: "Work" });
+		appendJournalLine(activeDir, "wf-1", { kind: "agent", seq: 2, t: 0, index: 1, key: "k", label: "solo", phase: "Work", status: "done", startedAt: 0, endedAt: 1, sessionFile });
+		createRun(doneDir, { runId: "wf-done", name: "finished", status: "done", cwd: "/p", pid: process.pid, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 0, usage }, "s");
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		type View = "runs" | "run" | "agent";
+		const priv = (p: WorkflowsPanel) => p as unknown as { view: View; showLogs: boolean; promptScroll: number };
+
+		// The narrow "runs" list: no run is open, so neither key has anything to affect.
+		{
+			const p = new WorkflowsPanel({ agentDir: doneDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 }, theme, () => {});
+			p.render(80); // "done" is not active, so the constructor left it on the list
+			check("starts on the runs list", priv(p).view, "runs");
+			p.handleInput("g");
+			check("g does nothing on the runs list", priv(p).showLogs, false);
+			p.handleInput("\x1b[6~"); // PageDown
+			check("PgDn does nothing on the runs list either", priv(p).promptScroll, 0);
+			p.dispose();
+		}
+
+		// The narrow "run" view (the agent LIST — not yet drilled into one): this
+		// is exactly where the log pane lives (see runBody()), so "g" works; the
+		// detail pane with the prompt does not exist yet, so PgDn must not.
+		{
+			const p = new WorkflowsPanel({ agentDir: activeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 }, theme, () => {});
+			p.render(80); // narrow; "running" is active, so the constructor already opened the run
+			check("starts in narrow run view", priv(p).view, "run");
+			p.handleInput("g");
+			check("g DOES toggle the log pane in narrow run view", priv(p).showLogs, true);
+			p.handleInput("\x1b[6~"); // PageDown
+			check("PgDn does nothing here — the detail pane it would scroll is not on screen yet", priv(p).promptScroll, 0);
+			p.dispose();
+		}
+
+		// The narrow "agent" view (drilled into one agent): the reverse — the
+		// prompt is now visible, so PgDn works; the log pane belongs to the LIST
+		// view, so "g" no longer does anything.
+		{
+			const p = new WorkflowsPanel({ agentDir: activeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 }, theme, () => {});
+			p.render(80);
+			p.handleInput("\r"); // -> agent
+			check("now in agent view", priv(p).view, "agent");
+			p.handleInput("g");
+			check("g does nothing in agent view", priv(p).showLogs, false);
+			p.handleInput("\x1b[6~"); // PageDown
+			check("PgDn DOES move the prompt scroll now that the detail pane is on screen", priv(p).promptScroll > 0, true);
+			p.dispose();
+		}
+
+		// Split mode: "run" and "agent" collapse into one screen that already
+		// shows the detail pane (see forward()/back()), but there is no row
+		// budgeted for a log pane there at all (see SPLIT_HINTS) — so PgDn works
+		// and "g" still must not.
+		{
+			const p = new WorkflowsPanel({ agentDir: activeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 }, theme, () => {});
+			p.render(120); // split
+			p.handleInput("g");
+			check("g does nothing in split mode", priv(p).showLogs, false);
+			p.handleInput("\x1b[6~"); // PageDown
+			check("PgDn DOES move the prompt scroll in split mode's run view", priv(p).promptScroll > 0, true);
+			p.dispose();
+		}
+	} finally {
+		rmSync(activeDir, { recursive: true, force: true });
+		rmSync(doneDir, { recursive: true, force: true });
+	}
+}
+
+// ----------------------------------------------- journal size gate (Finding 6)
+
+console.log("\n--- tui: the viewed-progress cache re-parses only when the journal grows ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-viewed-cache-"));
+	try {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, cost: 0, totalTokens: 0, turns: 0 };
+		createRun(dir, { runId: "wf-v", name: "watched", status: "done", cwd: "/p", pid: 999999, sessionId: SESSION, startedAt: 0, endedAt: 1, agentCount: 1, usage }, "s");
+		appendJournalLine(dir, "wf-v", { kind: "phase", seq: 1, t: 0, title: "Work" });
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: dir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		const priv = panel as unknown as { viewed?: { path: string; size: number; progress: unknown }; refresh(): void };
+		panel.handleInput("\x1b[C"); // -> run: forces the journal to be read at all
+		panel.render(80);
+		const first = priv.viewed?.progress;
+		check("the journal is parsed on the first look", !!first, true);
+
+		// Several simulated 1-second ticks (refresh() is exactly what the
+		// constructor's timer calls every second) with NOTHING appended to the
+		// journal in between.
+		for (let i = 0; i < 5; i++) {
+			priv.refresh();
+			panel.render(80);
+		}
+		check(
+			"an unchanged journal reuses the SAME parsed object across every tick, not a fresh parse each time",
+			priv.viewed?.progress === first,
+			true,
+		);
+
+		// A real change must still be picked up.
+		appendJournalLine(dir, "wf-v", { kind: "log", seq: 2, t: 0, message: "hello" });
+		priv.refresh();
+		panel.render(80);
+		const grown = priv.viewed?.progress as { logs: string[] } | undefined;
+		check("a grown journal is re-parsed into a NEW object", grown !== first, true);
+		check("...and the new content is actually there", grown?.logs?.includes("hello"), true);
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// ------------------------------------------------ prompt miss cache (Finding 7)
+
+console.log("\n--- tui: a prompt miss is cached by the file's size, re-attempted only once it changes ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-prompt-miss-"));
+	const storeDir = mkdtempSync(join(tmpdir(), "wf-prompt-miss-store-"));
+	try {
+		const file = join(dir, "agent.jsonl");
+		// The REAL task, computed first so the miss fixture below can be padded
+		// out to at least this length — SUBAGENT_PREAMBLE alone is longer than a
+		// short miss fixture would otherwise be.
+		const realCore = `${JSON.stringify({
+			type: "message",
+			message: { role: "user", content: [{ type: "text", text: `${SUBAGENT_PREAMBLE}do the thing` }] } },
+		)}\n`;
+		const realLen = Buffer.byteLength(realCore, "utf8");
+		const missSize = realLen + 500;
+
+		// No user message at all — readAgentPrompt genuinely has nothing to find,
+		// so this is a MISS (undefined), the case that used to be re-read at
+		// PROMPT_HEAD_BYTES on every tick forever. Padded (as a harmless trailing
+		// non-JSON line) to `missSize` so the real content below can later be
+		// padded to that exact same size.
+		const noUserCore = `${JSON.stringify({ type: "message", message: { role: "assistant", content: "no user message here" } })}\n`;
+		const missPad = "y".repeat(Math.max(0, missSize - Buffer.byteLength(noUserCore, "utf8")));
+		writeFileSync(file, noUserCore + missPad, "utf8");
+		check("the miss fixture reaches its intended size", statSync(file).size, missSize);
+
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const panel = new WorkflowsPanel(
+			{ agentDir: storeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+			theme,
+			() => {},
+		);
+		const agent: AgentRow = { index: 0, label: "solo", status: "running", startedAt: 0, sessionFile: file };
+		const priv = panel as unknown as { promptEntryFor(a: AgentRow): { text: string; isChainOpenerFallback: boolean } };
+
+		const miss1 = priv.promptEntryFor(agent);
+		check("no user message at all -> unavailable", miss1.text, "prompt unavailable (session file missing)");
+
+		// Overwrite with the REAL task, padded to the exact same byte size as the
+		// miss — proving the re-attempt is gated on the size actually changing,
+		// not merely on being asked again.
+		const pad = "x".repeat(Math.max(0, missSize - realLen));
+		writeFileSync(file, realCore + pad, "utf8");
+		check("padded to the exact same size as the miss (sanity check on the fixture itself)", statSync(file).size, missSize);
+
+		const stillMissed = priv.promptEntryFor(agent);
+		check("same size -> the cached miss is reused, NOT re-read", stillMissed.text, "prompt unavailable (session file missing)");
+
+		// Now the file genuinely grows — the miss is invalidated.
+		writeFileSync(file, `${realCore}${pad}Z`, "utf8");
+		const grown = priv.promptEntryFor(agent);
+		check("a size change re-attempts and finds the real prompt", grown.text, "do the thing");
+
+		panel.dispose();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+		rmSync(storeDir, { recursive: true, force: true });
+	}
+}
+
+// --------------------------------------------- countToolCalls chunking (Finding 4)
+
+console.log("\n--- store: countToolCalls loops in chunks, honoring a short/partial read ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-toolcount-chunk-"));
+	try {
+		const file = join(dir, "a.jsonl");
+		const toolLine = () => `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } })}\n`;
+		// Ten calls, scanned with a deliberately tiny chunk size well under the
+		// file's own size — the read loop then has to make several readSync
+		// calls to fill its buffer, the same shape a genuine short read forces,
+		// but deterministic rather than depending on the OS actually handing one
+		// back (see the doc comment on countToolCalls' readChunkBytes parameter).
+		writeFileSync(file, toolLine().repeat(10), "utf8");
+		const chunked = countToolCalls(file, undefined, 7);
+		check("every call is still counted across many small reads", chunked.count, 10);
+		check("the whole file is marked scanned", chunked.offset, statSync(file).size);
+		check("small enough for a single first look — not capped", chunked.capped, false);
+
+		// The incremental (resume-from-offset) path also honors a tiny chunk size
+		// across an appended span.
+		appendFileSync(file, toolLine().repeat(3), "utf8");
+		const resumed = countToolCalls(file, chunked, 7);
+		check("an appended span is fully consumed in small chunks too", resumed.count, 13);
+		check("capped-ness carries forward from the previous tally", resumed.capped, false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+console.log("\n--- store: countToolCalls caps a large foreign file's first tally, and the panel shows '>= M' ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-toolcount-cap-"));
+	try {
+		const file = join(dir, "a.jsonl");
+		const toolLine = `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } })}\n`;
+		// A file already well past the 32MB first-tally cap (store.ts's
+		// FIRST_TALLY_CAP_BYTES) the first time this process ever looks at it —
+		// standing in for a foreign, already-large transcript from another
+		// session. The five calls sit at the very END, comfortably inside the
+		// scanned tail regardless of exactly where the cap lands.
+		const capBytes = 32 * 1024 * 1024;
+		const prefix = Buffer.alloc(capBytes + 1024 * 1024, "x");
+		writeFileSync(file, Buffer.concat([prefix, Buffer.from(toolLine.repeat(5), "utf8")]));
+
+		const capped = countToolCalls(file);
+		check("a first tally over the cap does not start at byte 0", capped.capped, true);
+		check("the calls within the scanned tail are still counted", capped.count, 5);
+		check("the offset reaches the true end of the file", capped.offset, statSync(file).size);
+
+		// The panel renders that as a floor ("at least M"), not a bare number.
+		const theme = { fg: (_k: string, text: string) => text, bold: (text: string) => text } as any;
+		const storeDir = mkdtempSync(join(tmpdir(), "wf-toolcount-cap-store-"));
+		try {
+			const panel = new WorkflowsPanel(
+				{ agentDir: storeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 },
+				theme,
+				() => {},
+			);
+			const agent: AgentRow = { index: 0, label: "solo", status: "done", startedAt: 0, endedAt: 1, sessionFile: file };
+			const section = (
+				panel as unknown as { activitySection(a: AgentRow, room: number): string[] }
+			).activitySection(agent, 20);
+			check("the activity heading shows a floor, not an exact count", section.some((l) => l.includes(">= 5")), true);
+			panel.dispose();
+		} finally {
+			rmSync(storeDir, { recursive: true, force: true });
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

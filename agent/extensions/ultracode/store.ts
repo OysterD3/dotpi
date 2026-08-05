@@ -34,10 +34,12 @@ import {
 	readSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { RUN_STORE_DIR } from "./config.ts";
+import { SUBAGENT_PREAMBLE } from "./description.ts";
 import { pruneWorktrees } from "./worktree.ts";
 import { emptyUsage, type SpawnUsage } from "./spawn.ts";
 
@@ -325,10 +327,15 @@ export function pruneRuns(agentDir: string, keep: number): void {
 
 // ------------------------------------------------------------------- journal
 
+/** Path of the run's append-only journal. */
+export function journalPath(agentDir: string, runId: string): string {
+	return join(runDir(agentDir, runId), "journal.jsonl");
+}
+
 /** Append one JSON line. Journal writes are best-effort: never fail a run. */
 export function appendJournalLine(agentDir: string, runId: string, record: unknown): void {
 	try {
-		appendFileSync(join(runDir(agentDir, runId), "journal.jsonl"), `${JSON.stringify(record)}\n`, "utf8");
+		appendFileSync(journalPath(agentDir, runId), `${JSON.stringify(record)}\n`, "utf8");
 	} catch {
 		/* a store we cannot write must not take the run down */
 	}
@@ -459,7 +466,7 @@ export function sessionActivity(sessionFile: string, limit = 12): SessionEvent[]
 export function readJournalLines(agentDir: string, runId: string): unknown[] {
 	let raw: string;
 	try {
-		raw = readFileSync(join(runDir(agentDir, runId), "journal.jsonl"), "utf8");
+		raw = readFileSync(journalPath(agentDir, runId), "utf8");
 	} catch {
 		return [];
 	}
@@ -507,6 +514,247 @@ export function sessionPathById(agentDir: string, runId: string, id: string): st
 /** The per-index transcript, for callers that have no session id to hand. */
 export function agentSessionPath(agentDir: string, runId: string, index: number, attempt = 0): string | undefined {
 	return sessionPathById(agentDir, runId, agentSessionId(runId, index, attempt));
+}
+
+/** How much of a session file's head to read hunting for the opening user message. */
+const PROMPT_HEAD_BYTES = 256 * 1024;
+
+/** One block of a pi message's `content`, the shape that matters here. */
+interface TextPart {
+	type?: string;
+	text?: unknown;
+}
+
+/** The text of a user message's content, string or array-of-parts alike. */
+function userMessageText(content: unknown): string | undefined {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	const text = (content as TextPart[])
+		.filter((part) => part && typeof part === "object" && part.type === "text" && typeof part.text === "string")
+		.map((part) => part.text as string)
+		.join("\n");
+	return text || undefined;
+}
+
+export interface AgentPromptLookup {
+	/** The task text, preamble stripped. */
+	text: string;
+	/**
+	 * True when `ordinal` asked for the k-th chained agent's own task but the
+	 * head-bound scan (see PROMPT_HEAD_BYTES) found fewer preamble-bearing
+	 * messages than that. `text` is then the LAST one the scan DID find — in
+	 * practice almost always the chain's opening task, since a truncated scan
+	 * nearly always means an earlier agent in the chain ran long enough to push
+	 * everything after it past the bound — rather than the one this row
+	 * actually ran. The caller must say so rather than passing it off as this
+	 * agent's own prompt.
+	 */
+	isChainOpenerFallback: boolean;
+}
+
+/**
+ * The task an agent was actually given, read from its own transcript.
+ *
+ * The store keeps only a HASH of the prompt (journal.ts's agentKey) — enough
+ * for a resume to decide whether a cached result still applies, but not the
+ * text itself. The text still exists in the agent's own session file,
+ * prefixed with SUBAGENT_PREAMBLE (tool.ts prepends that to every subagent
+ * prompt; see description.ts). Stripped here so a reader sees the task it was
+ * given, not the boilerplate every agent gets.
+ *
+ * NOT simply "the first user message": a context-seeded agent (context.ts's
+ * seedAgentSession) writes the forked context bundle as its FIRST user
+ * message, with the task following as a LATER one — the preamble is what
+ * every task turn carries and the bundle never does, so scanning for it is
+ * what tells the two apart. Without this, a context-seeded agent's "prompt"
+ * was thousands of lines of forked context rather than the one-line task.
+ *
+ * `ordinal` picks among MULTIPLE preamble-bearing messages, for a session
+ * several agents share in turn (`agent(p, { session: "..." })` — see
+ * "Shared sessions" in description.ts): the file then carries one such
+ * message per agent, in the order they ran, and the caller (tui.ts's
+ * promptFor) works out which position THIS row is. See
+ * AgentPromptLookup.isChainOpenerFallback for what happens when the scan
+ * cannot reach that far.
+ *
+ * Reads only the HEAD of the file, bounded, rather than the whole thing: the
+ * messages this is hunting for are always near the top relative to how long
+ * an agent's transcript eventually gets, and a long-running (or long-chained)
+ * transcript can reach megabytes past them. A prompt so large the opening
+ * message itself does not fit in the bound is the one case this gives up on
+ * — rare enough, next to a normal task prompt, not to be worth a second
+ * unbounded read on every miss.
+ */
+export function readAgentPrompt(sessionFile: string, ordinal = 0): AgentPromptLookup | undefined {
+	let raw: string;
+	let fd: number | undefined;
+	try {
+		fd = openSync(sessionFile, "r");
+		const size = fstatSync(fd).size;
+		const span = Math.min(size, PROMPT_HEAD_BYTES);
+		const buffer = Buffer.allocUnsafe(span);
+		const got = readSync(fd, buffer, 0, span, 0);
+		raw = buffer.toString("utf8", 0, got);
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+
+	/** Every user message's text, in file order, so the fallback below can use the first one regardless of which (if any) carried the preamble. */
+	let firstUser: string | undefined;
+	/** Preamble-bearing messages only, stripped — one per agent that ran a task in this file. */
+	const tasks: string[] = [];
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		let entry: { type?: string; message?: { role?: string; content?: unknown } };
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			// A torn line is expected at the tail of a bounded read (or mid-write);
+			// skip it rather than fail the whole lookup.
+			continue;
+		}
+		if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+		const text = userMessageText(entry.message.content);
+		if (!text) continue;
+		if (firstUser === undefined) firstUser = text;
+		if (text.startsWith(SUBAGENT_PREAMBLE)) tasks.push(text.slice(SUBAGENT_PREAMBLE.length));
+	}
+
+	if (tasks.length === 0) {
+		// Nothing in the bound carried the preamble at all — a context-seeded
+		// agent whose task turn has not landed yet, or a session this was never
+		// written for. The first user message is the best available answer
+		// either way; it is not treated as a chain-ordinal miss because there is
+		// no chain to be behind on.
+		return firstUser !== undefined ? { text: firstUser, isChainOpenerFallback: false } : undefined;
+	}
+	if (ordinal < tasks.length) return { text: tasks[ordinal]!, isChainOpenerFallback: false };
+	return { text: tasks[tasks.length - 1]!, isChainOpenerFallback: true };
+}
+
+/** Substring that marks one tool-call block in a session file; see countToolCalls. */
+const TOOL_CALL_MARKER = '"type":"toolCall"';
+
+export interface ToolCallTally {
+	/** Byte offset already scanned. */
+	offset: number;
+	/** Tool calls counted in [start, offset), where `start` is 0 unless `capped` — see below. */
+	count: number;
+	/**
+	 * True once this file's FIRST tally started away from byte 0 because the
+	 * file was already bigger than FIRST_TALLY_CAP_BYTES — a foreign transcript
+	 * this process never tallied incrementally, seen for the first time already
+	 * megabytes in. `count` is then a FLOOR ("at least this many"), not an exact
+	 * total: calls before the start point are real but never counted, and stay
+	 * uncounted for the life of this tally chain, since every later call resumes
+	 * from `offset` rather than re-scanning the skipped head.
+	 */
+	capped: boolean;
+}
+
+/** Bytes requested per readSync call while filling the scan buffer below. */
+const DEFAULT_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * How far into an already-large file the very first tally may start, so that
+ * looking at a foreign run's transcript for the first time — already
+ * megabytes long, since this process never tallied it incrementally — does
+ * not put one giant synchronous read on the render path. See ToolCallTally.capped.
+ */
+const FIRST_TALLY_CAP_BYTES = 32 * 1024 * 1024;
+
+/**
+ * How many tool calls a session file has recorded so far, read incrementally.
+ *
+ * "Activity · last K of M tool calls" needs M, and M only grows while an agent
+ * works — but the file backing it reaches megabytes, and the panel re-checks
+ * on every tick that sees the size change. Re-parsing the whole file each time
+ * would make the cost of watching grow with how long you have been watching,
+ * on the render path (the same reasoning sessionActivity's tail-only read is
+ * built on). Passing back the PREVIOUS tally lets the caller resume from where
+ * it left off: only the bytes appended since are ever read, and a substring
+ * scan for one marker is cheaper than parsing JSON to count the same thing.
+ *
+ * Not exact — a tool's own output happening to embed the literal marker text
+ * would over-count by one — but this feeds a display counter, not a billed
+ * figure, and a JSONL transcript containing `"type":"toolCall"` as prose in
+ * its own content is rare enough not to guard against. A marker that straddles
+ * the boundary between two calls (half in the bytes already scanned, half in
+ * the newly appended ones) is undercounted by at most one for the same reason:
+ * cheap over correct, for a number that is display-only and reaches into the
+ * hundreds.
+ *
+ * A file smaller than the previous tally's offset (a schema retry starts a
+ * fresh attempt under a new session id rather than truncating this one, so
+ * this is defensive rather than expected) is treated as a different file:
+ * state resets and the count restarts from 0 (or from FIRST_TALLY_CAP_BYTES
+ * short of the end, same as any other first look — see `capped`).
+ *
+ * `readChunkBytes` is a parameter rather than baked into the read loop below
+ * so a test can shrink it well under a real file's size and force the
+ * multi-chunk path deterministically, without depending on the OS actually
+ * handing back a short read to exercise it.
+ */
+export function countToolCalls(file: string, previous?: ToolCallTally, readChunkBytes = DEFAULT_READ_CHUNK_BYTES): ToolCallTally {
+	let size: number;
+	try {
+		size = statSync(file).size;
+	} catch {
+		return previous ?? { offset: 0, count: 0, capped: false };
+	}
+	let from: number;
+	let baseCount: number;
+	let capped: boolean;
+	if (previous && previous.offset <= size) {
+		from = previous.offset;
+		baseCount = previous.count;
+		capped = previous.capped;
+	} else {
+		// No usable previous tally — either the very first look at this file, or
+		// it shrank (see the doc comment above) and is treated as a new one.
+		// Starting from the last FIRST_TALLY_CAP_BYTES rather than 0 is what
+		// keeps that first look bounded; see `capped`.
+		from = Math.max(0, size - FIRST_TALLY_CAP_BYTES);
+		baseCount = 0;
+		capped = from > 0;
+	}
+	if (from >= size) return { offset: size, count: baseCount, capped };
+	let fd: number | undefined;
+	try {
+		fd = openSync(file, "r");
+		const span = size - from;
+		const buffer = Buffer.allocUnsafe(span);
+		// readSync is not guaranteed to fill the whole request in one call — a
+		// short read used to be scanned anyway, which ran the marker search over
+		// whatever allocUnsafe happened to leave in the untouched tail of the
+		// buffer. Loop until the full span is actually in hand (or the file
+		// genuinely has no more to give, e.g. a race with a concurrent
+		// truncate), reading at most `readChunkBytes` at a time.
+		let read = 0;
+		while (read < span) {
+			const want = Math.min(readChunkBytes, span - read);
+			const got = readSync(fd, buffer, read, want, from + read);
+			if (got <= 0) break;
+			read += got;
+		}
+		let count = baseCount;
+		const scanned = buffer.subarray(0, read);
+		let index = scanned.indexOf(TOOL_CALL_MARKER);
+		while (index !== -1) {
+			count++;
+			index = scanned.indexOf(TOOL_CALL_MARKER, index + TOOL_CALL_MARKER.length);
+		}
+		// `from + read`, not `size`: a short read that stopped early is honestly
+		// reported as scanned only that far, so the NEXT call resumes from where
+		// scanning actually stopped rather than silently skipping the gap.
+		return { offset: from + read, count, capped };
+	} catch {
+		return previous ?? { offset: 0, count: 0, capped: false };
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
 }
 
 export function ensureStore(agentDir: string): void {

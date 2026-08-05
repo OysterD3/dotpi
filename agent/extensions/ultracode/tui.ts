@@ -20,6 +20,30 @@
  * live registry (sub-second updates), and everything else is reconstructed from
  * its journal on disk. That is why runs from previous sessions appear at all.
  *
+ * The run view is two-pane on a wide enough terminal — modeled on Claude
+ * Code's own workflow monitor — rather than the drill-down alone: a fixed-
+ * width tree on the LEFT (phase headings, then one row per agent, cursor-
+ * highlighted) beside a detail pane on the RIGHT for whichever agent the
+ * cursor is on. pi-tui has no split-layout primitive, so the join is done BY
+ * HAND: each side is built as its own array of already-styled, already-width-
+ * clamped strings — truncateToWidth(…, pad: true) keeps every left row
+ * exactly the tree's width, and wrapTextWithAnsi wraps the right column's
+ * prose to ITS width without padding (it is always the last column, so
+ * nothing sits to its right that needs the row square) — and the two arrays
+ * are zipped index-for-index into single lines. That is what keeps the
+ * invariant every other view in this file already depends on: every emitted
+ * line is single-line and within the panel's total width, because the zip is
+ * exact by construction rather than clipped after the fact (pi-tui crashes on
+ * either violation in this slot — see the flatten-and-clamp pass in render()).
+ * Below SPLIT_MIN_WIDTH columns there is not enough room to make a second
+ * column worth having, so the panel falls back to the original single-pane
+ * run → agent drill-down — and that fallback is not a separate
+ * implementation: agentBody() draws from the same section-builders
+ * (agentHeaderLines, promptSection, activitySection) the two-pane's right
+ * column does, and both funnel through the same layoutDetail() for the
+ * height budget itself, so a field added to one appears in both and a
+ * budgeting fix applies to both.
+ *
  * `resume` is the one action the TUI cannot perform itself — replaying a
  * journal means calling the workflow tool, which only the model can do. Pressing
  * `R` therefore hands the instruction back to the command handler as the
@@ -29,13 +53,25 @@
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
 import type { AgentRow, RunProgress, RunRegistry } from "./runs.ts";
 import { formatElapsed, progressFromJournal, sessionRuns, startedLabel, statusMark } from "./panel.ts";
 import { statSync } from "node:fs";
-import { agentErrorPath, listRuns, readJournalLines, runDir, sessionActivity, type RunMeta, type SessionEvent } from "./store.ts";
+import {
+	agentErrorPath,
+	countToolCalls,
+	journalPath,
+	listRuns,
+	readAgentPrompt,
+	readJournalLines,
+	runDir,
+	sessionActivity,
+	type RunMeta,
+	type SessionEvent,
+	type ToolCallTally,
+} from "./store.ts";
 import { piInvocation } from "./spawn.ts";
 
 export interface TuiHost {
@@ -87,8 +123,56 @@ type View = "runs" | "run" | "agent";
 const HINTS: Record<View, string[]> = {
 	runs: ["q close", "↑↓ select", "→ open", "p pause/resume", "c cancel", "R resume run"],
 	run: ["q close", "↑↓ select", "→ open", "← back", "p pause/resume", "c cancel", "g logs", "x export", "e stderr path"],
-	agent: ["q close", "↑↓ agent", "← back", "live tail below", "x export transcript", "e stderr path"],
+	agent: ["q close", "↑↓ agent", "← back", "PgUp/PgDn scroll prompt", "live tail below", "x export transcript", "e stderr path"],
 };
+
+/**
+ * The two-pane view's own hints — shown instead of HINTS.run/HINTS.agent once
+ * isSplit() is true (see render()). There is no further "open": the detail
+ * pane already shows whatever the tree's cursor is on. And no `g` log pane:
+ * that is a run-level concept the split layout has no row budgeted for, so it
+ * stays narrow-only rather than fighting the detail pane for space.
+ */
+const SPLIT_HINTS = ["q close", "↑↓ agent", "esc back", "PgUp/PgDn scroll prompt", "p pause/resume", "c cancel", "x export", "e stderr path"];
+
+/**
+ * Below this many total columns there is not enough room left over for a
+ * right pane worth having once the left tree (LEFT_PANE_MIN..MAX below) and
+ * the gutter are paid for, so the panel keeps the original single-pane
+ * run → agent drill-down instead of splitting. Not measured against a specific
+ * terminal — chosen with headroom over LEFT_PANE_MAX plus the gutter plus a
+ * detail column still worth reading.
+ */
+export const SPLIT_MIN_WIDTH = 90;
+
+/** Left tree column width: this fraction of the panel's interior, clamped so it is never a useless sliver nor most of a very wide terminal. */
+const LEFT_PANE_FRACTION = 0.3;
+const LEFT_PANE_MIN = 24;
+const LEFT_PANE_MAX = 44;
+
+/** Separates the tree from the detail pane; themed with the border colour, like the panel's own rules. Fixed 3-column width: " │ ". */
+const GUTTER = " │ ";
+const GUTTER_WIDTH = 3;
+
+/** Prompt lines shown before "N more" — enough to read the gist without the section swallowing the whole detail pane. */
+const PROMPT_PREVIEW_LINES = 12;
+
+/**
+ * How far the prompt preview may shrink to make room for the activity tail —
+ * see layoutDetail. Not 0 or 1: promptSection always draws its own heading
+ * line on top of whatever this allows, so a floor of 2 is what the doc
+ * comment there means by "heading + 2 lines + a 'N more' indicator" as the
+ * smallest preview that still reads as a preview rather than a stub.
+ */
+const PROMPT_MIN_LINES = 2;
+
+/**
+ * Rows the activity tail is guaranteed once the pane can spare them — see
+ * layoutDetail. Four, because that is roughly the smallest window that still
+ * shows a SEQUENCE of recent actions rather than one line that reads as a
+ * status field with extra steps.
+ */
+const ACTIVITY_MIN_ROWS = 4;
 
 /**
  * Consecutive refresh ticks with no render before the panel concludes it has
@@ -149,10 +233,76 @@ export function packHints(parts: string[], width: number): string[] {
 	return lines.length > 0 ? lines : [""];
 }
 
+/**
+ * An agent that will not change state again on its own. "running" excludes it
+ * (still working) and so does "queued" (see AgentRow.status in runs.ts) —
+ * counting a queued agent as settled is what over-reported a phase's progress
+ * fraction before this existed, since a slot-starved agent has not started
+ * doing anything yet, only been asked to.
+ */
+export function isAgentSettled(status: AgentRow["status"]): boolean {
+	return status !== "running" && status !== "queued";
+}
+
+/** ✓ done, ✗ failed, ⟲ replayed, ● running, ⧖ queued — see AgentRow.status. */
+export function agentStatusIcon(status: AgentRow["status"], theme: Theme): string {
+	switch (status) {
+		case "done":
+			return theme.fg("success", "✓");
+		case "replayed":
+			return theme.fg("muted", "⟲");
+		case "failed":
+			return theme.fg("error", "✗");
+		case "queued":
+			return theme.fg("muted", "⧖");
+		default:
+			return theme.fg("warning", "●");
+	}
+}
+
+/**
+ * Zip a left tree column and a right detail column into single lines.
+ *
+ * Exported and pure so the width invariant it exists to guarantee is testable
+ * without a running panel: every joined line is `left[i]` (already exactly
+ * `leftWidth` wide — truncateToWidth(…, pad: true) guarantees that on the way
+ * in) plus `gutter` plus `right[i]` (already <= its own budgeted width —
+ * wrapTextWithAnsi guarantees that), so the total never exceeds the width the
+ * two columns were given. Whichever array is shorter is padded on ITS side
+ * only — with blank leftWidth-wide space on the left, with nothing on the
+ * right, since the right is always the last column and nothing sits past it
+ * that needs the row square — so a tall tree beside a short detail pane (or
+ * the reverse) zips instead of truncating.
+ */
+export function zipColumns(left: string[], right: string[], leftWidth: number, gutter: string): string[] {
+	const blankLeft = " ".repeat(leftWidth);
+	const rows = Math.max(left.length, right.length);
+	const lines: string[] = [];
+	for (let i = 0; i < rows; i++) {
+		lines.push(`${left[i] ?? blankLeft}${gutter}${right[i] ?? ""}`);
+	}
+	return lines;
+}
+
 function formatTokens(count: number): string {
 	if (count < 1000) return String(count);
 	if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
 	return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * `$0.1234` below $100, `$12.34` at or above — same shape as /usage's own
+ * formatCost, reimplemented here rather than imported: extensions in this repo
+ * are self-contained, and this is one line.
+ *
+ * Shown per agent in the detail pane, where the run-level views deliberately
+ * do not show money (see runTail): those are clipped-width lines meant for a
+ * glance, and a live dollar figure there is a thing to watch rather than read.
+ * This is a detail view someone opened to understand ONE agent, and the
+ * aggregate total still lives in /usage either way.
+ */
+function formatCost(cost: number): string {
+	return cost >= 100 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
 }
 
 /** Export one agent session to HTML with pi's own exporter. */
@@ -171,6 +321,12 @@ export function exportSession(sessionFile: string, outPath: string): Promise<{ o
 	});
 }
 
+/** promptFor's cached shape — the task text plus whether it is a chain-opener fallback (see readAgentPrompt's ordinal). */
+interface PromptCacheEntry {
+	text: string;
+	isChainOpenerFallback: boolean;
+}
+
 export class WorkflowsPanel {
 	focused = false;
 
@@ -183,12 +339,58 @@ export class WorkflowsPanel {
 	private showLogs = false;
 	private status = "";
 	private timer: ReturnType<typeof setInterval> | undefined;
-	/** Cache of the reconstructed progress for the run being viewed. */
-	private viewed: { runId: string; progress: RunProgress } | undefined;
+	/**
+	 * Cache of the reconstructed progress for the run being viewed, keyed on the
+	 * journal file's own path and SIZE (statSync) rather than cleared on a
+	 * timer — see refresh() and currentProgress(). Mirrors activityFor's own
+	 * size gate below: these files are append-only, so size is enough of a
+	 * version, and re-parsing on every one-second tick regardless — which
+	 * unconditionally clearing this on every refresh() used to do — made
+	 * resting on a foreign run's multi-megabyte journal cost a full re-read and
+	 * JSON.parse every second for as long as the panel sat there.
+	 */
+	private viewed: { path: string; size: number; progress: RunProgress } | undefined;
 	/** Renders served, and the count at the last tick — the orphan watchdog's input. */
 	private renders = 0;
 	private rendersAtLastTick = -1;
 	private idleTicks = 0;
+	/**
+	 * The width the most recent render() was given. handleInput has no width of
+	 * its own — pi-tui calls it separately from render() — so key handling that
+	 * has to agree with what is currently on screen (isSplit(), below) reads it
+	 * from here instead. 0 until the first render, which reads as narrow; a key
+	 * cannot arrive before anything has drawn.
+	 */
+	private lastWidth = 0;
+	/**
+	 * Lines skipped from the top of the SELECTED agent's prompt (PgUp/PgDn); see
+	 * promptSection(). Reset whenever the selection moves, in move() — a scroll
+	 * position that survived a selection change would silently show the wrong
+	 * agent's prompt starting mid-way through.
+	 */
+	private promptScroll = 0;
+	/**
+	 * A prompt never changes once written (see readAgentPrompt), so a hit is
+	 * cached for the life of the panel rather than re-read on every tick. Keyed
+	 * on sessionFile PLUS ordinal (see ordinalFor): a shared session's file
+	 * carries one task per chained agent, so the file alone is not a unique key
+	 * — every agent chained into it would otherwise share one cache entry and
+	 * show whichever prompt was read first, no matter which of them it belongs
+	 * to.
+	 */
+	private readonly promptCache = new Map<string, PromptCacheEntry>();
+	/**
+	 * Misses, cached by the file's SIZE at the time of the miss — re-attempted
+	 * only once the file has grown or shrunk since (see promptEntryFor).
+	 * Without this, a session whose task turn never lands within the head
+	 * bound (or has none — see readAgentPrompt) was re-read at PROMPT_HEAD_BYTES
+	 * on every tick for the rest of the panel's life. A file that does not
+	 * exist AT ALL is deliberately kept OUT of this cache — see
+	 * promptEntryFor's own comment for why that case stays as it was.
+	 */
+	private readonly promptMissCache = new Map<string, number>();
+	/** Per-file incremental tool-call tally; see countToolCalls in store.ts. */
+	private readonly toolCallCache = new Map<string, ToolCallTally>();
 
 	constructor(
 		private readonly host: TuiHost,
@@ -196,6 +398,24 @@ export class WorkflowsPanel {
 		private readonly done: (value: PanelResult | undefined) => void,
 	) {
 		this.refresh();
+		// Skip the runs list entirely when there is exactly one run to watch: the
+		// common case for opening this panel at all is "I just started a workflow,
+		// show me it", and making that cost a keypress on every single open is a
+		// tax paid for a choice that is not there to make. "Active" mirrors the
+		// runs-list header's own definition (see title()) — running or paused —
+		// and reads meta.status (what the list itself displays), not the live
+		// registry's progress.status, so this never disagrees with what `runIndex`
+		// 0 would otherwise show. More than one active run leaves the picking to
+		// the person, same as today.
+		const active = this.metas.filter((meta) => meta.status === "running" || meta.status === "paused");
+		if (active.length === 1) {
+			const index = this.metas.indexOf(active[0]!);
+			if (index >= 0) {
+				this.runIndex = index;
+				this.selectedRunId = active[0]!.runId;
+				this.view = "run";
+			}
+		}
 		this.timer = setInterval(() => {
 			// Orphan watchdog.
 			//
@@ -272,22 +492,45 @@ export class WorkflowsPanel {
 		const found = this.selectedRunId ? this.metas.findIndex((meta) => meta.runId === this.selectedRunId) : -1;
 		this.runIndex = found >= 0 ? found : Math.min(this.runIndex, Math.max(0, this.metas.length - 1));
 		this.selectedRunId = this.metas[this.runIndex]?.runId;
-		this.viewed = undefined;
+		// `viewed` is deliberately NOT cleared here any more: it is keyed on the
+		// journal's own path and size (see currentProgress()), which already
+		// tells a different run — or the same run with a genuinely bigger
+		// journal — apart from "nothing changed". Clearing it unconditionally on
+		// every one-second tick, as this used to, defeated that cache entirely:
+		// a foreign run's multi-megabyte journal.jsonl was re-read and
+		// JSON.parsed every second for as long as the panel simply sat on it —
+		// which the constructor's single-active-run jump makes the RESTING
+		// state, not an edge case.
 	}
 
 	private currentMeta(): RunMeta | undefined {
 		return this.metas[this.runIndex];
 	}
 
-	/** Live progress when this process owns the run, else read the journal. */
+	/**
+	 * Live progress when this process owns the run, else the journal —
+	 * re-parsed only when the journal has actually grown or shrunk since the
+	 * last look, the same size-gate reasoning as activityFor below. These
+	 * files are append-only, so size is enough of a version, and a foreign
+	 * run's journal reaching megabytes makes an unconditional re-parse (this
+	 * used to happen on every refresh() tick — see the comment there) a cost
+	 * that scales with how long the panel has simply been resting on the run.
+	 */
 	private currentProgress(): RunProgress | undefined {
 		const meta = this.currentMeta();
 		if (!meta) return undefined;
 		const live = this.host.registry.get(meta.runId);
 		if (live) return live.progress;
-		if (this.viewed?.runId === meta.runId) return this.viewed.progress;
+		const path = journalPath(this.host.agentDir, meta.runId);
+		let size = -1;
+		try {
+			size = statSync(path).size;
+		} catch {
+			/* no journal on disk yet (or any more); -1 reads as "not cached" below */
+		}
+		if (this.viewed && this.viewed.path === path && this.viewed.size === size) return this.viewed.progress;
 		const progress = progressFromJournal(meta, readJournalLines(this.host.agentDir, meta.runId));
-		this.viewed = { runId: meta.runId, progress };
+		this.viewed = { path, size, progress };
 		return progress;
 	}
 
@@ -312,24 +555,39 @@ export class WorkflowsPanel {
 		// ctrl+c would feel like being trapped in here.
 		if (matchesKey(data, "ctrl+c")) return void this.done(undefined);
 		if (matchesKey(data, "escape")) {
-			if (this.view === "agent") this.view = "run";
-			else if (this.view === "run") this.view = "runs";
-			else this.done(undefined);
+			if (this.view === "runs") {
+				this.done(undefined);
+				return;
+			}
+			this.back();
 			return;
 		}
 		if (matchesKey(data, "up") || data === "k") return void this.move(-1);
 		if (matchesKey(data, "down") || data === "j") return void this.move(1);
 		if (matchesKey(data, "left") || data === "h") return void this.back();
 		if (matchesKey(data, "right") || matchesKey(data, "return") || data === "l") return void this.forward();
+		if (matchesKey(data, "pageup")) return void this.scrollPrompt(-PROMPT_PREVIEW_LINES);
+		if (matchesKey(data, "pagedown")) return void this.scrollPrompt(PROMPT_PREVIEW_LINES);
 		if (data === "p") return void this.togglePause();
 		if (data === "c") return void this.cancel();
 		if (data === "R") return void this.resumeRun();
 		if (data === "g") {
-			this.showLogs = !this.showLogs;
+			// The log pane is a narrow-run-view concept only (see runBody() and the
+			// SPLIT_HINTS comment on why the split layout has no row budgeted for
+			// it). Toggling the flag in split mode, or in "runs"/"agent", used to
+			// silently arm a pane that would only ever appear after backing out to
+			// narrow "run" — a keypress with no visible effect where it was
+			// pressed.
+			if (this.view === "run" && !this.isSplit()) this.showLogs = !this.showLogs;
 			return;
 		}
 		if (data === "x") return void this.exportAgent();
 		if (data === "e") return void this.showStderrPath();
+	}
+
+	/** Whether the LAST render used the two-pane run layout; see lastWidth. */
+	private isSplit(): boolean {
+		return this.lastWidth >= SPLIT_MIN_WIDTH;
 	}
 
 	private move(delta: number): void {
@@ -346,6 +604,9 @@ export class WorkflowsPanel {
 			const count = this.agents().length;
 			if (count === 0) return;
 			this.agentIndex = Math.min(count - 1, Math.max(0, this.agentIndex + delta));
+			// A scroll position that survived the move would show the newly
+			// selected agent's prompt starting wherever the previous one left off.
+			this.promptScroll = 0;
 		}
 	}
 
@@ -353,14 +614,49 @@ export class WorkflowsPanel {
 		if (this.view === "runs" && this.currentMeta()) {
 			this.view = "run";
 			this.agentIndex = 0;
-		} else if (this.view === "run" && this.agents().length > 0) {
+			this.promptScroll = 0;
+			return;
+		}
+		// Narrow fallback only: the two-pane layout already shows the selected
+		// agent's detail beside the tree, so there is no further "open" — the
+		// separate "agent" view exists only for the single-pane drill-down.
+		if (!this.isSplit() && this.view === "run" && this.agents().length > 0) {
 			this.view = "agent";
 		}
 	}
 
+	/**
+	 * One level back within a run; a no-op already at "runs" (h/left has never
+	 * closed the panel — only q, ctrl+c and escape do, see handleInput).
+	 *
+	 * Two-pane collapses "run" and "agent" into one screen (see forward()), so
+	 * either state steps back to the list in a single press — matching "Escape:
+	 * two-pane → runs → close" — while the narrow fallback still steps back one
+	 * level at a time.
+	 */
 	private back(): void {
-		if (this.view === "agent") this.view = "run";
-		else if (this.view === "run") this.view = "runs";
+		if (this.view === "runs") return;
+		if (this.isSplit() || this.view === "run") {
+			this.view = "runs";
+			return;
+		}
+		this.view = "run";
+	}
+
+	private scrollPrompt(delta: number): void {
+		// Only when the detail pane holding a prompt is actually ON SCREEN. Split
+		// mode shows it beside the tree for either "run" or "agent" (they are one
+		// screen there — see forward()/back()), but the narrow fallback's "run"
+		// view is still the agent LIST: its detail pane, and the prompt inside
+		// it, exist only once "agent" is entered. Scrolling before that mutated
+		// promptScroll with nothing on screen to show it moved, so the agent you
+		// opened next started pre-scrolled for no visible reason.
+		const detailVisible = this.isSplit() ? this.view === "run" || this.view === "agent" : this.view === "agent";
+		if (!detailVisible) return;
+		const agent = this.selectedAgent();
+		if (!agent) return;
+		const total = this.promptFor(agent).split(/\r?\n/).length;
+		this.promptScroll = Math.max(0, Math.min(Math.max(0, total - 1), this.promptScroll + delta));
 	}
 
 	private togglePause(): void {
@@ -454,11 +750,19 @@ export class WorkflowsPanel {
 		// The watchdog's heartbeat: being asked to draw is the only evidence this
 		// component still holds the editor slot. See the constructor.
 		this.renders++;
+		// Recorded for handleInput, which runs between render() calls and has no
+		// width of its own — see isSplit() and the field's own comment.
+		this.lastWidth = width;
 		const theme = this.theme;
 		const inner = Math.max(1, width - 2);
 		const rule = theme.fg("border", "─".repeat(Math.max(1, width)));
 		const row = (text: string) => ` ${truncateToWidth(text, inner)}`;
-		const hints = packHints(HINTS[this.view], inner).map((line) => theme.fg("muted", line));
+		// The two-pane view replaces both HINTS.run and HINTS.agent with its own
+		// set — see SPLIT_HINTS for why they differ (no further "open", no log
+		// pane) — for either underlying view state, since isSplit() collapses them
+		// into one screen (see forward()/back()).
+		const hintParts = this.isSplit() && this.view !== "runs" ? SPLIT_HINTS : HINTS[this.view];
+		const hints = packHints(hintParts, inner).map((line) => theme.fg("muted", line));
 		const footer = this.status ? [theme.fg("warning", this.status), ...hints] : hints;
 
 		// 2 rules + title + body + footer <= rows - screenReserve, so that many rows
@@ -485,7 +789,7 @@ export class WorkflowsPanel {
 						// so whichever half is last is the half a narrow terminal eats —
 						// and a clipped stderr path is a nuisance where a clipped exit
 						// key is a trap.
-						[`${theme.fg("muted", HINTS[this.view][0]!)}  ·  ${theme.fg("warning", this.status)}`, ...hints].slice(0, room)
+						[`${theme.fg("muted", hintParts[0]!)}  ·  ${theme.fg("warning", this.status)}`, ...hints].slice(0, room)
 					: hints.slice(0, room);
 		const budget = Math.max(3, available - shown.length);
 		// Each view keeps its own floor (a list never shrinks below three rows, an
@@ -494,7 +798,7 @@ export class WorkflowsPanel {
 		// true rather than aspirational. From the middle, because the run view puts
 		// the log pane and the run's error LAST and the error is what someone
 		// opening a failed run came to read.
-		const rendered = this.body(budget);
+		const rendered = this.body(budget, width);
 		const body = clipKeepingTail(rendered, budget, (hidden) => theme.fg("muted", `  ↕ ${hidden} more`), this.caretLine);
 
 		const lines = [rule, row(this.title()), ...body.map(row), rule, ...shown.map(row)];
@@ -524,7 +828,10 @@ export class WorkflowsPanel {
 		}
 		const meta = this.currentMeta();
 		if (!meta) return theme.fg("accent", "✦ Workflows");
-		if (this.view === "run") {
+		// The two-pane layout shows the run's own title bar regardless of whether
+		// the underlying state is "run" or "agent" (see forward()) — the selected
+		// agent's own label is already the first line of its detail pane instead.
+		if (this.view === "run" || this.isSplit()) {
 			return `${theme.fg("accent", theme.bold(`${statusMark(meta.status)} ${meta.name}`))}  ${theme.fg("muted", this.runTail(meta))}`;
 		}
 		const agent = this.selectedAgent();
@@ -560,9 +867,10 @@ export class WorkflowsPanel {
 	 */
 	private caretLine: number | undefined;
 
-	private body(budget: number): string[] {
+	private body(budget: number, width: number): string[] {
 		this.caretLine = undefined;
 		if (this.view === "runs") return this.runsBody(budget);
+		if (width >= SPLIT_MIN_WIDTH) return this.twoPaneBody(budget, width);
 		if (this.view === "run") return this.runBody(budget);
 		return this.agentBody(budget);
 	}
@@ -636,7 +944,7 @@ export class WorkflowsPanel {
 				if (phase !== lastPhase) {
 					lastPhase = phase;
 					const inPhase = agents.filter((other) => (other.phase ?? "Agents") === phase);
-					const settled = inPhase.filter((other) => other.status !== "running").length;
+					const settled = inPhase.filter((other) => isAgentSettled(other.status)).length;
 					lines.push(theme.fg("accent", `${phase}  ${settled}/${inPhase.length}`));
 				}
 				const selected = i === this.agentIndex;
@@ -644,7 +952,7 @@ export class WorkflowsPanel {
 				const detail = [agent.model?.split("/").at(-1), elapsed].filter(Boolean).join(" · ");
 				if (selected) this.caretLine = lines.length;
 				lines.push(
-					`${selected ? theme.fg("accent", "▸") : " "} ${this.agentMark(agent.status)} ${theme.fg(selected ? "text" : "muted", agent.label)}  ${theme.fg("muted", detail)}`,
+					`${selected ? theme.fg("accent", "▸") : " "} ${agentStatusIcon(agent.status, theme)} ${theme.fg(selected ? "text" : "muted", agent.label)}  ${theme.fg("muted", detail)}`,
 				);
 			}
 			if (window.after > 0) lines.push(theme.fg("muted", `  ↓ ${window.after} more`));
@@ -657,6 +965,174 @@ export class WorkflowsPanel {
 			for (const entry of logs) lines.push(theme.fg("muted", entry));
 		}
 		if (progress.error) lines.push(theme.fg("error", progress.error));
+		return lines;
+	}
+
+	/**
+	 * The fixed set of fields describing an agent — status through cost — as
+	 * raw, unwrapped lines. Shared by both layouts: agentBody() (narrow) uses
+	 * them as-is, one per row, truncated later by row(); the two-pane's
+	 * detailLines() wraps each one to the right column's width instead of
+	 * truncating. A field added here appears in both.
+	 */
+	private agentHeaderLines(agent: AgentRow): string[] {
+		const theme = this.theme;
+		const field = (label: string, value: string) => `${theme.fg("muted", label.padEnd(9))}${value}`;
+		const lines: string[] = [];
+		// "queued" alone reads as a status; the reason it stopped there does not,
+		// and the reason is the whole point of the state (see AgentRow.status).
+		const statusText = agent.status === "queued" ? "queued (slot wait)" : agent.status;
+		lines.push(field("status", `${agentStatusIcon(agent.status, theme)} ${statusText}`));
+		lines.push(field("phase", agent.phase ?? "—"));
+		lines.push(field("model", agent.model ?? "(run default)"));
+		if (agent.agentType) lines.push(field("type", agent.agentType));
+		if (agent.options?.tools) lines.push(field("tools", agent.options.tools.join(", ")));
+		if (agent.options?.context) lines.push(field("context", JSON.stringify(agent.options.context)));
+		lines.push(
+			field("elapsed", agent.endedAt ? formatElapsed(agent.endedAt - agent.startedAt) : `${formatElapsed(Date.now() - agent.startedAt)} (running)`),
+		);
+		if (agent.usage) {
+			// totalTokens is the child's CURRENT context size, not a running total
+			// (see applyTurn in spawn.ts) — exactly what "context" means here.
+			const context = agent.usage.totalTokens > 0 ? ` · ${formatTokens(agent.usage.totalTokens)} context` : "";
+			lines.push(field("tokens", `${formatTokens(agent.usage.input)} in / ${formatTokens(agent.usage.output)} out · ${agent.usage.turns} turn(s)${context}`));
+			// Unlike the run-level rows (see runTail), this detail view was opened
+			// to understand ONE agent, so its cost earns its line here.
+			if (agent.usage.cost > 0) lines.push(field("cost", formatCost(agent.usage.cost)));
+		}
+		lines.push(field("session", agent.sessionFile ?? theme.fg("muted", "none")));
+		if (agent.error) lines.push(theme.fg("error", field("error", agent.error)));
+		return lines;
+	}
+
+	/**
+	 * This agent's position (0-based) among every row that shares its session
+	 * file, ordered oldest-first (ties by index) — the ordinal readAgentPrompt
+	 * needs to pick the right task out of a shared session's chain (see
+	 * promptEntryFor). A shared session's file carries one preamble-bearing
+	 * task message per agent that ran in it, IN THE ORDER they ran, so a row's
+	 * position among its sessionFile-mates is that same index — which is the
+	 * only thing that told apart "my own task" from "whichever one got read
+	 * first and cached", the bug caching by sessionFile alone had.
+	 */
+	private ordinalFor(agent: AgentRow): number {
+		const sharing = this.agents()
+			.filter((other) => other.sessionFile === agent.sessionFile)
+			.sort((a, b) => a.startedAt - b.startedAt || a.index - b.index);
+		const position = sharing.findIndex((other) => other.index === agent.index);
+		return position >= 0 ? position : 0;
+	}
+
+	/**
+	 * The task text an agent was actually given (see readAgentPrompt in
+	 * store.ts), cached for the life of the panel keyed on sessionFile PLUS
+	 * ordinal — a prompt never changes once written, so a hit never needs a
+	 * second read, but the file alone is not a unique key once a session is
+	 * shared (see the promptCache field comment).
+	 */
+	private promptEntryFor(agent: AgentRow): PromptCacheEntry {
+		if (!agent.sessionFile) return { text: "prompt pending first turn", isChainOpenerFallback: false };
+		const ordinal = this.ordinalFor(agent);
+		// \0-joined rather than concatenated with a printable separator: a path
+		// can legally contain nearly any character, so nothing printable is a
+		// safe delimiter between the two halves of this key.
+		const cacheKey = `${agent.sessionFile}\u0000${ordinal}`;
+		const cached = this.promptCache.get(cacheKey);
+		if (cached !== undefined) return cached;
+
+		let size: number | undefined;
+		try {
+			size = statSync(agent.sessionFile).size;
+		} catch {
+			size = undefined;
+		}
+		// A file that does not exist at all is EXCLUDED from the miss cache: that
+		// is a session merely not flushed yet (or genuinely gone — a foreign,
+		// retention-pruned run), and it should keep being retried rather than
+		// being told apart from "missing for good" on the very first miss. A
+		// file that DOES exist but yields nothing usable is cached by its
+		// current size, so it is only re-attempted once that size changes — see
+		// the promptMissCache field comment for the regression this closes.
+		if (size !== undefined && this.promptMissCache.get(cacheKey) === size) {
+			return { text: "prompt unavailable (session file missing)", isChainOpenerFallback: false };
+		}
+
+		const found = readAgentPrompt(agent.sessionFile, ordinal);
+		if (found === undefined) {
+			if (size !== undefined) this.promptMissCache.set(cacheKey, size);
+			return { text: "prompt unavailable (session file missing)", isChainOpenerFallback: false };
+		}
+		const entry: PromptCacheEntry = { text: found.text, isChainOpenerFallback: found.isChainOpenerFallback };
+		this.promptCache.set(cacheKey, entry);
+		this.promptMissCache.delete(cacheKey);
+		return entry;
+	}
+
+	/** Just the text, for callers (scrollPrompt) that have no use for the chain-opener flag. */
+	private promptFor(agent: AgentRow): string {
+		return this.promptEntryFor(agent).text;
+	}
+
+	/**
+	 * "Prompt · N lines": the task text, windowed to `maxLines` from
+	 * `this.promptScroll` (PgUp/PgDn — see scrollPrompt()). Shared by both
+	 * layouts, same reasoning as agentHeaderLines.
+	 */
+	private promptSection(agent: AgentRow, maxLines: number): string[] {
+		const theme = this.theme;
+		const entry = this.promptEntryFor(agent);
+		const promptLines = entry.text.split(/\r?\n/);
+		const total = promptLines.length;
+		const start = Math.min(this.promptScroll, Math.max(0, total - 1));
+		const shown = promptLines.slice(start, start + Math.max(1, maxLines));
+		// The chain-opener fallback never lies silently: if this is not actually
+		// this row's own task (see readAgentPrompt's ordinal), the heading says
+		// so rather than passing another agent's task off as this one's.
+		const suffix = entry.isChainOpenerFallback ? " (chain opener)" : "";
+		const lines = [theme.fg("muted", `─ Prompt · ${total} line${total === 1 ? "" : "s"}${suffix} ─`), ...shown];
+		const hiddenAfter = total - start - shown.length;
+		if (hiddenAfter > 0) lines.push(theme.fg("muted", `  ↓ ${hiddenAfter} more line(s) — PgDn`));
+		else if (start > 0) lines.push(theme.fg("muted", `  ↑ ${start} line(s) above — PgUp`));
+		return lines;
+	}
+
+	/**
+	 * "Activity · last K of M tool calls": the live tail from the agent's own
+	 * session file. K is how many of the recent entries are shown — a mix of
+	 * text, thinking and tool calls, same as sessionActivity has always
+	 * returned, so the feed stays readable rather than tool-calls-only. M is
+	 * the total tool calls ever made, from the incremental counter (see
+	 * toolCallsFor / countToolCalls in store.ts), so it keeps growing even for
+	 * calls that scrolled out of K — prefixed with "at least" (>=) when that
+	 * counter itself started from a capped first tally (see
+	 * ToolCallTally.capped), since M is then a known floor rather than an
+	 * exact total. Shared by both layouts, same reasoning as agentHeaderLines.
+	 */
+	private activitySection(agent: AgentRow, room: number): string[] {
+		const theme = this.theme;
+		if (!agent.sessionFile || room <= 0) return [];
+		const activity = this.activityFor(agent.sessionFile, room);
+		if (activity.length === 0) return [];
+		const tally = this.toolCallsFor(agent.sessionFile);
+		// The counter can lag activityFor's own JSON-parsed view by the odd call
+		// (see countToolCalls' boundary-split note), so M is never shown smaller
+		// than what K itself demonstrably contains.
+		const of = Math.max(tally.count, activity.length);
+		const ofLabel = tally.capped ? `>= ${of}` : `${of}`;
+		const plural = tally.capped || of !== 1;
+		const lines: string[] = [
+			theme.fg(
+				"muted",
+				`─ Activity · ${agent.endedAt ? "last activity" : "live"} · last ${activity.length} of ${ofLabel} tool call${plural ? "s" : ""} ─`,
+			),
+		];
+		for (const event of activity) {
+			const label =
+				event.kind === "tool"
+					? theme.fg("accent", event.name.padEnd(8))
+					: theme.fg("muted", (event.kind === "thinking" ? "think" : event.kind).padEnd(8));
+			lines.push(`  ${label} ${event.detail}`);
+		}
 		return lines;
 	}
 
@@ -684,65 +1160,170 @@ export class WorkflowsPanel {
 		return events;
 	}
 
+	/**
+	 * countToolCalls resumes from a per-file offset, so the tally itself is the
+	 * cache — there is nothing to gate on size the way activityFor does above
+	 * (countToolCalls already skips the read itself when the size has not
+	 * moved; see its own comment).
+	 */
+	private toolCallsFor(file: string): ToolCallTally {
+		const tally = countToolCalls(file, this.toolCallCache.get(file));
+		this.toolCallCache.set(file, tally);
+		return tally;
+	}
+
+	/**
+	 * Lay out one agent's detail — header, prompt preview, activity tail — to
+	 * `budget` ROWS, whatever `measure` counts a row as: wrapTextWithAnsi's
+	 * wrapped output for the two-pane's right column (detailLines), or the
+	 * identity function for the narrow fallback (agentBody), where render()'s
+	 * own row() truncates each raw line to exactly one terminal row rather than
+	 * wrapping it. Shared because the invariant is the same either way, and
+	 * budgeting the UNWRAPPED line count — as this used to, independently in
+	 * each of the two callers — routinely under-counted a pane by 2-3x on a
+	 * normal terminal width: a wrapped header field alone could eat the whole
+	 * budget before the activity section was ever asked for a single row,
+	 * which is what made the live tail disappear entirely on a 24-row
+	 * terminal, a regression next to the single-pane view it replaced.
+	 *
+	 * What is DOING right now (the activity tail) outranks what it was ASKED
+	 * to do (the prompt preview) once space runs short — the preview is
+	 * re-readable any time by paging PgUp, while the tail is the live thing
+	 * this pane exists to show — so the prompt gives way FIRST, shrinking from
+	 * PROMPT_PREVIEW_LINES down to a floor of PROMPT_MIN_LINES (its own
+	 * heading plus that many lines plus, usually, a "N more" indicator) before
+	 * the activity tail is ever asked to go below ACTIVITY_MIN_ROWS.
+	 */
+	private layoutDetail(agent: AgentRow, budget: number, measure: (lines: string[]) => string[], prefix: string[] = []): string[] {
+		const theme = this.theme;
+		const header = measure([...prefix, ...this.agentHeaderLines(agent)]);
+
+		let promptLines = PROMPT_PREVIEW_LINES;
+		let prompt = measure(this.promptSection(agent, promptLines));
+		while (promptLines > PROMPT_MIN_LINES && header.length + prompt.length + ACTIVITY_MIN_ROWS > budget) {
+			promptLines--;
+			prompt = measure(this.promptSection(agent, promptLines));
+		}
+
+		const headerAndPrompt = [...header, ...prompt];
+		const activityRoom = Math.max(0, budget - headerAndPrompt.length);
+		// activitySection's own `room` parameter becomes sessionActivity's EVENT
+		// limit, and it always draws one extra line on top of that for its own
+		// heading (see activitySection) — so asking for activityRoom itself would
+		// routinely hand back activityRoom + 1 raw lines. Reserving one row here
+		// is what keeps the heading ("last K of M tool calls") on screen in the
+		// ordinary case instead of it being the first thing the trim below drops.
+		let activity = measure(this.activitySection(agent, Math.max(0, activityRoom - 1)));
+		if (activity.length > activityRoom) {
+			// wrapTextWithAnsi can expand a raw line into more than one row (a long
+			// single tool-call detail, say), which the `room` handed to
+			// activitySection above — a raw-line estimate — could not see coming.
+			// Trimmed to fit here, keeping the NEWEST lines: this is a live tail,
+			// and "what is happening right now" is the entire reason this pane is
+			// open, so the oldest of the shown events is what goes, not the
+			// newest.
+			activity = activityRoom > 0 ? activity.slice(activity.length - activityRoom) : [];
+		}
+
+		const combined = [...headerAndPrompt, ...activity];
+		if (combined.length <= budget) return combined;
+		// Still over — the header and prompt alone outgrew the budget even at the
+		// prompt's floor (an unusually wide "session" path or "tools" list on a
+		// narrow pane). Keep the TAIL here too, for the same reason: the newest
+		// activity is what a cramped pane should sacrifice last, not first.
+		const keepCount = Math.max(0, budget - 1);
+		const kept = combined.slice(combined.length - keepCount);
+		return [theme.fg("muted", `↑ ${combined.length - kept.length} more`), ...kept];
+	}
+
 	private agentBody(budget: number): string[] {
 		const theme = this.theme;
 		const agent = this.selectedAgent();
 		if (!agent) return [theme.fg("muted", "No agent selected.")];
-		const field = (label: string, value: string) => `${theme.fg("muted", label.padEnd(9))}${value}`;
+		return this.layoutDetail(agent, budget, (lines) => lines);
+	}
+
+	/**
+	 * The two-pane run view: a fixed-width tree on the left (treeLines) beside
+	 * the selected agent's detail on the right (detailLines), joined by hand —
+	 * see the header comment for why pi-tui leaves no other way. Both sides are
+	 * built to `budget` rows independently and then zipped index-for-index;
+	 * whichever is shorter is padded on that side only; render()'s own
+	 * clipKeepingTail is the backstop if either still overran.
+	 */
+	private twoPaneBody(budget: number, width: number): string[] {
+		const theme = this.theme;
+		const progress = this.currentProgress();
+		if (!progress) return [theme.fg("muted", "This run has no journal on disk.")];
+		const agents = this.agents();
+		if (agents.length === 0) return [theme.fg("muted", "No agents recorded yet.")];
+
+		const inner = Math.max(1, width - 2);
+		const leftWidth = Math.min(LEFT_PANE_MAX, Math.max(LEFT_PANE_MIN, Math.round(inner * LEFT_PANE_FRACTION)));
+		const rightWidth = Math.max(10, inner - leftWidth - GUTTER_WIDTH);
+
+		const left = this.treeLines(agents, progress, leftWidth, budget);
+		const right = this.detailLines(this.selectedAgent(), rightWidth, budget);
+		return zipColumns(left, right, leftWidth, theme.fg("border", GUTTER));
+	}
+
+	/**
+	 * The two-pane's LEFT column: phase headings, then one row per agent —
+	 * status icon and label, cursor-highlighted. Every row goes through
+	 * truncateToWidth(…, pad: true) so it is exactly `width` wide, which is
+	 * what makes the zip in twoPaneBody exact rather than clipped after the
+	 * fact.
+	 */
+	private treeLines(agents: AgentRow[], progress: RunProgress, width: number, budget: number): string[] {
+		const theme = this.theme;
+		const errorRows = progress.error ? 1 : 0;
+		const fixed = Math.max(1, budget - errorRows);
+
+		// Same converging-window approach as runBody, at the tree's own width —
+		// see the comment there for why this cannot be pre-paid in one pass.
+		let window = this.windowFor(this.agentIndex, agents.length, Math.max(3, fixed - 1));
+		for (let pass = 0; pass < 4; pass++) {
+			const headings = this.phasesIn(agents, window.start, window.end);
+			const next = this.windowFor(this.agentIndex, agents.length, Math.max(3, fixed - headings));
+			if (next.start === window.start && next.end === window.end) break;
+			window = next;
+		}
+
 		const lines: string[] = [];
-		lines.push(field("status", `${this.agentMark(agent.status)} ${agent.status}`));
-		lines.push(field("phase", agent.phase ?? "—"));
-		lines.push(field("model", agent.model ?? "(run default)"));
-		if (agent.agentType) lines.push(field("type", agent.agentType));
-		if (agent.options?.tools) lines.push(field("tools", agent.options.tools.join(", ")));
-		if (agent.options?.context) lines.push(field("context", JSON.stringify(agent.options.context)));
-		lines.push(
-			field("elapsed", agent.endedAt ? formatElapsed(agent.endedAt - agent.startedAt) : `${formatElapsed(Date.now() - agent.startedAt)} (running)`),
-		);
-		// Tokens, not money — this view says what an agent did, and `/usage` says
-		// what it cost. The cost is still on the row in the store either way.
-		if (agent.usage) {
-			lines.push(field("tokens", `${formatTokens(agent.usage.input)} in / ${formatTokens(agent.usage.output)} out · ${agent.usage.turns} turn(s)`));
-		}
-		lines.push(field("session", agent.sessionFile ?? theme.fg("muted", "none")));
-		if (agent.error) lines.push(theme.fg("error", field("error", agent.error)));
-
-		// What the agent is doing RIGHT NOW, tailed from its live pi session.
-		//
-		// Everything above this is what the orchestrator knows — status, turns,
-		// spend — which tells you an agent is busy and never what it is busy with.
-		// A run that looks wedged and a run that is grinding through a build are
-		// identical up there. The session file is a real transcript the child
-		// appends to as it works, so the tail is the difference between a spinner
-		// and a monitor.
-		// The room genuinely left, after the "─ live ─" header and the one line the
-		// clip below spends on its "↓ more" notice. No floor: a floor of 3 asked for
-		// lines the head-keeping clip would discard on the same pass, so a cramped
-		// pane paid for a transcript read per redraw whose only visible effect was
-		// raising the number in "↓ N more lines".
-		const room = budget - lines.length - 2;
-		if (agent.sessionFile && room > 0) {
-			const activity = this.activityFor(agent.sessionFile, room);
-			if (activity.length > 0) {
-				lines.push(theme.fg("muted", agent.endedAt ? "─ last activity ─" : "─ live ─"));
-				for (const event of activity) {
-					const label =
-						event.kind === "tool"
-							? theme.fg("accent", event.name.padEnd(8))
-							: theme.fg("muted", (event.kind === "thinking" ? "think" : event.kind).padEnd(8));
-					lines.push(`  ${label} ${event.detail}`);
-				}
+		const push = (text: string) => lines.push(truncateToWidth(text, width, "", true));
+		if (window.before > 0) push(theme.fg("muted", `↑ ${window.before} more`));
+		let lastPhase: string | undefined;
+		for (let i = window.start; i < window.end; i++) {
+			const agent = agents[i]!;
+			const phase = agent.phase ?? "Agents";
+			if (phase !== lastPhase) {
+				lastPhase = phase;
+				const inPhase = agents.filter((other) => (other.phase ?? "Agents") === phase);
+				const settled = inPhase.filter((other) => isAgentSettled(other.status)).length;
+				push(theme.fg("accent", `${phase}  ${settled}/${inPhase.length}`));
 			}
+			const selected = i === this.agentIndex;
+			if (selected) this.caretLine = lines.length;
+			const caret = selected ? theme.fg("accent", "▸") : " ";
+			push(`${caret} ${agentStatusIcon(agent.status, theme)} ${theme.fg(selected ? "text" : "muted", agent.label)}`);
 		}
-
-		// Bounded, but not by much: tools and context can each be long. ← goes back
-		// to the list, so the tail is the safe end to clip.
-		if (lines.length > budget) {
-			const kept = lines.slice(0, Math.max(1, budget - 1));
-			kept.push(theme.fg("muted", `  ↓ ${lines.length - kept.length} more lines`));
-			return kept;
-		}
+		if (window.after > 0) push(theme.fg("muted", `↓ ${window.after} more`));
+		if (progress.error) push(theme.fg("error", progress.error));
 		return lines;
+	}
+
+	/**
+	 * The two-pane's RIGHT column: the selected agent's own label, then the
+	 * same sections agentBody() draws for the narrow fallback (agentHeaderLines,
+	 * promptSection, activitySection), wrapped to `width` with wrapTextWithAnsi
+	 * rather than truncated — and NOT padded, since this is always the last
+	 * column in the zip (see the header comment).
+	 */
+	private detailLines(agent: AgentRow | undefined, width: number, budget: number): string[] {
+		const theme = this.theme;
+		if (!agent) return [theme.fg("muted", "No agent selected.")];
+		const wrap = (lines: string[]) => lines.flatMap((line) => wrapTextWithAnsi(line, width));
+		return this.layoutDetail(agent, budget, wrap, [theme.fg("accent", theme.bold(agent.label))]);
 	}
 
 	private colourMark(status: RunMeta["status"]): string {
@@ -750,19 +1331,6 @@ export class WorkflowsPanel {
 		if (status === "done") return this.theme.fg("success", mark);
 		if (status === "running" || status === "paused") return this.theme.fg("warning", mark);
 		return this.theme.fg("error", mark);
-	}
-
-	private agentMark(status: AgentRow["status"]): string {
-		switch (status) {
-			case "done":
-				return this.theme.fg("success", "✓");
-			case "replayed":
-				return this.theme.fg("muted", "⟲");
-			case "failed":
-				return this.theme.fg("error", "✗");
-			default:
-				return this.theme.fg("warning", "…");
-		}
 	}
 
 	/**
