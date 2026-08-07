@@ -843,15 +843,40 @@ mostly handled, and this extension is not a fix for a leak. What it addresses is
 listing is fixed cost, paid on every request, for skills this session was never going to touch. Six
 skills from one MCP package is a few hundred tokens a turn to advertise things you invoke by hand.
 
-Three modes, set by name or glob:
+**You configure it in the picker, not in a settings file.** `/skills` lists every skill with what
+it is currently costing you; pick one, pick a mode, and it is saved and in force for the next
+request:
 
-```jsonc
-{ "skillLoading": { "skills": {
-    "chrome-devtools-mcp:*": "command",   // hidden; /skill:<name> still works
-    "pptx": "command",
-    "dataviz": "preload"                  // body inlined, no read round trip
-} } }
 ```
+Skill loading — pick a skill to change what it costs
+
+  name      Listed for the model to find and read. pi's default.
+  command   Hidden from the prompt. Still reachable with /skill:<name>.
+  preload   Listed, and its whole body is in the prompt already.
+
+Default for anything unlisted: name
+Saved in /Users/me/.config/pi/skill-loading.json
+
+  [name]    dataviz                             —  412 chars
+  [command] pptx                                —  240 chars
+  [name]    skill-creator                       —  388 chars
+  Reset every skill to the default
+  Done
+```
+
+**The preferences live at `~/.config/pi/skill-loading.json`, deliberately outside this repo.**
+`agent/settings.json` is the natural home and the wrong one: it is tracked, so it would commit one
+person's preferences to a config other people clone, and every toggle would be a diff in a file pi
+already rewrites and conflicts on during `git pull`. A gitignored `*.local.json` inside the repo
+would have worked too; going all the way out to `$XDG_CONFIG_HOME` means `git clean`, a re-clone, or
+a stray `git add -A` can neither discard nor publish your choices. Written through a rename, because
+the picker saves after every toggle and a truncated file would read as "no preferences" and silently
+un-hide everything.
+
+The file is plain enough to edit by hand when you want a glob — `"chrome-devtools-mcp:*":
+"command"` covers a whole plugin family including members it does not have yet. Exact names beat
+globs, longer globs beat shorter ones, and the picker always writes an exact name so a later glob
+edit cannot silently move a skill you pinned.
 
 `command` is the one that reads wrong at first, because "hidden" sounds like "disabled" and is not.
 pi builds its `/skill:<name>` commands from the loaded skill list, not from what reached the prompt
@@ -876,9 +901,18 @@ The tests build their fixture with pi's *real* `formatSkillsForPrompt`, imported
 past the package's `exports` map. A hand-written fixture would keep passing on the day pi changes
 its format, which is the one failure this extension has to notice.
 
+One more thing the picker needs to get right: its skill list comes from `ctx.getSystemPromptOptions().skills`,
+pi's own loaded list, not from reading the prompt back. `ctx.getSystemPrompt()`
+returns the text *after* extensions have edited it, so a picker built on it could not show — or
+un-hide — the skills this extension is currently hiding, which is what makes a toggle one-way. The
+per-skill character counts come from the last prompt pi built before the rewrite, for the same
+reason: measured against the edited prompt, every hidden skill would report "not listed" instead of
+the number you are deciding on.
+
 | File | Role |
 | --- | --- |
-| `index.ts` | Settings, the rewrite, `/skills` |
+| `index.ts` | The rewrite, and the `/skills` picker |
+| `store.ts` | The machine-local preferences file, and why it is not in settings |
 | `parse.ts` | Finding and rewriting the `<available_skills>` block (pure) |
 | `select.ts` | Names and globs to a mode, most specific first (pure) |
 | `body.ts` | Preloaded bodies, frontmatter-stripped and budgeted |

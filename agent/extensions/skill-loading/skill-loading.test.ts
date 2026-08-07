@@ -10,7 +10,7 @@
  * Run: pnpm dlx jiti agent/extensions/skill-loading/skill-loading.test.ts
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,8 @@ const { defaultSettings } = await import("./config.ts");
 const { findSkillsSection, renderSection, unescapeXml } = await import("./parse.ts");
 const { modeFor } = await import("./select.ts");
 const { stripFrontmatter, loadBodies, renderBodies } = await import("./body.ts");
-const { apply, loadSettings } = await import("./index.ts");
+const { read, write, storePath } = await import("./store.ts");
+const { apply, buildRows } = await import("./index.ts");
 
 let failures = 0;
 
@@ -200,28 +201,65 @@ check("a preloaded skill is in, with its body", mixed.prompt.includes("Use a bar
 check("a defaulted skill is still just listed", mixed.prompt.includes("<name>pptx</name>") && !mixed.prompt.includes("Make slides."));
 
 // ---------------------------------------------------------------------------
-console.log("loadSettings — reading and refusing");
+console.log("buildRows — what the picker shows");
 
-eq("no settings file leaves it enabled", loadSettings(AGENT).enabled, true);
-eq("and defaults to pi's behaviour", loadSettings(AGENT).default, "name");
+const rows = buildRows(skills, FULL, settingsWith({ skills: { pptx: "command" } }));
+eq("every loaded skill gets a row", rows.length, 4);
+eq("with its resolved mode", rows.find((r) => r.name === "pptx")?.mode, "command");
+// Measured from pi's own block, not estimated, so the number beside a skill is
+// the number that actually goes away when you hide it.
+const pptxRow = rows.find((r) => r.name === "pptx")!;
+const hiddenOnly = apply(FULL, settingsWith({ skills: { pptx: "command" } }))!;
+eq("and the cost it would save if hidden", pptxRow.chars, hiddenOnly.delta);
 
-writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ skillLoading: { default: "command", skills: { pptx: "preload" }, maxChars: 500 } }));
-eq("default is read", loadSettings(AGENT).default, "command");
-eq("patterns are read", loadSettings(AGENT).skills.pptx, "preload");
-eq("budgets are read", loadSettings(AGENT).maxChars, 500);
+// A skill pi loaded but did not list is still reachable as /skill:<name>, so
+// leaving it out would make the picker disagree with what you can type.
+const withHiddenSkill = buildRows([...skills, { name: "never-listed" }], FULL, defaultSettings());
+eq("a skill absent from the block still gets a row", withHiddenSkill.length, 5);
+eq("costing nothing", withHiddenSkill.find((r) => r.name === "never-listed")?.chars, 0);
 
-// Dropped, not defaulted: someone who typed "hidden" believed they turned it
+// ---------------------------------------------------------------------------
+console.log("store — the machine-local preferences file");
+
+const STORE = join(ROOT, "config", "pi", "skill-loading.json");
+
+eq("respects XDG_CONFIG_HOME", storePath({ XDG_CONFIG_HOME: "/x/cfg" } as never), "/x/cfg/pi/skill-loading.json");
+check("falls back to ~/.config", storePath({} as never).endsWith("/.config/pi/skill-loading.json"));
+// The whole point of the relocation: not inside this repo, so `git clean`, a
+// re-clone, or `git add -A` can neither discard nor publish it.
+check("and never lands inside the agent dir", !storePath({} as never).startsWith(AGENT));
+
+eq("a missing store reads as defaults", read(STORE).default, "name");
+eq("and is not enabled-off by being missing", read(STORE).enabled, true);
+
+write(settingsWith({ skills: { pptx: "command", dataviz: "preload" } }), STORE);
+eq("modes round-trip", read(STORE).skills.pptx, "command");
+eq("...both of them", read(STORE).skills.dataviz, "preload");
+eq("defaults are not restated in the file", JSON.parse(readFileSync(STORE, "utf8")).maxChars, undefined);
+eq("but the version is", JSON.parse(readFileSync(STORE, "utf8")).version, 1);
+
+write(settingsWith({ default: "command", maxChars: 500 }), STORE);
+eq("a non-default default is written", read(STORE).default, "command");
+eq("and a non-default budget", read(STORE).maxChars, 500);
+
+// Dropped, not defaulted: someone who wrote "hidden" believed they turned it
 // off, and silently giving them `name` is the one outcome they did not ask for.
-writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ skillLoading: { skills: { pptx: "hidden", dataviz: "command" } } }));
-eq("an unknown mode is dropped", loadSettings(AGENT).skills.pptx, undefined);
-eq("its neighbours still load", loadSettings(AGENT).skills.dataviz, "command");
+writeFileSync(STORE, JSON.stringify({ version: 1, modes: { pptx: "hidden", dataviz: "command" } }));
+eq("an unknown mode is dropped", read(STORE).skills.pptx, undefined);
+eq("its neighbours still load", read(STORE).skills.dataviz, "command");
 
-writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ skillLoading: { default: "nonsense", maxChars: -5 } }));
-eq("an unknown default falls back", loadSettings(AGENT).default, "name");
-eq("a negative budget falls back", loadSettings(AGENT).maxChars, defaultSettings().maxChars);
+writeFileSync(STORE, JSON.stringify({ version: 1, default: "nonsense", maxChars: -5 }));
+eq("an unknown default falls back", read(STORE).default, "name");
+eq("a negative budget falls back", read(STORE).maxChars, defaultSettings().maxChars);
 
-writeFileSync(join(AGENT, "settings.json"), "{ not json");
-eq("an unparseable file does not disable skills", loadSettings(AGENT).enabled, true);
+writeFileSync(STORE, "{ not json");
+eq("an unparseable store does not hide every skill", read(STORE).default, "name");
+eq("nor disable the extension", read(STORE).enabled, true);
+
+// Written through a rename, so a crash mid-save cannot leave truncated JSON
+// that would read as "no preferences" and silently un-hide everything.
+write(settingsWith({ skills: { a: "command" } }), STORE);
+eq("no temp file is left behind", readdirSync(dirname(STORE)).filter((f) => f.includes(".tmp")).length, 0);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
 if (failures > 0) process.exitCode = 1;

@@ -22,81 +22,37 @@
  * deliberately — a deck generator, a scaffolder — that is the whole transaction:
  * you already know when you want it.
  *
- *   config.ts   the modes, the settings, and what each mode costs
+ *   config.ts   the modes, and what each one costs
+ *   store.ts    the machine-local preferences file, and why it is not in settings
  *   parse.ts    finding and rewriting pi's `<available_skills>` block (pure)
  *   select.ts   name and glob patterns to a mode (pure)
  *   body.ts     reading preloaded bodies within a budget
  *
- * `/skills` shows what each skill is doing to your context, and what the current
- * configuration is saving.
+ * ## Configured by picker, not by hand
  *
- * Settings (agent settings.json):
- *   skillLoading.enabled           boolean, default true
- *   skillLoading.default           mode for anything unmatched, default "name"
- *   skillLoading.skills            { "<name or glob>": "<mode>" }
- *   skillLoading.maxCharsPerSkill  number, default 12000
- *   skillLoading.maxChars          number, default 24000
+ * `/skills` opens a list of every skill with what it is currently doing to your
+ * context; pick one, pick a mode, and it is saved and in force for the next
+ * request. Nothing to look up, nothing to spell correctly, and no settings file
+ * to edit — which matters because the natural home for this, `agent/settings.json`,
+ * is tracked in git and would publish one person's
+ * preferences to everyone who clones this config. See store.ts.
  *
- *   { "skillLoading": {
- *       "skills": {
- *         "chrome-devtools-mcp:*": "command",
- *         "pptx": "command",
- *         "dataviz": "preload"
- *       }
- *   } }
+ * The picker's skill list comes from `ctx.getSystemPromptOptions().skills` — pi's
+ * own loaded list, before any extension touched it. That is what lets the picker
+ * show, and un-hide, a skill this extension is currently hiding: reading back
+ * `ctx.getSystemPrompt()` would show it the already-filtered text and the hidden
+ * ones would be unreachable, which is the bug that makes a toggle one-way.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadBodies, renderBodies } from "./body.ts";
-import {
-	defaultSettings,
-	isMode,
-	MODE_HELP,
-	MODES,
-	type Mode,
-	SETTINGS_KEY,
-	type SkillLoadingSettings,
-} from "./config.ts";
-import { findSkillsSection, renderSection, type SkillEntry } from "./parse.ts";
-import { decide } from "./select.ts";
-
-export function loadSettings(agentDir: string): SkillLoadingSettings {
-	const base = defaultSettings();
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
-
-		const skills: Record<string, Mode> = {};
-		const configured = block?.skills;
-		if (configured && typeof configured === "object" && !Array.isArray(configured)) {
-			for (const [pattern, mode] of Object.entries(configured as Record<string, unknown>)) {
-				// An unknown mode is dropped rather than defaulted. Defaulting would
-				// silently apply `name` to a skill someone typed "hidden" for and
-				// believed they had turned off.
-				if (isMode(mode) && pattern.trim().length > 0) skills[pattern.trim()] = mode;
-			}
-		}
-
-		const positive = (value: unknown, fallback: number) =>
-			typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-
-		return {
-			enabled: typeof block?.enabled === "boolean" ? block.enabled : base.enabled,
-			default: isMode(block?.default) ? block.default : base.default,
-			skills,
-			maxCharsPerSkill: positive(block?.maxCharsPerSkill, base.maxCharsPerSkill),
-			maxChars: positive(block?.maxChars, base.maxChars),
-		};
-	} catch {
-		return base;
-	}
-}
+import { MODE_HELP, MODES, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { findSkillsSection, renderSection } from "./parse.ts";
+import { decide, modeFor } from "./select.ts";
+import { read, storePath, write } from "./store.ts";
 
 export type Applied = {
 	prompt: string;
-	/** Every skill pi listed, with the mode it resolved to. */
 	decided: Array<{ name: string; mode: Mode; location: string }>;
 	/** Characters removed from the listing, minus anything preloading added. */
 	delta: number;
@@ -122,9 +78,10 @@ export function apply(prompt: string, settings: SkillLoadingSettings): Applied |
 	// change a single token.
 	if (kept.length === section.entries.length && preloaded.length === 0) return undefined;
 
-	const bodies = preloaded.length > 0
-		? loadBodies(preloaded, { maxCharsPerSkill: settings.maxCharsPerSkill, maxChars: settings.maxChars })
-		: [];
+	const bodies =
+		preloaded.length > 0
+			? loadBodies(preloaded, { maxCharsPerSkill: settings.maxCharsPerSkill, maxChars: settings.maxChars })
+			: [];
 
 	const replacement = renderSection(prompt, section, kept) + renderBodies(bodies);
 	const original = prompt.slice(section.start, section.end);
@@ -136,29 +93,74 @@ export function apply(prompt: string, settings: SkillLoadingSettings): Applied |
 	};
 }
 
+/** One row of the picker: a skill, its mode, and what it is costing right now. */
+export type Row = { name: string; mode: Mode; chars: number };
+
+/**
+ * What the picker shows.
+ *
+ * `chars` is the skill's own contribution to the listing, measured from the
+ * block pi built rather than estimated, so the number beside a skill is the
+ * number that goes away when you hide it. Skills pi loaded but did not list —
+ * `disable-model-invocation: true` ones, which pi already excludes — get 0 and
+ * are still shown, because they are still reachable as `/skill:<name>` and
+ * leaving them out of the list would make the picker disagree with `/help`.
+ */
+export function buildRows(
+	skills: ReadonlyArray<{ name: string }>,
+	prompt: string,
+	settings: SkillLoadingSettings,
+): Row[] {
+	const section = findSkillsSection(prompt);
+	const costs = new Map<string, number>();
+	for (const entry of section?.entries ?? []) {
+		// The two spaces and newline pi puts before each entry go with it.
+		costs.set(entry.name, entry.raw.length + 3);
+	}
+
+	return skills.map((skill) => ({
+		name: skill.name,
+		mode: modeFor(skill.name, settings),
+		chars: costs.get(skill.name) ?? 0,
+	}));
+}
+
+const DONE = "Done";
+const RESET = "Reset every skill to the default";
+
+function rowLabel(row: Row): string {
+	const cost = row.chars > 0 ? `${row.chars} chars` : "not listed";
+	return `[${row.mode}]`.padEnd(10) + `${row.name}  —  ${cost}`;
+}
+
 export default function (pi: ExtensionAPI) {
-	const agentDir = getAgentDir();
-	let settings = loadSettings(agentDir);
+	let settings = read();
+
+	/** The skills the last rewrite saw, for the summary `/skills` prints. */
+	let last: Applied | undefined;
 
 	/**
-	 * What the last rewrite saw.
+	 * The last system prompt pi built, BEFORE this extension edited it.
 	 *
-	 * `/skills` reports from this rather than discovering skills itself, which is
-	 * the same choice parse.ts makes and for the same reason: the only list worth
-	 * showing is the one that actually reached the model. Undefined before the
-	 * first turn, and the command says so instead of inventing one.
+	 * Kept because `ctx.getSystemPrompt()` returns the edited one, and the picker
+	 * needs the other. Measuring a skill's cost against the edited prompt gives 0
+	 * for every skill currently hidden — so the row that should read "hiding this
+	 * saves 380 chars" would read "not listed", and the one number the picker
+	 * exists to show would be missing from exactly the skills you are deciding
+	 * about.
 	 */
-	let last: Applied | undefined;
-	let sawSection = false;
+	let unedited: string | undefined;
 
 	pi.on("session_start", () => {
-		settings = loadSettings(agentDir);
+		// Re-read rather than trust the in-memory copy: another pi window may have
+		// changed the store since this one started, and the file is the truth.
+		settings = read();
 		last = undefined;
-		sawSection = false;
+		unedited = undefined;
 	});
 
 	pi.on("before_agent_start", (event) => {
-		sawSection = findSkillsSection(event.systemPrompt) !== undefined;
+		unedited = event.systemPrompt;
 
 		const applied = apply(event.systemPrompt, settings);
 		if (!applied) return;
@@ -168,67 +170,111 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("skills", {
-		description: "Show what each skill costs your context (/skills [modes])",
-		getArgumentCompletions: (prefix: string) =>
-			["modes"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
-		handler: async (args, ctx) => {
-			if (args.trim() === "modes") {
-				ctx.ui.notify(
-					[
-						"Skill load modes — set them under skillLoading.skills in settings.json:",
-						"",
-						...MODES.map((mode) => `  ${mode.padEnd(9)} ${MODE_HELP[mode]}`),
-						"",
-						'Keys are skill names or globs, most specific wins: { "chrome-devtools-mcp:*": "command" }',
-					].join("\n"),
-					"info",
-				);
+		description: "Choose what each skill costs your context (/skills)",
+		handler: async (_args, ctx) => {
+			settings = read();
+
+			if (!ctx.hasUI) {
+				ctx.ui.notify(summary(ctx), "info");
 				return;
 			}
 
-			ctx.ui.notify(status(), "info");
+			await pick(ctx);
 		},
 	});
 
-	const status = (): string => {
-		if (!settings.enabled) return "Skill loading is off (skillLoading.enabled is false) — pi lists every skill.";
-
-		if (!last) {
-			if (!sawSection) {
-				return [
-					"No skills block has reached the model yet.",
-					"",
-					"Either no skills are loaded, or no turn has started in this session.",
-					"Run a turn and try again; /skills modes lists the modes.",
-				].join("\n");
+	/** The picker loop: a list, a mode, saved, back to the list. */
+	const pick = async (ctx: ExtensionCommandContext): Promise<void> => {
+		for (;;) {
+			const skills = loadedSkills(ctx);
+			if (skills.length === 0) {
+				ctx.ui.notify("No skills are loaded, so there is nothing to tune.", "info");
+				return;
 			}
-			return [
-				"Every skill is in `name` mode — pi's own behaviour, nothing rewritten.",
-				"",
-				'Set skillLoading.skills in settings.json to change that, e.g. { "pptx": "command" }.',
-				"/skills modes explains each mode.",
-			].join("\n");
+
+			// Before the first turn nothing has been edited yet, so pi's live prompt
+			// is already the unedited one — the fallback is correct, not a guess.
+			const rows = buildRows(skills, unedited ?? ctx.getSystemPrompt(), settings);
+			const labels = rows.map(rowLabel);
+			const footer = `Default for anything unlisted: ${settings.default}`;
+
+			const picked = await ctx.ui.select(
+				[
+					"Skill loading — pick a skill to change what it costs",
+					"",
+					...MODES.map((mode) => `  ${mode.padEnd(9)} ${MODE_HELP[mode]}`),
+					"",
+					footer,
+					`Saved in ${storePath()}`,
+				].join("\n"),
+				[...labels, RESET, DONE],
+			);
+
+			if (picked === undefined || picked === DONE) return;
+
+			if (picked === RESET) {
+				settings = { ...settings, skills: {} };
+				write(settings);
+				ctx.ui.notify(`Every skill is back to ${settings.default}. Takes effect on the next request.`, "info");
+				continue;
+			}
+
+			const row = rows[labels.indexOf(picked)];
+			if (!row) return;
+
+			const chosen = await ctx.ui.select(
+				`${row.name}\n\nCurrently ${row.mode}.`,
+				MODES.map((mode) => `${mode.padEnd(9)} ${MODE_HELP[mode]}`),
+			);
+			if (chosen === undefined) continue;
+
+			const mode = MODES[MODES.findIndex((m) => chosen.startsWith(m))];
+			if (!mode) continue;
+
+			// An exact entry, always — even when it matches what a glob already said.
+			// Writing it down is what makes the next glob edit not silently move this
+			// skill, and it is what the picker just promised the user it did.
+			settings = { ...settings, skills: { ...settings.skills, [row.name]: mode } };
+			write(settings);
+			ctx.ui.notify(`${row.name} → ${mode}. Takes effect on the next request.`, "info");
 		}
+	};
 
-		const byMode = (mode: Mode) => last!.decided.filter((entry) => entry.mode === mode);
+	/** pi's own loaded skills, before any extension filtered them. */
+	const loadedSkills = (ctx: ExtensionCommandContext): Array<{ name: string }> => {
+		try {
+			return ctx.getSystemPromptOptions().skills ?? [];
+		} catch {
+			return [];
+		}
+	};
+
+	/** The read-only report, for print/JSON mode where there are no dialogs. */
+	const summary = (ctx: ExtensionCommandContext): string => {
+		if (!settings.enabled) return "Skill loading is off — pi lists every skill.";
+
+		const rows = buildRows(loadedSkills(ctx), unedited ?? ctx.getSystemPrompt(), settings);
+		if (rows.length === 0) return "No skills are loaded.";
+
 		const lines: string[] = [];
-
 		for (const mode of MODES) {
-			const listed = byMode(mode);
+			const listed = rows.filter((row) => row.mode === mode);
 			if (listed.length === 0) continue;
 			lines.push(`${mode} (${listed.length}) — ${MODE_HELP[mode]}`);
-			for (const entry of listed) lines.push(`  ${entry.name}`);
+			for (const row of listed) lines.push(`  ${row.name}`);
 			lines.push("");
 		}
 
-		const delta = last.delta;
-		const verdict =
+		const delta = last?.delta ?? 0;
+		lines.push(
 			delta > 0
 				? `Saving about ${delta.toLocaleString()} characters (~${Math.round(delta / 4).toLocaleString()} tokens) per request.`
 				: delta < 0
 					? `Costing about ${(-delta).toLocaleString()} more characters (~${Math.round(-delta / 4).toLocaleString()} tokens) per request, which is what preload buys.`
-					: "No net change to the prompt.";
-
-		return [...lines, verdict, "Hidden skills are still available as /skill:<name>."].join("\n");
+					: "No change to pi's own prompt yet.",
+		);
+		lines.push("Hidden skills are still available as /skill:<name>.");
+		lines.push(`Preferences: ${storePath()}`);
+		return lines.join("\n");
 	};
 }

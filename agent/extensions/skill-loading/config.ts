@@ -1,8 +1,11 @@
 /**
- * Settings and shared constants for per-skill load modes.
+ * The modes, and the shape of the preferences that pick between them.
+ *
+ * These are not read from `agent/settings.json`. That file is tracked, and which
+ * skills you find worth advertising is a per-machine, per-month preference
+ * nobody should inherit from a clone — see store.ts, which owns the file these
+ * live in and explains where it went instead.
  */
-
-export const SETTINGS_KEY = "skillLoading";
 
 /**
  * What a skill costs the conversation, and what it takes to reach it.
