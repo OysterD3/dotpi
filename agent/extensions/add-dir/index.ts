@@ -54,6 +54,11 @@ export default function (pi: ExtensionAPI) {
 
 		workspace.adoptSession(restoreSessionDirs(ctx.sessionManager.getBranch()));
 
+		// Once, after both sources are in, rather than per settings file. Subscribers
+		// registered when their extension loaded, which happens before any
+		// session_start fires, so nobody can miss this one.
+		workspace.announce();
+
 		for (const warning of loaded.warnings) ctx.ui.notify(warning, "warning");
 	});
 

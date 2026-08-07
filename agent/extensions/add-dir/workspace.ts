@@ -20,7 +20,7 @@
 
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENTRY_TYPE } from "./config.ts";
+import { ENTRY_TYPE, WORKSPACE_CHANNEL } from "./config.ts";
 import { expandPath, isWithin } from "./paths.ts";
 
 export type Origin = "cwd" | "session" | "persisted";
@@ -67,6 +67,21 @@ export class Workspace {
 		private readonly pi: ExtensionAPI,
 		readonly cwd: string,
 	) {}
+
+	/**
+	 * Publish the current list on the bus, for extensions that need to agree with
+	 * us about what "in the project" means — see WORKSPACE_CHANNEL.
+	 *
+	 * Called from every mutator rather than from their call sites, which is the
+	 * point of putting it here: a directory added down some path that forgot to
+	 * announce is a permission prompt nobody can explain, and there is more than
+	 * one such path in index.ts. The bulk `adopt*` methods used at startup stay
+	 * silent and index.ts announces once when it has finished loading, so a
+	 * session start is one message rather than one per settings file.
+	 */
+	announce(): void {
+		this.pi.events.emit(WORKSPACE_CHANNEL, { dirs: this.additional().map((entry) => entry.path) });
+	}
 
 	/**
 	 * Adopt directories read from settings. Paths are expanded here rather than at
@@ -125,6 +140,7 @@ export class Workspace {
 	addSession(dir: string): void {
 		if (!this.sessionDirs.includes(dir)) this.sessionDirs.push(dir);
 		this.pi.appendEntry<DirEntryData>(ENTRY_TYPE, { dir, active: true });
+		this.announce();
 	}
 
 	/**
@@ -137,6 +153,7 @@ export class Workspace {
 		if (!this.persistedDirs.some((entry) => entry.path === dir)) {
 			this.persistedDirs.push({ path: dir, source });
 		}
+		this.announce();
 	}
 
 	/** Drop a directory from this session. Persisted ones also need `unpersist`. */
@@ -144,5 +161,6 @@ export class Workspace {
 		this.sessionDirs = this.sessionDirs.filter((path) => path !== dir);
 		this.persistedDirs = this.persistedDirs.filter((entry) => entry.path !== dir);
 		this.pi.appendEntry<DirEntryData>(ENTRY_TYPE, { dir, active: false });
+		this.announce();
 	}
 }

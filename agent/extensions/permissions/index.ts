@@ -43,7 +43,7 @@
 
 import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { AutoClassifier } from "./auto.ts";
-import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, type Mode } from "./config.ts";
+import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, WORKSPACE, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
 import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
@@ -51,6 +51,7 @@ import { buildQuestion, subjectOf } from "./prompt.ts";
 import { parseRules, ruleTarget } from "./rules.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
 import { type Verdict } from "./verdict.ts";
+import { workspaceDirs } from "./workspace.ts";
 
 function compile(agentDir: string, cwd: string, trusted: boolean): { policy: CompiledPolicy; report: string[] } {
 	const { settings, sources, warnings } = loadSettings(agentDir, cwd, trusted);
@@ -114,6 +115,29 @@ export default function (pi: ExtensionAPI) {
 
 	/** Approvals granted for the rest of the session. */
 	const grants = new SessionGrants();
+
+	/**
+	 * Directories `/add-dir` put in the workspace for this session, as last
+	 * announced by the add-dir extension (see WORKSPACE in config.ts).
+	 *
+	 * Deliberately NOT cleared in `session_start`. Extension handlers for that
+	 * event run in an order nothing here controls, so a clear there would be a
+	 * race against add-dir's own handler, which is what publishes the restored
+	 * list — and losing that race would silently drop every directory on a resume.
+	 * Each message replaces the list outright, and add-dir publishes on session
+	 * start, so there is nothing a clear would add.
+	 */
+	let sessionDirs: string[] = [];
+
+	pi.events.on(WORKSPACE.channel, (data) => {
+		const dirs = (data as { dirs?: unknown } | undefined)?.dirs;
+		if (!Array.isArray(dirs)) return;
+		sessionDirs = dirs.filter((dir): dir is string => typeof dir === "string" && dir.length > 0);
+	});
+
+	/** The workspace as the classifier should see it: cwd, the settings key, `/add-dir`. */
+	const dirsFor = (cwd: string): string[] =>
+		workspaceDirs(cwd, policy?.settings.additionalDirectories ?? [], sessionDirs);
 
 	/**
 	 * Auto mode's classifier. Built unconditionally and idle unless the mode is
@@ -213,7 +237,7 @@ export default function (pi: ExtensionAPI) {
 			// loosening — askWithoutUi decided this call's outcome before we got here.
 			if (!ctx.hasUI && policy.settings.askWithoutUi === "allow") return undefined;
 
-			const verdict = await classifier.judge(ctx, event.toolName, input, auto);
+			const verdict = await classifier.judge(ctx, event.toolName, input, auto, dirsFor(ctx.cwd));
 
 			// The classifier's entire authority: it can turn this allow into an ask.
 			// Nothing below reaches a deny, and `safe` returns to exactly where the
@@ -404,6 +428,10 @@ export default function (pi: ExtensionAPI) {
 				const auto = policy.settings.auto;
 				const stats = classifier.snapshot();
 				const active = policy.settings.defaultMode === "auto";
+				// Listed because it is the setting most likely to be silently wrong:
+				// "why does it keep asking about my other repo" has no other way of
+				// being answered, and a directory missing here is the whole bug.
+				const workspace = dirsFor(ctx.cwd);
 				ctx.ui.notify(
 					[
 						active
@@ -411,6 +439,7 @@ export default function (pi: ExtensionAPI) {
 							: `Auto mode is OFF (mode is ${policy.settings.defaultMode}). Set permissions.defaultMode to "auto" to turn it on.`,
 						"",
 						`Model:              ${auto.model ?? "the session model (set permissions.auto.model to use a cheaper one)"}`,
+						`In scope:           ${workspace[0]}${workspace.length > 1 ? `\n                    ${workspace.slice(1).join("\n                    ")}` : ""}`,
 						`Read-only tools:    ${auto.skipReadOnly ? "skipped without asking (read, grep, find, ls)" : "classified like everything else"}`,
 						`If unreachable:     ${auto.onError === "allow" ? "fall back to the destructive table alone" : "ask about every unrecognised call"}`,
 						`Timeout:            ${auto.timeoutMs} ms`,
@@ -448,7 +477,7 @@ export default function (pi: ExtensionAPI) {
 				// dry run that exercised different code would be worth very little.
 				const verdict = await classifier.ask(
 					ctx,
-					buildQuestion("bash", { command }, ctx.cwd),
+					buildQuestion("bash", { command }, dirsFor(ctx.cwd)),
 					policy.settings.auto,
 				);
 				ctx.ui.notify(

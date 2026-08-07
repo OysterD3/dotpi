@@ -325,6 +325,89 @@ export function blankQuoted(segment: string): string {
 }
 
 /**
+ * The two findings a delete confined to scratch space does not deserve.
+ *
+ * Only these. `shred`, `dd`, `mkfs` and the rest still ask wherever they point:
+ * the argument below is about what is *in* the directory, and none of those are
+ * about their target's contents being regenerable.
+ */
+const SCRATCH_EXEMPT: ReadonlySet<string> = new Set(["rm-recursive", "rm-glob"]);
+
+/**
+ * System temp directories, as literal prefixes.
+ *
+ * `/private/tmp` and `/private/var` are the same places as `/tmp` and `/var` on
+ * macOS, so both spellings are listed rather than normalised — this file is pure
+ * and does not get to call `realpath`.
+ */
+const SCRATCH_ROOTS = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
+
+/**
+ * True when a segment is an `rm` whose every target is a literal path inside the
+ * system temp directory.
+ *
+ * ## Why this exemption exists
+ *
+ * `rm -rf` asks in every mode, which is right for `dist` and essential for
+ * `~/Documents` — and wrong for the scratch directory an agent just made. Any
+ * agent that creates `/tmp/bench-run` cleans it up, so the table produced a
+ * prompt for a delete of something that by definition cannot be lost: nothing
+ * survives a reboot there, and nothing is put there that is not reproducible.
+ * A prompt you always approve is worse than no prompt, because it is the one
+ * that trains you to approve the next one without reading it.
+ *
+ * ## Why it is written this bluntly
+ *
+ * Every rule below rejects rather than reasons, in the style of trivial.ts, and
+ * rejection is free: it means the command asks, exactly as it did before.
+ *
+ *   - Every non-flag token must be an absolute literal path under one of
+ *     SCRATCH_ROOTS with at least one segment below it. `rm -rf /tmp` and
+ *     `rm -rf /tmp/` are not deletes of something in scratch space — they are
+ *     deletes OF scratch space, including whatever another process is using.
+ *   - `$` or a backtick anywhere rejects. `rm -rf $TMPDIR/build` is not literal,
+ *     and with `TMPDIR` unset it is `rm -rf /build`. (`dynamic-argument` fires on
+ *     it independently and is not exempted here, so it would still ask — but
+ *     this must not be the thing standing between you and that, and reading a
+ *     second rule to know a first one is safe is how holes are made.)
+ *   - A `..` segment anywhere rejects: `/tmp/../etc` is under the prefix as a
+ *     string and nowhere near it on disk.
+ *   - A trailing slash rejects. BSD `rm -rf /tmp/link/` follows the symlink that
+ *     `rm -rf /tmp/link` would merely unlink, and telling those apart needs the
+ *     filesystem. The miss costs one prompt.
+ *   - Any quote character rejects, so targets can be split on whitespace. The
+ *     alternative is a quote-aware tokeniser, and a second parser of shell
+ *     syntax whose disagreements with the first one are exactly where a hole
+ *     would live is a bad trade for `rm -rf '/tmp/with space'` — which asks, as
+ *     it always did.
+ *   - No targets at all rejects, so a bare `rm -rf` never qualifies.
+ */
+export function deletesOnlyScratch(segment: string): boolean {
+	const text = segment.trim();
+	if (!/^rm(\s|$)/.test(text)) return false;
+	if (/[$`'"]/.test(text)) return false;
+
+	let targets = 0;
+
+	for (const token of text.split(/\s+/).slice(1)) {
+		// `--` ends the flags; it is not itself a target.
+		if (token === "--") continue;
+		if (token.startsWith("-")) continue;
+
+		if (token.endsWith("/")) return false;
+		if (/(?:^|\/)\.\.(?:\/|$)/.test(token)) return false;
+
+		const root = SCRATCH_ROOTS.find((prefix) => token.startsWith(prefix));
+		if (!root) return false;
+		if (token.length <= root.length) return false;
+
+		targets++;
+	}
+
+	return targets > 0;
+}
+
+/**
  * Every reason this command is considered destructive. Empty means it is not.
  *
  * `allow` lists pattern ids to ignore, so a user who genuinely does not want to
@@ -338,9 +421,11 @@ export function findDestructive(command: string, allow: ReadonlySet<string> = ne
 		// Judge inert commands on their unquoted parts only, but keep the original
 		// text for display so the prompt shows what was actually requested.
 		const segment = INERT_COMMANDS.test(raw) ? blankQuoted(raw) : raw;
+		const scratch = deletesOnlyScratch(segment);
 
 		for (const pattern of PATTERNS) {
 			if (allow.has(pattern.id)) continue;
+			if (scratch && SCRATCH_EXEMPT.has(pattern.id)) continue;
 			if (!pattern.test.test(segment)) continue;
 			const key = `${pattern.id}::${raw}`;
 			if (seen.has(key)) continue;

@@ -9,6 +9,27 @@ export const ENTRY_TYPE = "workspace_dir";
 export const SETTINGS_KEY = "additionalDirectories";
 
 /**
+ * Where the workspace is announced for other extensions to act on.
+ *
+ * The permissions extension is the consumer that made this necessary: auto
+ * mode's classifier decides half of what it decides by asking "is this path
+ * inside the project", and being told about only the cwd made every write to an
+ * added directory read as an escape from it. Settings alone cannot close that —
+ * a `/add-dir` is session-scoped by design, so it is in the session log and in
+ * no file at all.
+ *
+ * The string is duplicated on the consumer's side rather than shared through a
+ * module, matching the rest of this repo: extensions here install one at a time,
+ * so they may share a string but never an import. With nobody listening, this is
+ * a no-op.
+ *
+ * Every message carries the complete list and replaces the last one. A removal
+ * therefore needs no event of its own, and `/rewind` past an `/add-dir` is
+ * correct for free.
+ */
+export const WORKSPACE_CHANNEL = "workspace:dirs";
+
+/**
  * Context filenames, in pi's own precedence order (resource-loader.js). Only the
  * first match in a directory is loaded, exactly as pi does for the cwd.
  */

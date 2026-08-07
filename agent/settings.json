@@ -1,9 +1,9 @@
 {
-  "lastChangelogVersion": "0.83.0",
+  "lastChangelogVersion": "0.84.0",
   "theme": "one-dark-pro",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-sol",
-  "defaultThinkingLevel": "max",
+  "defaultProvider": "deepseek",
+  "defaultModel": "deepseek-v4-flash",
+  "defaultThinkingLevel": "high",
   "externalEditor": "nvim",
   "quietStartup": true,
   "steeringMode": "all",
@@ -35,7 +35,11 @@
       "Bash(pnpm lint *)",
       "Workflow",
       "Advisor",
-      "Ask_user"
+      "Ask_user",
+      "Web_search",
+      "Source_check",
+      "Fetch_content",
+      "Get_search_content"
     ],
     "allowDestructive": [],
     "destructiveOverridesAllow": true,
@@ -68,7 +72,7 @@
     "npm:@ff-labs/pi-fff@0.10.1"
   ],
   "models": {
-    "active": "openai",
+    "active": "deepseek",
     "providers": {
       "openai": {
         "session": "openai-codex/gpt-5.6-sol",
@@ -101,5 +105,8 @@
     "readAdvice": true,
     "guideline": true
   },
-  "hideThinkingBlock": true
+  "hideThinkingBlock": true,
+  "retry": {
+    "enabled": true
+  }
 }

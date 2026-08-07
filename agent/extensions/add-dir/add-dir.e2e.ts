@@ -130,11 +130,23 @@ const handlers = new Map<string, Function>();
 const entries: Array<{ type: string; customType: string; data: any }> = [];
 const notices: string[] = [];
 
+/**
+ * What went out on the bus. The permissions extension's classifier is the
+ * consumer, and a directory it is never told about is a permission prompt for
+ * every write to that directory — so the announcements are asserted, not just
+ * swallowed by a stub.
+ */
+const published: Array<{ channel: string; data: any }> = [];
+
 const pi = {
 	on: (event: string, handler: Function) => handlers.set(event, handler),
 	registerCommand: (name: string, options: Command) => commands.set(name, options),
 	appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+	events: { emit: (channel: string, data: unknown) => published.push({ channel, data }) },
 };
+
+/** The directories in the most recent announcement — each one replaces the last. */
+const announced = (): string[] => published.at(-1)?.data?.dirs ?? [];
 
 /**
  * Resolve a wanted answer against the options actually offered.
@@ -198,6 +210,8 @@ let out = await run("add-dir", LIB, ["Yes, for this session"]);
 check("confirms the session scope", out[0]?.startsWith(`Added ${LIB} as a working directory for this session`), true);
 check("session entry recorded", entries.at(-1), { type: "custom", customType: "workspace_dir", data: { dir: LIB, active: true } });
 check("nothing written to settings", existsSync(USER_SETTINGS) && !("additionalDirectories" in readJson(USER_SETTINGS).permissions), true);
+check("announced on the bus", published.at(-1)?.channel, "workspace:dirs");
+check("with the directory in it", announced(), [LIB]);
 
 console.log("\n--- the model is told ---");
 const prompt = handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, makeCtx([]));
@@ -226,6 +240,7 @@ out = await run("add-dir", DOCS, ["Yes, and remember this directory", "Every pro
 check("saved and says where", out[0]?.includes(`saved to ${USER_SETTINGS}`), true);
 check("written to the user file", readJson(USER_SETTINGS).permissions.additionalDirectories, [DOCS]);
 check("no session entry for a persisted dir", entries.at(-1)?.data.dir, LIB);
+check("a persisted directory is announced too", announced().includes(DOCS), true);
 
 console.log("\n--- /add-dir remembered per project ---");
 out = await run("add-dir", join(ROOT, "extra"), ["Yes, and remember this directory", "This project"], { trusted: true });
@@ -265,6 +280,10 @@ startSession(removeCtx);
 await commands.get("dirs")!.handler("", removeCtx);
 check("removal reports both places", notices[0], `Removed ${DOCS} from the workspace and from ${USER_SETTINGS}`);
 check("and updates the file", "additionalDirectories" in readJson(USER_SETTINGS).permissions, false);
+// Each message replaces the last, which is what makes a removal need no event
+// of its own — a subscriber that kept accumulating would go on treating a
+// removed directory as in scope for the rest of the session.
+check("and the announcement drops it", announced().includes(DOCS), false);
 
 console.log("\n--- completions ---");
 const complete = commands.get("add-dir")!.getArgumentCompletions!;

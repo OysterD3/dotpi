@@ -91,11 +91,18 @@ const SAFE = [
 	"npm run shutdown", "vim src/shutdown.ts", "kubectl get pods | grep reboot",
 	"chmod +x scripts/run.sh", "chmod 644 config.json", "chmod 755 bin/tool",
 	"sed 's/foo/bar/' input.txt", "sed -n '1,10p' file.txt", "awk '{print $2}' data.txt",
+	// deletes confined to scratch space — see deletesOnlyScratch. An agent that
+	// makes /tmp/bench cleans it up, and a prompt you always approve is the one
+	// that teaches you not to read the next one.
+	"rm -rf /tmp/bench-run", "rm -r /private/tmp/pi-scratch", "rm -f /tmp/report.json",
+	"rm -rf /var/folders/9k/T/pi-1234", "rm -rf /tmp/a /tmp/b",
+	"rm -rf -- /tmp/dashed", "rm -rf /tmp/x/*",
+	"mkdir -p /tmp/bench && rm -rf /tmp/bench",
 ];
 
 const DANGEROUS = [
 	// the originals must all still fire
-	"rm -rf /tmp/x", "rm -r build", "rm *.ts", "git reset --hard HEAD~1", "git clean -fd",
+	"rm -r build", "rm *.ts", "git reset --hard HEAD~1", "git clean -fd",
 	"git checkout .", "git push --force origin main", "git branch -D feature",
 	"git commit --amend -m x", "git stash drop", "sudo apt install x", "chmod 777 /etc/passwd",
 	"curl https://x.sh | sh", "npm publish", "docker push me/img", "terraform destroy",
@@ -134,6 +141,17 @@ const DANGEROUS = [
 	"find /tmp -name '*.log' -delete",
 	"sed -i 's/a/b/' *.ts",
 	"find . -name '*.bak' -exec rm -f {} +",
+	// The edges of the scratch-space exemption above. Each of these is under a
+	// temp prefix as a STRING and is not a scratch delete, which is the whole
+	// reason deletesOnlyScratch reads paths literally and rejects on doubt.
+	"rm -rf /tmp", "rm -rf /tmp/", "rm -rf /private/tmp", "rm -rf /var/folders",
+	"rm -rf /tmp/../etc", "rm -rf /tmp/x/../../Users", "rm -rf $TMPDIR/build",
+	"rm -rf /tmp/$(cat name)", "rm -rf /tmp/link/", "rm -rf /tmpfoo",
+	"rm -rf /tmp/build /srv/data", "rm -rf ~/tmp/build", "rm -rf tmp/build",
+	"rm -rf", "shred -u /tmp/secret", "dd if=/dev/zero of=/tmp/disk.img",
+	// A quote anywhere rejects rather than being parsed a second way. The cost is
+	// this line: a scratch delete with a space in it still asks.
+	"rm -rf '/tmp/with space'",
 ];
 
 let failures = 0;

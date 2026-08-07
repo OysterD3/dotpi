@@ -100,16 +100,19 @@ export class AutoClassifier {
 	/**
 	 * Judge one tool call.
 	 *
-	 * `settings` is passed per call rather than held, because `/permissions
-	 * reload` rebuilds the policy and the next judgement should use the new one.
+	 * `settings` and `dirs` are both passed per call rather than held. `/permissions
+	 * reload` rebuilds the policy and the next judgement should use the new one, and
+	 * `/add-dir` changes the workspace mid-session — a held copy of either is a
+	 * setting that silently stopped applying.
 	 */
 	async judge(
 		ctx: ExtensionContext,
 		tool: string,
 		input: Record<string, unknown>,
 		settings: AutoSettings,
+		dirs: readonly string[],
 	): Promise<Verdict> {
-		return this.ask(ctx, buildQuestion(tool, input, ctx.cwd), settings);
+		return this.ask(ctx, buildQuestion(tool, input, dirs), settings);
 	}
 
 	/** Which model to ask, resolving `permissions.auto.model` at most once. */

@@ -473,7 +473,7 @@ classifier can fail a run.** `askWithoutUi` decides what an "ask" becomes headle
 That is your configured policy for asks rather than a power the classifier holds on its own, but a
 false positive costs you a CI run, and `askWithoutUi: "allow"` is the way out.
 
-The classifier is shown the tool, the call, and the working directory — **and nothing else**. No
+The classifier is shown the tool, the call, and the working directories — **and nothing else**. No
 transcript, no task, no history. Partly cost, mostly injection: a classifier that reads the
 conversation can be talked into clearing a command by text earlier *in that conversation*, which is
 exactly the attack the gate exists to stop. Judging in isolation means the only thing that can argue
@@ -481,12 +481,42 @@ for a command is the command. The call arrives stripped of invisible characters,
 it cannot forge, and labelled untrusted, and the classifier is told that text inside the fence
 claiming pre-approval is itself grounds to answer unsafe.
 
+**Every working directory is shown, not just the cwd.** Half of what the classifier decides is "is
+this path inside the project", so being told about one directory when you are working across several
+made every write to the others read as an escape from the first — the single largest source of false
+prompts the mode had. The list is `permissions.additionalDirectories` plus anything `/add-dir` put
+in the workspace this session, which reaches the classifier over the `workspace:dirs` event rather
+than through a file, since a session addition is deliberately in no file at all. It goes in the
+per-call question rather than the system prompt for two reasons: the ~4KB system prompt is identical
+on every call and that is what makes classification cheap, and the question text *is* the verdict
+cache key — so `/add-dir` mid-session invalidates exactly the verdicts it should, with no
+cache-clearing code to get wrong. `additionalDirectories` is trusted-only, like `allow`: a cloned
+repo does not get to widen what counts as inside. `/permissions auto` lists what is in scope, which
+is the only way to answer "why does it keep asking about my other repo".
+
+**The system temp directory is scratch space.** Writing, reading and deleting under `/tmp`,
+`/private/tmp` and `/var/folders/…` is what an agent is supposed to do with working files, and a
+prompt you always approve is the one that teaches you not to read the next one. Two halves, and
+measuring showed the second was doing most of the prompting: the classifier is told scratch writes
+are safe, and — the part that actually mattered — `rm-recursive`/`rm-glob` no longer fire when
+*every* target is a literal absolute path at least one segment below a temp root. That check
+(`deletesOnlyScratch`) rejects rather than reasons, in the style of `trivial.ts`: a `$` or backtick,
+a quote, a `..` segment, a trailing slash, or one non-temp target anywhere and the whole exemption is
+off, so `rm -rf /tmp`, `rm -rf $TMPDIR/x` and `rm -rf /tmp/../etc` all still ask. `shred`, `dd` and
+the rest still ask wherever they point. And the carve-out is about *where the file lands* and nothing
+else — fetching content into a temp file and then executing it is exactly as unsafe as it always was.
+
 Three limits worth knowing before you turn it on:
 
 - **It costs money and latency, per tool call.** `allow` rules short-circuit it, so a decent
   allowlist is what makes the mode affordable; verdicts are cached for the session, so the test
   command an agent runs forty times is paid for once; and `permissions.auto.model` exists so this is
-  never a frontier call. `/permissions auto` shows what it has spent.
+  never a frontier call. `/permissions auto` shows what it has spent. A bare tool name is a valid
+  allow rule and is the right tool for a chatty extension tool the classifier keeps re-judging —
+  `"Web_search"`, `"Fetch_content"`, `"Workflow"`. Naming them in settings rather than hardcoding
+  them in `tools.ts` is deliberate: `pi-web-access` lets you rename its tools, so there is no fixed
+  list to hardcode. Note what you are buying — an allowlisted `web_search` means its query text is
+  never reviewed, and an allowlisted `fetch_content` means the URL is not either.
 - **`write` and `edit` are judged on their path, not their content.** Content is unbounded and is
   the richest injection surface there is, and the question that matters for a write is *where* it
   lands — a `.zshrc`, a git hook, a file outside the project.
@@ -534,12 +564,13 @@ nor, in auto mode, anything a model was talked out of naming.
 | File | Role |
 | --- | --- |
 | `index.ts` | Event wiring, the approval prompt, `/permissions` |
-| `destructive.ts` | **What counts as destructive — edit this table to taste** |
+| `destructive.ts` | **What counts as destructive — edit this table to taste**, plus the scratch-space exemption |
 | `decide.ts` | Precedence engine (pure) |
 | `trivial.ts` | **The trivially-safe command grammar — edit this list to taste** (pure) |
 | `rules.ts` | Rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
+| `workspace.ts` | Resolving the directory set the classifier is told is in scope (pure) |
 | `grants.ts` | Session-scoped approvals and what each one covers |
 | `config.ts` | Modes and their ordering |
 | `auto.ts` | Auto mode: the classifier's cache, books, and bounds |
@@ -636,6 +667,15 @@ refuse paths outside it, so `/add-dir` unlocks access. pi has no such fence — 
 `bash` already accept any absolute path. So this **grants nothing**. What it does is tell the model
 the directory is in scope, and load that directory's `AGENTS.md` the way pi loads the project's own.
 Both are capped (24 directories, 48k characters of guidance) because they are re-sent every turn.
+
+It does have one effect beyond the model, and it exists because telling only the model was not
+enough: the full list is published on the `workspace:dirs` event, and the `permissions` extension
+subscribes. Auto mode's classifier decides half of what it decides by asking "is this path inside
+the project", so before this, `/add-dir` put a directory in scope for the agent and left the
+classifier prompting for every write to it. Each message carries the whole list and replaces the
+last, so a removal — and a `/rewind` past an `/add-dir` — needs no event of its own. As everywhere
+in this repo, the two sides share the channel string rather than a module; with `permissions` not
+installed, nothing listens and nothing breaks.
 
 Session-scoped additions are written to the session as custom entries rather than held in memory,
 which makes them behave correctly around `/rewind`: rewinding past an `/add-dir` un-adds the

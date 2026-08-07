@@ -155,3 +155,26 @@ export const AUTO = {
 	spendChannel: "usage:spend",
 	spendSource: "permissions",
 };
+
+/**
+ * Where the session's working directories are announced, and by whom.
+ *
+ * `/add-dir` is a session-scoped thing — it survives a `/rewind` correctly by
+ * living in the session log rather than in a file — so no amount of re-reading
+ * settings.json can tell auto mode's classifier about it. The add-dir extension
+ * publishes the full absolute list here on session start and after every add or
+ * remove; this extension keeps the last one it saw.
+ *
+ * The channel string is duplicated on both sides rather than imported, matching
+ * `AUTO.spendChannel` and the rest of this repo: every extension installs on its
+ * own, so the two sides share a string, not a module. With add-dir not installed
+ * nothing publishes, and the persisted `additionalDirectories` list read from
+ * settings.json still works on its own.
+ *
+ * Each message REPLACES the previous list rather than adding to it. That is what
+ * makes a removal, and a `/rewind` past an `/add-dir`, take effect without a
+ * separate event for it.
+ */
+export const WORKSPACE = {
+	channel: "workspace:dirs",
+};

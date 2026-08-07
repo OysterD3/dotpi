@@ -57,8 +57,13 @@
       "Bash(pnpm lint *)",
       "Workflow",
       "Advisor",
-      "Ask_user"
+      "Ask_user",
+      "Web_search",
+      "Source_check",
+      "Fetch_content",
+      "Get_search_content"
     ],
+    "additionalDirectories": [],
     "allowDestructive": [],
     "destructiveOverridesAllow": true,
     "askWithoutUi": "deny",

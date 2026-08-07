@@ -65,6 +65,17 @@ export type PermissionSettings = {
 	allow: string[];
 	ask: string[];
 	deny: string[];
+	/**
+	 * Extra directories that count as "inside the project", shared with the
+	 * add-dir extension, which owns the key and the `/add-dir` command that
+	 * writes it. Auto mode's classifier is shown the whole list — without it,
+	 * every write to a second repo reads as an escape from the first.
+	 *
+	 * Trusted-only, exactly like `allow`, and for the same reason: a directory in
+	 * this list is one the classifier stops objecting to, so a cloned repo must
+	 * not be able to nominate one.
+	 */
+	additionalDirectories: string[];
 	/** Destructive pattern ids to stop asking about. */
 	allowDestructive: string[];
 	/** Whether a destructive command asks even when an allow rule matches it. */
@@ -99,6 +110,7 @@ export const BUILTIN: PermissionSettings = {
 	allow: [],
 	ask: [],
 	deny: [],
+	additionalDirectories: [],
 	allowDestructive: [],
 	destructiveOverridesAllow: true,
 	askWithoutUi: "deny",
@@ -185,6 +197,7 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 		allow: [],
 		ask: [],
 		deny: [],
+		additionalDirectories: [],
 		allowDestructive: [],
 		auto: { ...BUILTIN.auto },
 	};
@@ -228,6 +241,14 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 				if (project.allow !== undefined || project.allowDestructive !== undefined) {
 					warnings.push(`${projectPath}: ignoring allow rules — project is not trusted`);
 				}
+				// Same rule the add-dir extension applies to this key, and it has to
+				// be applied here too or reading it a second time would be the hole:
+				// a directory on this list is one auto mode's classifier stops
+				// objecting to, so a cloned repo naming ~/.ssh would be widening the
+				// definition of "inside the project" from a file you did not write.
+				if (project.additionalDirectories !== undefined) {
+					warnings.push(`${projectPath}: ignoring additionalDirectories — project is not trusted`);
+				}
 				// Named separately rather than folded into the line above: every key in
 				// the auto block can loosen something, and a repo quietly pointing the
 				// classifier at another model — or switching it off with
@@ -256,6 +277,7 @@ function applyFull(
 	target.allow.push(...stringArray(source.allow));
 	target.ask.push(...stringArray(source.ask));
 	target.deny.push(...stringArray(source.deny));
+	target.additionalDirectories.push(...stringArray(source.additionalDirectories));
 	target.allowDestructive.push(...stringArray(source.allowDestructive));
 
 	if (typeof source.destructiveOverridesAllow === "boolean") {
