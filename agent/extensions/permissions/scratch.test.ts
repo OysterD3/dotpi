@@ -11,9 +11,12 @@
  * to "still classified" rather than left unstated.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type CompiledPolicy, decide } from "./decide.ts";
 import { parseRules } from "./rules.ts";
-import { isWithin, targetsScratchpad } from "./scratch.ts";
+import { escapesScratchpad, isWithin, targetsScratchpad, usableScratchDir } from "./scratch.ts";
 import { BUILTIN, type PermissionSettings } from "./settings.ts";
 
 let failures = 0;
@@ -99,6 +102,62 @@ check(
 );
 
 // ---------------------------------------------------------------------------
+console.log("usableScratchDir — the bound on what the channel may name");
+
+eq("the ordinary case passes through", usableScratchDir(SCRATCH, CWD), SCRATCH);
+
+// The channel is the trust boundary. Before this, one `{ dir: "/" }` from any
+// extension in the session turned off prompting for every path on the machine.
+eq("the filesystem root is refused", usableScratchDir("/", CWD), undefined);
+eq("...and so is any directory containing the project", usableScratchDir("/work", CWD), undefined);
+eq("...including the project itself", usableScratchDir(CWD, CWD), undefined);
+eq("...and the home directory above it", usableScratchDir("/", "/Users/me/app"), undefined);
+// A scratchpad in the repo is the failure the feature exists to prevent, with
+// the prompt suppressed on top.
+eq("a directory inside the project is refused", usableScratchDir(`${CWD}/scratch`, CWD), undefined);
+// /tmp itself is shared with every process on the machine.
+eq("a single segment below the root is refused", usableScratchDir("/tmp", CWD), undefined);
+eq("two segments is enough", usableScratchDir("/tmp/pi-501", CWD), "/tmp/pi-501");
+eq("a relative directory is refused", usableScratchDir("scratchpad", CWD), undefined);
+eq("nothing announced is refused", usableScratchDir(undefined, CWD), undefined);
+eq("a null byte is refused", usableScratchDir("/tmp/a\0b/c", CWD), undefined);
+
+eq(
+	"an unusable announcement cannot exempt anything",
+	targetsScratchpad({ tool: "write", input: { path: "/etc/hosts" }, cwd: CWD, scratchDir: "/" }),
+	false,
+);
+
+// ---------------------------------------------------------------------------
+console.log("escapesScratchpad — confirming the lexical answer against the disk");
+
+const FS = mkdtempSync(join(tmpdir(), "scratch-esc-"));
+const PAD = join(FS, "scratchpad");
+mkdirSync(PAD, { recursive: true });
+writeFileSync(join(PAD, "notes.txt"), "real file");
+mkdirSync(join(PAD, "runs"), { recursive: true });
+
+const OUTSIDE = join(FS, "outside");
+mkdirSync(OUTSIDE, { recursive: true });
+writeFileSync(join(OUTSIDE, "id_rsa"), "secret");
+
+check("an ordinary file inside does not escape", !escapesScratchpad(join(PAD, "notes.txt"), CWD, PAD));
+check("a file that does not exist yet does not escape", !escapesScratchpad(join(PAD, "new.json"), CWD, PAD));
+check("nor one under a subdirectory that does not exist yet", !escapesScratchpad(join(PAD, "a/b/c.json"), CWD, PAD));
+
+// The case the old "the agent would have had to create that symlink itself"
+// comment wrongly dismissed: bash in scratch space is cleared by the classifier,
+// so the symlink gets planted and the read was then lexically inside.
+symlinkSync(join(OUTSIDE, "id_rsa"), join(PAD, "leak.txt"));
+check("a symlink out of the scratchpad escapes", escapesScratchpad(join(PAD, "leak.txt"), CWD, PAD));
+
+symlinkSync(OUTSIDE, join(PAD, "door"));
+check("a symlinked directory escapes", escapesScratchpad(join(PAD, "door"), CWD, PAD));
+check("...and so does writing through it to a file that does not exist", escapesScratchpad(join(PAD, "door/planted.sh"), CWD, PAD));
+
+check("a missing scratchpad root fails closed", escapesScratchpad(join(PAD, "a.txt"), CWD, join(FS, "absent")));
+
+// ---------------------------------------------------------------------------
 console.log("decide — where the exemption sits in the order");
 
 const auto = policyFor({ defaultMode: "auto" });
@@ -142,5 +201,23 @@ eq(
 	"classify",
 );
 
+eq(
+	"the allow is marked, so index.ts knows to confirm it against the filesystem",
+	decide(auto, { tool: "write", input: { path: FILE }, cwd: CWD, scratchDir: SCRATCH }).scratch,
+	true,
+);
+eq(
+	"an ordinary allow carries no such marker",
+	decide(policyFor({ defaultMode: "auto", allow: ["Write(**/*.ts)"] }), {
+		tool: "write",
+		input: { path: "/work/project/a.ts" },
+		cwd: CWD,
+		scratchDir: SCRATCH,
+	}).scratch,
+	undefined,
+);
+
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
 if (failures > 0) process.exitCode = 1;
+
+rmSync(FS, { recursive: true, force: true });

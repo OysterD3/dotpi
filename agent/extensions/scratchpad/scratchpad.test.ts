@@ -10,7 +10,7 @@
  * Run: pnpm dlx jiti agent/extensions/scratchpad/scratchpad.test.ts
  */
 
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,9 +25,9 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { CONFIG } = await import("./config.ts");
-const { expandRoot, projectSlug, sessionSegment, scratchpadPath } = await import("./paths.ts");
+const { expandRoot, projectSlug, sessionSegment, scratchpadPath, scratchpadUnder, userRoot } = await import("./paths.ts");
 const { buildPromptBlock } = await import("./prompt.ts");
-const { loadSettings, prepare, list, describeContents } = await import("./index.ts");
+const { loadSettings, prepare, prepareRoot, list, describeContents } = await import("./index.ts");
 
 let failures = 0;
 
@@ -94,12 +94,17 @@ console.log("expandRoot — a configured root, made absolute");
 
 eq("an absolute root is left alone", expandRoot("/tmp"), "/tmp");
 // A literal `~` directory next to wherever pi was started is the visible half of
-// getting this wrong; the invisible half is that permissions refuses to exempt a
-// scratchpad that is not absolute, so the no-prompt guarantee quietly lapses.
+// getting this wrong.
 eq("a bare tilde becomes the home directory", expandRoot("~"), homedir());
 eq("a tilde path is expanded, not treated as a directory name", expandRoot("~/scratch"), join(homedir(), "scratch"));
-check("a relative root is made absolute", expandRoot("scratch").startsWith("/"));
-check("surrounding whitespace does not become a path segment", !expandRoot("  /tmp  ").includes(" "));
+check("surrounding whitespace does not become a path segment", !expandRoot("  /tmp  ")!.includes(" "));
+
+// The one that matters: `resolve("scratch")` would resolve against the process
+// cwd — the project — putting the pre-approved no-prompt directory inside the
+// user's repo while the system prompt promised it was outside it.
+eq("a relative root is refused, not resolved against the project", expandRoot("scratch"), undefined);
+eq("...including the one that names the project itself", expandRoot("."), undefined);
+eq("...and one that climbs out of it", expandRoot("../scratch"), undefined);
 
 // ---------------------------------------------------------------------------
 console.log("loadSettings — defaults, overrides, and a broken file");
@@ -115,7 +120,7 @@ writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root:
 eq("a blank root falls back to the default rather than making an empty segment", loadSettings(AGENT).root, "");
 
 writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: "~/scratch" } }));
-eq("a tilde root is expanded on the way in", loadSettings(AGENT).root, join(homedir(), "scratch"));
+eq("the root is kept as written, so session_start can warn about a bad one", loadSettings(AGENT).root, "~/scratch");
 
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
 eq("an unparseable settings file does not disable the scratchpad", loadSettings(AGENT).enabled, true);
@@ -135,6 +140,40 @@ eq("creating it twice is not an error", prepare(made), undefined);
 const blocked = join(ROOT, "a-file");
 writeFileSync(blocked, "not a directory");
 check("an impossible path reports the reason rather than throwing", typeof prepare(join(blocked, "scratchpad")) === "string");
+
+// ---------------------------------------------------------------------------
+console.log("prepareRoot — refusing a root that is not ours");
+
+const goodRoot = join(ROOT, "root-ok", "pi-501");
+eq("a fresh root is accepted", prepareRoot(goodRoot), undefined);
+eq("and created private to this user", statSync(goodRoot).mode & 0o777, 0o700);
+eq("re-verifying an existing good root is fine", prepareRoot(goodRoot), undefined);
+
+// The attack the check exists for: another local user pre-creates the
+// predictable `pi-<uid>` segment as a symlink into a directory they own, and
+// mkdirSync(recursive) would follow it and put every scratch file there.
+const elsewhere = join(ROOT, "attacker-owned");
+mkdirSync(elsewhere, { recursive: true });
+const symlinked = join(ROOT, "root-link", "pi-501");
+mkdirSync(join(ROOT, "root-link"), { recursive: true });
+symlinkSync(elsewhere, symlinked);
+check("a symlinked root is refused rather than followed", prepareRoot(symlinked)?.includes("symlink") === true);
+eq("and nothing was created through it", readdirSync(elsewhere).length, 0);
+
+const fileRoot = join(ROOT, "root-file", "pi-501");
+mkdirSync(join(ROOT, "root-file"), { recursive: true });
+writeFileSync(fileRoot, "not a directory");
+check("a file where the root should be is refused", typeof prepareRoot(fileRoot) === "string");
+
+// mkdirSync only applies its mode to directories it creates, so a root that
+// already existed — the interesting case — keeps whatever mode it had.
+const looseRoot = join(ROOT, "root-loose", "pi-501");
+mkdirSync(looseRoot, { recursive: true, mode: 0o755 });
+chmodSync(looseRoot, 0o755);
+check(
+	"a pre-existing world-readable root is refused",
+	process.getuid === undefined || prepareRoot(looseRoot)?.includes("other users") === true,
+);
 
 // ---------------------------------------------------------------------------
 console.log("list / describeContents — what /scratchpad shows");
@@ -252,10 +291,55 @@ mkdirSync(TMP, { recursive: true });
 	h.handlers.get("session_start")!({}, ctx);
 
 	check("the failure is reported once, as a warning", notices.length === 1 && notices[0]![1] === "warning");
-	check("and says what could not be created", notices[0]![0].startsWith("Scratchpad: could not create "));
+	check("and says which root it would not use", notices[0]![0].startsWith("Scratchpad: refusing to use "));
 	eq("it still announces, so a stale exemption is cleared", h.announced.length, 1);
 	eq("with no directory", (h.announced[0]?.[1] as { dir?: string } | undefined)?.dir, undefined);
 	eq("nothing is injected", h.handlers.get("before_agent_start")!({ systemPrompt: "BASE" }), undefined);
+}
+
+{
+	// A relative root is refused rather than silently resolved into the project.
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: "scratch" } }));
+	const h = makePi();
+	extension(h.pi as never);
+	const { ctx, notices } = makeCtx("/work/delta", "sess-4");
+	h.handlers.get("session_start")!({}, ctx);
+
+	check("the bad setting is named, as a warning", notices[0]?.[1] === "warning" && notices[0][0].includes('scratchpad.root "scratch"'));
+	check("and the default root is used instead of failing outright", h.announced[0]![1] !== undefined);
+	const announced = (h.announced[0]![1] as { dir?: string }).dir;
+	check("the scratchpad still lands under the system temp directory", announced?.startsWith(tmpdir()) === true);
+	check("and nowhere near the project", !announced?.includes("/work/delta"));
+}
+
+{
+	// A fork keeps the conversation, so it must keep the files the conversation
+	// refers to — a new session id would otherwise swap in an empty directory.
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: TMP } }));
+	const first = makePi();
+	extension(first.pi as never);
+	first.handlers.get("session_start")!({}, makeCtx("/work/epsilon", "sess-old").ctx);
+	const original = (first.announced[0]![1] as { dir: string }).dir;
+	writeFileSync(join(original, "analysis.json"), "{}");
+
+	const forked = makePi();
+	extension(forked.pi as never);
+	forked.handlers.get("session_start")!(
+		{ reason: "fork", previousSessionFile: "/sessions/2026-08-07T10-00-00_sess-old.jsonl" },
+		makeCtx("/work/epsilon", "sess-new").ctx,
+	);
+
+	eq("a fork inherits the directory its context already names", (forked.announced[0]![1] as { dir: string }).dir, original);
+	check("so the file it believes it wrote is still there", list(original).includes("analysis.json"));
+
+	// An unrelated previous session is not inherited — /new must start clean.
+	const fresh = makePi();
+	extension(fresh.pi as never);
+	fresh.handlers.get("session_start")!(
+		{ reason: "new", previousSessionFile: "/sessions/2026-08-07T10-00-00_sess-unrelated.jsonl" },
+		makeCtx("/work/epsilon", "sess-third").ctx,
+	);
+	check("a session with no scratchpad to inherit gets its own", (fresh.announced[0]![1] as { dir: string }).dir !== original);
 }
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

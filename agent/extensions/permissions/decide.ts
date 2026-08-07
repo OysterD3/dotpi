@@ -54,6 +54,16 @@ export type Decision = {
 	rule?: string;
 	/** Destructive findings, when that is what triggered the prompt. */
 	findings?: Finding[];
+	/**
+	 * Set when the scratchpad exemption is what produced this allow.
+	 *
+	 * The caller has one more thing to do that this file cannot: confirm against
+	 * the filesystem that the path is really inside the scratchpad and not a
+	 * symlink out of it (see escapesScratchpad in scratch.ts). A marker rather
+	 * than matching on `reason`, which is display text and would be a silent
+	 * failure the day someone reworded it.
+	 */
+	scratch?: true;
 };
 
 export type CompiledPolicy = {
@@ -136,7 +146,7 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	// it this way means "it is bounded by everything an allow rule is bounded by"
 	// can be read off the file instead of proved.
 	if (mode !== "denyAll" && targetsScratchpad(call)) {
-		return { behavior: "allow", reason: "inside this session's scratchpad" };
+		return { behavior: "allow", reason: "inside this session's scratchpad", scratch: true };
 	}
 
 	switch (mode) {

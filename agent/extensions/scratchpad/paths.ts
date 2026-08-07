@@ -29,34 +29,53 @@
  * `os.tmpdir()` honours `TMPDIR`, and on macOS that is already a per-user
  * directory under `/var/folders/…` that the OS reaps on its own. Hardcoding
  * `/tmp` would put files in the world-writable directory instead and lose that.
- * On Linux it is `/tmp`, on Windows `%TEMP%`. All of those spellings are already
- * recognised as scratch space by permissions/destructive.ts, which is what keeps
- * a cleanup `rm -rf` of a scratchpad from raising a prompt.
+ * On Linux it is `/tmp`, on Windows `%TEMP%`.
+ *
+ * The default also gets something a custom `scratchpad.root` does not, and the
+ * difference is worth stating precisely because this comment used to overclaim
+ * it. `permissions/destructive.ts` recognises scratch space by a hardcoded list
+ * of temp spellings (`/tmp/`, `/private/tmp/`, `/var/folders/`,
+ * `/private/var/folders/`), and the auto classifier's prompt names the same
+ * ones. Neither consults the announced scratchpad. So under the default root a
+ * cleanup `rm -rf <scratch>` is exempt from the recursive-delete pattern and a
+ * shell redirect into it reads as ordinary scratch work; under `~/scratch`,
+ * neither is, and those bash calls prompt or get classified like any other path
+ * outside the project. The path-tool exemption works for any root — it consults
+ * the directory rather than a list — and permissions now puts the scratchpad in
+ * the workspace it shows the classifier, which recovers most of the rest.
  *
  * Pure but for the caller passing in `tmp`, `uid` and the session id, so the
  * whole layout is testable as a table.
  */
 
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { CONFIG } from "./config.ts";
 
 /**
- * A configured `scratchpad.root`, made absolute.
+ * A configured `scratchpad.root`, with `~` expanded — or undefined when it is
+ * not a usable root.
  *
- * `~` has to be expanded here because nothing downstream will: `join` treats it
- * as an ordinary directory name, so `scratchpad.root: "~/scratch"` would create
- * a literal `~` folder next to wherever pi happened to be started. The absolute
- * resolution matters for a second, quieter reason — permissions refuses to
- * exempt a scratchpad that is not an absolute path, so a relative root would
- * create a working directory and silently lose the no-prompt half of the
- * feature, which is the failure nobody would think to look for.
+ * `~` has to be expanded because nothing downstream will: `join` treats it as an
+ * ordinary directory name, so `scratchpad.root: "~/scratch"` would create a
+ * literal `~` folder next to wherever pi happened to be started.
+ *
+ * A *relative* root is rejected rather than resolved, which is the correction to
+ * how this was first written. `resolve("scratch")` resolves against
+ * `process.cwd()` — the project — so `scratchpad.root: "scratch"` quietly built
+ * the scratchpad inside the user's repository and then had permissions
+ * auto-approve every write into it, while the system prompt told the model the
+ * directory was "outside the user's project, so nothing you put there shows up
+ * in their diff". That is the exact failure the feature exists to prevent, with
+ * the prompt suppressed as well. There is no sensible base to resolve against
+ * here — the whole point of the setting is to name somewhere that is not the
+ * project — so the honest answer is to refuse it and say so.
  */
-export function expandRoot(input: string): string {
+export function expandRoot(input: string): string | undefined {
 	const trimmed = input.trim();
 	if (trimmed === "~") return homedir();
 	if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
-	return resolve(trimmed);
+	return isAbsolute(trimmed) ? normalize(trimmed) : undefined;
 }
 
 /**
@@ -96,13 +115,25 @@ export type PathParts = {
 	sessionId: string | undefined;
 };
 
+/**
+ * The per-user root, `<tmp>/pi-<uid>`.
+ *
+ * Split out because it is the one level that has to be created and verified on
+ * its own before anything is made under it — it is the boundary between the
+ * shared temp directory and ours, and so the only place a symlink another user
+ * planted can be caught (see prepareRoot in index.ts). It was briefly inlined
+ * back when the only caller was `scratchpadPath`.
+ */
+export function userRoot(tmp: string, uid: number | undefined): string {
+	return join(tmp, `pi-${uid ?? "user"}`);
+}
+
+/** The scratchpad for one session, below an already-verified root. */
+export function scratchpadUnder(root: string, cwd: string, sessionId: string | undefined): string {
+	return join(root, projectSlug(cwd), sessionSegment(sessionId), "scratchpad");
+}
+
 /** The full scratchpad path for one session. */
 export function scratchpadPath(parts: PathParts): string {
-	return join(
-		parts.tmp,
-		`pi-${parts.uid ?? "user"}`,
-		projectSlug(parts.cwd),
-		sessionSegment(parts.sessionId),
-		"scratchpad",
-	);
+	return scratchpadUnder(userRoot(parts.tmp, parts.uid), parts.cwd, parts.sessionId);
 }

@@ -515,9 +515,27 @@ table have both already run, so `Read(**/.env)` still blocks a `.env` in there, 
 excluded outright because an implicit rule written in no settings file should not be the thing that
 lets something run in the mode whose whole point is that nothing does. `bash` is deliberately *not*
 covered — a command is not judged by the paths it mentions, and `curl … > $S/x.sh && sh $S/x.sh`
-writes only inside the scratchpad — so bash keeps going to the classifier. Paths are compared as
-text, so a symlink planted inside the scratchpad reads as inside it; that is the same stance
-`deletesOnlyScratch` takes, and the same one the guardrail-not-a-sandbox note below takes.
+writes only inside the scratchpad — so bash keeps going to the classifier.
+
+Three things bound it, and each is there because the first version without it was wrong.
+**The announced directory is validated, not trusted** (`usableScratchDir`): absolute, at least two
+segments deep, and neither containing nor contained by the working directory. The channel is the
+trust boundary, and any extension in the session can emit on it — one `{ dir: "/" }` used to make
+`isWithin(anything, "/")` true and switch off prompting for every path on the machine, permanently,
+with nothing in the UI saying so. **The lexical answer is confirmed against the filesystem**
+(`escapesScratchpad`): a symlink inside the scratchpad pointing at `~/.ssh/id_rsa` reads as inside
+it to a text comparison, and the old justification for allowing that — "the agent would have had to
+create the symlink itself, through a call this policy saw" — was simply false, since the classifier
+prompt declares scratch writes SAFE and so waves the `ln -s` through. The check resolves the deepest
+existing ancestor, so writing *through* a planted symlink is caught too; it lives in `index.ts`
+rather than `decide.ts` so the precedence engine stays pure. **`/permissions forget` revokes it**,
+because a whole directory that never prompts is the largest standing approval in the session, and a
+command that says "you will be asked again" must not leave it in place. The scratchpad is listed in
+plain `/permissions` too, not just `/permissions auto` — it suppresses prompts in `askMutating` and
+`askAll`, the modes people pick *because* they want to be asked, so that had to be visible.
+
+Residually this is still a guardrail rather than a sandbox: a check outside the syscall can be raced,
+so the gap is a TOCTOU window rather than a standing invitation.
 
 Three limits worth knowing before you turn it on:
 
@@ -741,9 +759,28 @@ The path is `<tmp>/pi-<uid>/<project-slug>/<session-id>/scratchpad`, and each le
 thing in both places — so `ls` in the root tells you whose files these are. `<session-id>` is the
 isolation that matters: two tabs on one project must not overwrite each other's `plan.md`, and a
 resumed session (`pi -c`) keeps its id, so it finds its own files again and the path in the system
-prompt is stable across the restart. `os.tmpdir()` rather than a hardcoded `/tmp` so `TMPDIR` is
-honoured — on macOS that is already a per-user directory the OS reaps on its own — with
-`scratchpad.root` there if you want the shorter path back.
+prompt is stable across the restart. A **fork** — `/rewind`, or branching — mints a *new* id while
+keeping the conversation, so it inherits the previous session's directory when one exists; without
+that the model arrives holding tool results naming files under the old path and gets not-found for
+something it correctly believes it wrote. `os.tmpdir()` rather than a hardcoded `/tmp` so `TMPDIR`
+is honoured — on macOS that is already a per-user directory the OS reaps on its own.
+
+**`pi-<uid>` is created and verified before anything goes under it**, because `mkdirSync(recursive)`
+follows symlinks it finds on the way down. Every segment above the session id is predictable before
+pi runs — the uid is guessable, the project slug is a pure function of the cwd — so on a shared
+`/tmp` another local user can pre-create `pi-<uid>` as a symlink into a directory they own, and pi
+would then tell the model to write every working file there, prompt-free. The root is `lstat`ed
+(a symlink fails rather than being followed), checked to be owned by us, and checked not to be
+group- or world-accessible; anything else refuses and the session runs without a scratchpad.
+
+`scratchpad.root` moves it elsewhere. It must be absolute or start with `~/` — a *relative* root
+would resolve against the process cwd, which is the project, quietly building the pre-approved
+no-prompt directory inside the repo while the system prompt promised it was outside it, so it is
+refused with a warning rather than resolved. Know what a non-temp root costs: `destructive.ts` and
+the classifier prompt recognise scratch space by a hardcoded list of temp spellings, so under
+`~/scratch` a cleanup `rm -rf` is no longer exempt from the recursive-delete pattern. The path-tool
+exemption still works anywhere, and permissions now puts the scratchpad in the workspace it shows
+the classifier, which recovers most of the rest.
 
 **Telling the model is half a feature; the half that makes it get used is that writing there does
 not stop to ask.** In `auto` mode every `write` to a path with no matching rule costs a classifier

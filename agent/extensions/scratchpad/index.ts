@@ -41,12 +41,12 @@
  *                       means os.tmpdir(). Set to "/tmp" for a shorter path.
  */
 
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ANNOUNCE, CONFIG, defaultSettings, SETTINGS_KEY, type ScratchpadSettings } from "./config.ts";
-import { expandRoot, scratchpadPath } from "./paths.ts";
+import { expandRoot, scratchpadUnder, userRoot } from "./paths.ts";
 import { buildPromptBlock } from "./prompt.ts";
 
 export function loadSettings(agentDir: string): ScratchpadSettings {
@@ -56,9 +56,10 @@ export function loadSettings(agentDir: string): ScratchpadSettings {
 		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
 		return {
 			enabled: typeof block?.enabled === "boolean" ? block.enabled : base.enabled,
-			// Expanded on the way in, so everything downstream sees one absolute
-			// path — see expandRoot for what a literal `~` would otherwise cost.
-			root: typeof block?.root === "string" && block.root.trim() ? expandRoot(block.root) : base.root,
+			// Kept as written. Validation happens in session_start, which has a `ctx`
+			// to warn through — a root silently swapped for the default here would
+			// leave the user's setting looking like it took effect.
+			root: typeof block?.root === "string" && block.root.trim() ? block.root.trim() : base.root,
 		};
 	} catch {
 		return base;
@@ -66,7 +67,57 @@ export function loadSettings(agentDir: string): ScratchpadSettings {
 }
 
 /**
- * Create the directory, or explain why not.
+ * Create the per-user root, and refuse to use one that is not ours.
+ *
+ * This is the security-load-bearing half of `prepare`, and it exists because
+ * `mkdirSync(…, { recursive: true })` follows symlinks it finds on the way down.
+ * The temp directory is shared, and every segment of the path above the session
+ * id is predictable before pi ever runs: the uid is guessable and the project
+ * slug is a pure function of the cwd. On Linux, or with the `/tmp` root the
+ * settings offer, another local user can therefore pre-create `pi-<uid>` — or
+ * `pi-<uid>/<project-slug>` — as a symlink into a directory they own. `mkdir`
+ * follows it, the scratchpad is created inside their directory, and pi then
+ * tells the model in its system prompt to write every intermediate result and
+ * reproduction script there. Because the permission exemption is keyed on the
+ * announced path, none of those writes would prompt.
+ *
+ * So the root is created first, on its own, and then checked: a real directory
+ * (`lstat`, so a symlink fails rather than being followed), owned by us, and not
+ * readable or writable by anyone else. Anything else refuses — and refusing is
+ * cheap, because a session without a scratchpad is a working session.
+ *
+ * The mode check is not redundant with creating it 0700. `mkdirSync` only
+ * applies that mode to directories it actually creates, so a root that already
+ * existed — the interesting case — has whatever permissions it was given.
+ */
+export function prepareRoot(root: string): string | undefined {
+	try {
+		mkdirSync(root, { recursive: true, mode: 0o700 });
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+
+	let stats: Stats;
+	try {
+		stats = lstatSync(root);
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+
+	if (!stats.isDirectory()) return "it is a symlink or a file, not a directory";
+
+	const uid = process.getuid?.();
+	if (uid !== undefined && stats.uid !== uid) return `it is owned by uid ${stats.uid}, not by you`;
+
+	// Group and other bits. On Windows the mode is synthetic and this never fires,
+	// which is correct: the check is about a shared POSIX temp directory.
+	if (uid !== undefined && (stats.mode & 0o077) !== 0) return "it is accessible to other users on this machine";
+
+	return undefined;
+}
+
+/**
+ * Create the session directory under an already-verified root.
  *
  * Failure is survivable and must not be fatal: a read-only or missing TMPDIR is
  * rare but real (a locked-down CI image, a container with no /tmp mount), and
@@ -75,8 +126,8 @@ export function loadSettings(agentDir: string): ScratchpadSettings {
  * model told to always use a directory that does not exist is worse off than one
  * never told about it.
  *
- * 0700 because the system temp directory is shared: on a multi-user machine the
- * default would let anyone read whatever the agent was working on.
+ * 0700 for the same reason the root is: the system temp directory is shared, and
+ * the default would let anyone read whatever the agent was working on.
  */
 export function prepare(dir: string): string | undefined {
 	try {
@@ -87,6 +138,50 @@ export function prepare(dir: string): string | undefined {
 	}
 }
 
+/** Session files are named `<timestamp>_<uuid>.jsonl`; the id is the uuid. */
+function sessionIdFromFile(file: string): string | undefined {
+	const stem = basename(file).replace(/\.jsonl$/, "");
+	const id = stem.split("_").pop();
+	return id && id.length > 0 ? id : undefined;
+}
+
+/**
+ * This session's scratchpad — inheriting the previous session's when there is
+ * one to inherit.
+ *
+ * Keying on the session id is what makes two terminal tabs on one project not
+ * collide, and it was quietly wrong across a fork. `/rewind` and branching fork
+ * the session, which mints a *new* id while keeping the conversation: the model
+ * would arrive holding tool results that name files under the old session
+ * directory, be handed a system prompt naming a new empty one, and get
+ * not-found for a file it correctly believed it had written. Worse quietly, the
+ * old path was no longer the announced one, so calls against it stopped being
+ * exempt and started prompting.
+ *
+ * A fork keeps the context, so it should keep the files. `previousSessionFile`
+ * is present for "new", "resume" and "fork"; the `existsSync` is what makes it
+ * safe to consult all three — a `/new` into an unrelated session finds no
+ * scratchpad under this project's slug for that id and falls through to its own.
+ * Two sessions sharing a directory after a fork is the intent, not a collision:
+ * the forked-from session is the one that was abandoned.
+ */
+function sessionDir(
+	root: string,
+	cwd: string,
+	sessionId: string | undefined,
+	previousSessionFile: string | undefined,
+): string {
+	const own = scratchpadUnder(root, cwd, sessionId);
+
+	const previous = previousSessionFile ? sessionIdFromFile(previousSessionFile) : undefined;
+	if (previous && previous !== sessionId) {
+		const inherited = scratchpadUnder(root, cwd, previous);
+		if (existsSync(inherited)) return inherited;
+	}
+
+	return own;
+}
+
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	// Not read from disk here: `session_start` reloads before anything can read
@@ -95,23 +190,37 @@ export default function (pi: ExtensionAPI) {
 	let settings = defaultSettings();
 	let dir: string | undefined;
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		settings = loadSettings(agentDir);
 		dir = undefined;
 
 		if (settings.enabled) {
-			const wanted = scratchpadPath({
-				tmp: settings.root || tmpdir(),
-				uid: process.getuid?.(),
-				cwd: ctx.cwd,
-				sessionId: ctx.sessionManager.getSessionId(),
-			});
+			const configured = settings.root ? expandRoot(settings.root) : undefined;
+			if (settings.root && !configured) {
+				ctx.ui.notify(
+					`Scratchpad: ignoring scratchpad.root "${settings.root}" — it must be an absolute path or start with "~/". Using ${tmpdir()}.`,
+					"warning",
+				);
+			}
 
-			const failure = prepare(wanted);
-			if (failure) {
-				ctx.ui.notify(`Scratchpad: could not create ${wanted} — ${failure}. Continuing without one.`, "warning");
+			const tmp = configured ?? tmpdir();
+			const uid = process.getuid?.();
+			const root = userRoot(tmp, uid);
+
+			// Before anything is created under it. See prepareRoot: this is what
+			// stops a symlink another user left in a shared temp directory from
+			// becoming the place pi tells the model to put all its working files.
+			const rootFailure = prepareRoot(root);
+			if (rootFailure) {
+				ctx.ui.notify(`Scratchpad: refusing to use ${root} — ${rootFailure}. Continuing without one.`, "warning");
 			} else {
-				dir = wanted;
+				const wanted = sessionDir(root, ctx.cwd, ctx.sessionManager.getSessionId(), event.previousSessionFile);
+				const failure = prepare(wanted);
+				if (failure) {
+					ctx.ui.notify(`Scratchpad: could not create ${wanted} — ${failure}. Continuing without one.`, "warning");
+				} else {
+					dir = wanted;
+				}
 			}
 		}
 

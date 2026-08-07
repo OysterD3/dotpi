@@ -49,6 +49,7 @@ import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
 import { buildQuestion, subjectOf } from "./prompt.ts";
 import { parseRules, ruleTarget } from "./rules.ts";
+import { escapesScratchpad, usableScratchDir } from "./scratch.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
 import { type Verdict } from "./verdict.ts";
 import { workspaceDirs } from "./workspace.ts";
@@ -156,9 +157,25 @@ export default function (pi: ExtensionAPI) {
 		scratchDir = typeof dir === "string" && dir.length > 0 ? dir : undefined;
 	});
 
-	/** The workspace as the classifier should see it: cwd, the settings key, `/add-dir`. */
+	/**
+	 * The workspace as the classifier should see it: cwd, the settings key,
+	 * `/add-dir`, and the scratchpad.
+	 *
+	 * The scratchpad is in the list because the classifier's own prompt only
+	 * recognises scratch space by hardcoded temp spellings (`/tmp`, `/var/folders`
+	 * and friends), so a `scratchpad.root` pointed anywhere else — `~/scratch`,
+	 * say — read to it as an ordinary path outside the project, and bash commands
+	 * touching the scratchpad got flagged for "touching the home directory". The
+	 * path-tool exemption never had that problem because it consults the announced
+	 * directory; this closes the same gap for the calls that still go to a model.
+	 */
 	const dirsFor = (cwd: string): string[] =>
-		workspaceDirs(cwd, policy?.settings.additionalDirectories ?? [], sessionDirs);
+		workspaceDirs(
+			cwd,
+			policy?.settings.additionalDirectories ?? [],
+			sessionDirs,
+			usableScratchDir(scratchDir, cwd) ? [scratchDir as string] : [],
+		);
 
 	/**
 	 * Auto mode's classifier. Built unconditionally and idle unless the mode is
@@ -226,6 +243,18 @@ export default function (pi: ExtensionAPI) {
 		const input = event.input as Record<string, unknown>;
 		const call = { tool: event.toolName, input, cwd: ctx.cwd, scratchDir };
 		let decision = decide(policy, call);
+
+		// The one allow that is not final on its own. decide() answered by comparing
+		// text, which cannot see that `<scratch>/notes.txt` is a symlink to
+		// `~/.ssh/id_rsa`; this is where that gets checked against the filesystem.
+		// An escape does not deny — it just withdraws the exemption and lets the
+		// call be judged as what it is, a path outside the scratchpad.
+		if (decision.scratch && scratchDir) {
+			const target = ruleTarget(event.toolName, input);
+			if (target !== undefined && escapesScratchpad(target, ctx.cwd, scratchDir)) {
+				decision = decide(policy, { ...call, scratchDir: undefined });
+			}
+		}
 
 		if (decision.behavior === "allow") return undefined;
 
@@ -464,7 +493,13 @@ export default function (pi: ExtensionAPI) {
 						// Listed for the same reason the workspace above it is: it silently
 						// removes prompts, and "why did that write not ask" deserves an answer
 						// you can look up rather than infer.
-						`Scratchpad:         ${scratchDir ? `${scratchDir}\n                    (writes and edits under it are allowed without a classifier call)` : "none announced — the scratchpad extension is not installed or is off"}`,
+						`Scratchpad:         ${
+							usableScratchDir(scratchDir, ctx.cwd)
+								? `${scratchDir}\n                    (writes and edits under it are allowed without a classifier call)`
+								: scratchDir
+									? `${scratchDir}\n                    REFUSED — not a directory this may exempt; every call under it is judged normally`
+									: "none announced — the scratchpad extension is not installed or is off"
+						}`,
 						`Read-only tools:    ${auto.skipReadOnly ? "skipped without asking (read, grep, find, ls)" : "classified like everything else"}`,
 						`If unreachable:     ${auto.onError === "allow" ? "fall back to the destructive table alone" : "ask about every unrecognised call"}`,
 						`Timeout:            ${auto.timeoutMs} ms`,
@@ -529,10 +564,21 @@ export default function (pi: ExtensionAPI) {
 				// sense that matters — it waves the next identical call through without
 				// asking — so leaving it behind would make "forget" a half-truth.
 				const verdicts = classifier.clear();
+				// And so does the scratchpad. It is the largest standing approval in the
+				// session — a whole directory that never prompts — so a command that
+				// says "you will be asked again" while leaving it in place is telling
+				// the user the one thing they ran it to stop being true. Dropped for
+				// this session only: the next session_start re-announces it.
+				const hadScratch = scratchDir !== undefined;
+				scratchDir = undefined;
 				ctx.ui.notify(
-					count === 0 && verdicts === 0
+					count === 0 && verdicts === 0 && !hadScratch
 						? "There were no session approvals to revoke."
-						: `Revoked ${count} session approval(s) and dropped ${verdicts} cached classifier verdict(s). You will be asked again.`,
+						: [
+								`Revoked ${count} session approval(s) and dropped ${verdicts} cached classifier verdict(s).`,
+								...(hadScratch ? ["The scratchpad exemption is off too — writes there will be asked about like anywhere else."] : []),
+								"You will be asked again.",
+							].join(" "),
 					"info",
 				);
 				return;
@@ -594,6 +640,13 @@ export default function (pi: ExtensionAPI) {
 				[
 					`Mode: ${settings.defaultMode}${override ? " (this session — Shift+Tab)" : ""} — ${MODE_HELP[settings.defaultMode]}`,
 					`Rules: ${policy.deny.length} deny, ${policy.ask.length} ask, ${policy.allow.length} allow`,
+					// Shown in every mode, not just auto. It is an allow, so it suppresses
+					// prompts in askMutating and askAll too — the modes someone picks
+					// *because* they want to be asked about every write — and this line is
+					// the only place that is visible. /permissions forget turns it off.
+					...(usableScratchDir(scratchDir, ctx.cwd)
+						? [`Scratchpad (writes never prompt): ${scratchDir}`]
+						: []),
 					`Destructive overrides allow: ${settings.destructiveOverridesAllow}`,
 					`Without a UI, "ask" becomes: ${settings.askWithoutUi}`,
 					`Prompt timeout: ${settings.promptTimeoutMs === 0 ? "none — waits forever" : `${formatDuration(settings.promptTimeoutMs)} (blocks on expiry)`}`,
