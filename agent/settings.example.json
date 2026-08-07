@@ -83,6 +83,10 @@
   "recap": {
     "model": "cheap"
   },
+  "scratchpad": {
+    "enabled": true,
+    "root": ""
+  },
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615",
     "npm:pi-web-access@0.17.1",

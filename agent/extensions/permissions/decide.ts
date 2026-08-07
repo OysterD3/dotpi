@@ -24,10 +24,16 @@
  * `git reset --hard`. Someone who allowlists `git` to stop being nagged about
  * `git status` has not agreed to silent history rewrites. Set
  * `destructiveOverridesAllow: false` for the strict conventional order.
+ *
+ * Step 4 has one member that is not in any settings file: a path tool writing
+ * inside the session scratchpad. It sits at the allow step precisely so it
+ * inherits that step's bounds — deny rules and the destructive table have both
+ * already run — and it is excluded from `denyAll`. See scratch.ts.
  */
 
 import { findDestructive, type Finding } from "./destructive.ts";
 import { firstMatch, type Rule } from "./rules.ts";
+import { targetsScratchpad } from "./scratch.ts";
 import type { PermissionSettings } from "./settings.ts";
 import { MUTATING_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
 import { isTrivial } from "./trivial.ts";
@@ -62,6 +68,12 @@ export type Call = {
 	tool: string;
 	input: Record<string, unknown>;
 	cwd: string;
+	/**
+	 * This session's scratchpad, as last announced by the scratchpad extension.
+	 * Absent when that extension is not installed, which is the only difference
+	 * its absence makes: nothing else here consults it.
+	 */
+	scratchDir?: string;
 };
 
 export function decide(policy: CompiledPolicy, call: Call): Decision {
@@ -105,6 +117,17 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	const allowed = firstMatch(policy.allow, tool, input, cwd);
 	if (allowed) {
 		return { behavior: "allow", reason: `allowed by rule ${allowed.source}`, rule: allowed.source };
+	}
+
+	// The scratchpad, at the allow step and under the allow step's bounds. Not in
+	// `denyAll`: there, an explicit allow rule is the only thing that lets
+	// anything run, and an implicit one written in no settings file should not
+	// join that list. Everywhere else the directory was created by this session
+	// for this session, outside the project, and the model was told in its system
+	// prompt to put scratch files there — so a prompt here is one the user would
+	// approve every time, which is the kind that teaches them to stop reading.
+	if (mode !== "denyAll" && targetsScratchpad(tool, input, cwd, call.scratchDir)) {
+		return { behavior: "allow", reason: "inside this session's scratchpad" };
 	}
 
 	if (findings.length > 0) {

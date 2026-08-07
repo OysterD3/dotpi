@@ -178,3 +178,25 @@ export const AUTO = {
 export const WORKSPACE = {
 	channel: "workspace:dirs",
 };
+
+/**
+ * Where this session's scratchpad is announced, and by whom.
+ *
+ * The scratchpad extension creates one temp directory per session, tells the
+ * model to put every throwaway file in it, and publishes the absolute path here
+ * on session start. This extension keeps the last one it saw and stops asking
+ * about path-tool calls that land inside it — see scratch.ts for the bounds on
+ * that, which are exactly an `allow` rule's.
+ *
+ * Duplicated string rather than a shared module, matching WORKSPACE above and
+ * the rest of this repo: with the scratchpad extension not installed nothing
+ * publishes, `scratchDir` stays undefined, and every path is judged as it was
+ * before. Nothing here creates or requires the directory.
+ *
+ * One path per message, replacing the last. A session start — including a resume
+ * into a fresh process — re-announces, which is what makes the exemption survive
+ * a restart without anything being persisted.
+ */
+export const SCRATCHPAD = {
+	channel: "scratchpad:dir",
+};

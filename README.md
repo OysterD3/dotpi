@@ -506,6 +506,19 @@ off, so `rm -rf /tmp`, `rm -rf $TMPDIR/x` and `rm -rf /tmp/../etc` all still ask
 the rest still ask wherever they point. And the carve-out is about *where the file lands* and nothing
 else — fetching content into a temp file and then executing it is exactly as unsafe as it always was.
 
+**The session scratchpad is allowed outright**, one step further than the paragraph above. The
+`scratchpad` extension makes one directory per session under the temp root and publishes it on
+`scratchpad:dir`; this extension keeps the last path it saw and treats a `read`/`write`/`edit`
+landing inside it as if an `allow` rule had matched — no classifier call, no bill, no prompt. It
+sits at the allow step precisely so it inherits that step's bounds: `deny` rules and the destructive
+table have both already run, so `Read(**/.env)` still blocks a `.env` in there, and `denyAll` is
+excluded outright because an implicit rule written in no settings file should not be the thing that
+lets something run in the mode whose whole point is that nothing does. `bash` is deliberately *not*
+covered — a command is not judged by the paths it mentions, and `curl … > $S/x.sh && sh $S/x.sh`
+writes only inside the scratchpad — so bash keeps going to the classifier. Paths are compared as
+text, so a symlink planted inside the scratchpad reads as inside it; that is the same stance
+`deletesOnlyScratch` takes, and the same one the guardrail-not-a-sandbox note below takes.
+
 Three limits worth knowing before you turn it on:
 
 - **It costs money and latency, per tool call.** `allow` rules short-circuit it, so a decent
@@ -566,6 +579,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `index.ts` | Event wiring, the approval prompt, `/permissions` |
 | `destructive.ts` | **What counts as destructive — edit this table to taste**, plus the scratch-space exemption |
 | `decide.ts` | Precedence engine (pure) |
+| `scratch.ts` | The session scratchpad exemption and its containment test (pure) |
 | `trivial.ts` | **The trivially-safe command grammar — edit this list to taste** (pure) |
 | `rules.ts` | Rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
@@ -580,6 +594,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `model.ts` | Resolving `permissions.auto.model` |
 | `corpus.test.ts` | 171 safe / 85 dangerous commands the table must get right |
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
+| `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
 **`agent/extensions/provider/`** — adds `/provider`: switch every model this config uses, at once.
@@ -697,6 +712,71 @@ session rather than writing a file that would be quietly ignored.
 | `prompt.ts` | What gets appended to the system prompt |
 | `config.ts` | Caps and labels |
 | `add-dir.test.ts` / `add-dir.e2e.ts` | Unit and end-to-end coverage |
+
+**`agent/extensions/scratchpad/`** — a session-scoped temp directory the agent is told to use, and
+is never asked for permission to write to. Shaped after Claude Code's. `/scratchpad` shows it:
+
+```
+/tmp/pi-501/-Users-me-app/019fd9d7-07a1-7a9c/scratchpad
+
+  bench.json
+  repro.py
+  runs/
+
+Session-scoped and outside the project. Writes here are pre-approved and never prompt.
+```
+
+**The problem it solves is where the debris goes.** An agent doing real work produces files nobody
+asked for: the JSON it dumped to look at a shape, the script that reproduced the bug, two hundred
+lines of `pytest -v` it wanted to grep twice. With nowhere named, there are exactly two places those
+land and both are bad. In **the repository**, `git status` grows eleven untracked files, the diff
+under review fills with `tmp2.py`, and the odds one gets swept into a commit are not zero — that is
+the failure that costs something, because it lands in the user's history. In bare **`/tmp`**,
+everything is shared with every other process and session on the machine, so `/tmp/output.json` is a
+name two concurrent pi sessions will both pick and the second one silently wins.
+
+The path is `<tmp>/pi-<uid>/<project-slug>/<session-id>/scratchpad`, and each level earns its place.
+`pi-<uid>`, created `0700`, because the temp directory is shared by every user on the box.
+`<project-slug>` — the same slugging the `memory` store uses, so `-Users-me--pi` means the same
+thing in both places — so `ls` in the root tells you whose files these are. `<session-id>` is the
+isolation that matters: two tabs on one project must not overwrite each other's `plan.md`, and a
+resumed session (`pi -c`) keeps its id, so it finds its own files again and the path in the system
+prompt is stable across the restart. `os.tmpdir()` rather than a hardcoded `/tmp` so `TMPDIR` is
+honoured — on macOS that is already a per-user directory the OS reaps on its own — with
+`scratchpad.root` there if you want the shorter path back.
+
+**Telling the model is half a feature; the half that makes it get used is that writing there does
+not stop to ask.** In `auto` mode every `write` to a path with no matching rule costs a classifier
+call and can come back as a prompt, and a model that expects to interrupt its user for a throwaway
+file writes fewer of them and does the multi-step work in its head instead of on disk. So the
+directory is published on `scratchpad:dir` and the `permissions` extension allows path-tool calls
+that land inside it outright — see that extension above for the bounds, which are exactly an `allow`
+rule's. The allow has to live over there rather than here because pi's `tool_call` result carries
+only `block`: an extension can veto a call and has no way to clear one. Every session start
+announces, including the ones with nothing to announce — a resume is a fresh process that has
+forgotten the path, and a session that turned the scratchpad off has to take the *previous* one's
+exemption away rather than leave a dead directory allowed. Clearing is the publisher's job for
+exactly that reason: a subscriber clearing on its own `session_start` would race this handler.
+As everywhere in this repo the two sides share a channel string rather than a module, so either can
+be installed without the other — without `permissions` nothing listens, and without `scratchpad`
+nothing publishes and every path is judged exactly as it was.
+
+**Nothing is ever deleted.** There is no cleanup pass, deliberately: everything sits under the
+system temp directory, which the OS already reaps on its own schedule, and a recursive delete run at
+session start is the one thing here that could destroy a *live* concurrent session's files if its
+idea of "old" were ever wrong. A few kilobytes of stale scratch is the better side of that trade.
+Failing to create the directory is survivable rather than fatal — a locked-down image with no
+writable temp gets a warning and a session without a scratchpad, and the prompt block is withheld
+too, since a model told to always use a directory that does not exist is worse off than one never
+told about it.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Creating it, announcing it, `/scratchpad` |
+| `paths.ts` | The layout, and what each level is for (pure) |
+| `prompt.ts` | **What the model is told, and why it is worded that way** (pure) |
+| `config.ts` | Settings, the announcement channel, caps |
+| `scratchpad.test.ts` | Layout, settings, creation, and the wiring against a fake pi |
 
 **`agent/extensions/recap/`** — adds `/recap`, an "away summary": a one- or two-line plain-text
 summary of where the session stands.

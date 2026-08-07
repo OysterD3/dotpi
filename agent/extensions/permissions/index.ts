@@ -43,7 +43,7 @@
 
 import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { AutoClassifier } from "./auto.ts";
-import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, WORKSPACE, type Mode } from "./config.ts";
+import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, SCRATCHPAD, WORKSPACE, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
 import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
@@ -135,6 +135,27 @@ export default function (pi: ExtensionAPI) {
 		sessionDirs = dirs.filter((dir): dir is string => typeof dir === "string" && dir.length > 0);
 	});
 
+	/**
+	 * This session's scratchpad, as last announced (see SCRATCHPAD in config.ts).
+	 *
+	 * Not cleared in `session_start`, for the same reason `sessionDirs` above is
+	 * not: handler order across extensions is not something this file controls, so
+	 * a clear there would race the scratchpad extension's own handler — the one
+	 * that publishes the path — and losing that race would silently take the
+	 * exemption away for the whole session.
+	 *
+	 * Clearing is the publisher's job instead. Every message replaces this
+	 * outright, and one with no usable path clears it — which is how a session
+	 * that turned the scratchpad off, or could not create one, takes the previous
+	 * session's exemption away rather than leaving a dead directory allowed.
+	 */
+	let scratchDir: string | undefined;
+
+	pi.events.on(SCRATCHPAD.channel, (data) => {
+		const dir = (data as { dir?: unknown } | undefined)?.dir;
+		scratchDir = typeof dir === "string" && dir.length > 0 ? dir : undefined;
+	});
+
 	/** The workspace as the classifier should see it: cwd, the settings key, `/add-dir`. */
 	const dirsFor = (cwd: string): string[] =>
 		workspaceDirs(cwd, policy?.settings.additionalDirectories ?? [], sessionDirs);
@@ -203,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 		if (!policy) return undefined;
 
 		const input = event.input as Record<string, unknown>;
-		const call = { tool: event.toolName, input, cwd: ctx.cwd };
+		const call = { tool: event.toolName, input, cwd: ctx.cwd, scratchDir };
 		let decision = decide(policy, call);
 
 		if (decision.behavior === "allow") return undefined;
@@ -440,6 +461,10 @@ export default function (pi: ExtensionAPI) {
 						"",
 						`Model:              ${auto.model ?? "the session model (set permissions.auto.model to use a cheaper one)"}`,
 						`In scope:           ${workspace[0]}${workspace.length > 1 ? `\n                    ${workspace.slice(1).join("\n                    ")}` : ""}`,
+						// Listed for the same reason the workspace above it is: it silently
+						// removes prompts, and "why did that write not ask" deserves an answer
+						// you can look up rather than infer.
+						`Scratchpad:         ${scratchDir ? `${scratchDir}\n                    (writes and edits under it are allowed without a classifier call)` : "none announced — the scratchpad extension is not installed or is off"}`,
 						`Read-only tools:    ${auto.skipReadOnly ? "skipped without asking (read, grep, find, ls)" : "classified like everything else"}`,
 						`If unreachable:     ${auto.onError === "allow" ? "fall back to the destructive table alone" : "ask about every unrecognised call"}`,
 						`Timeout:            ${auto.timeoutMs} ms`,
@@ -464,7 +489,7 @@ export default function (pi: ExtensionAPI) {
 				// so asking it about one in isolation gets the answer it was told to
 				// give — while `/permissions test`, documented right beside this,
 				// printed ASK for the same string.
-				const settled = decide(policy, { tool: "bash", input: { command }, cwd: ctx.cwd });
+				const settled = decide(policy, { tool: "bash", input: { command }, cwd: ctx.cwd, scratchDir });
 				if (settled.behavior !== "classify") {
 					ctx.ui.notify(
 						`${command}\n\n=> ${settled.behavior.toUpperCase()} — ${settled.reason}\n   Settled before the classifier; it is never asked about this one.`,
@@ -543,7 +568,7 @@ export default function (pi: ExtensionAPI) {
 			if (text.startsWith("test ")) {
 				if (!policy) return;
 				const command = text.slice(5).trim();
-				const decision = decide(policy, { tool: "bash", input: { command }, cwd: ctx.cwd });
+				const decision = decide(policy, { tool: "bash", input: { command }, cwd: ctx.cwd, scratchDir });
 				const findings = findDestructive(command, policy.allowDestructive);
 				const detail = findings.length
 					? findings.map((finding) => `  - ${finding.id}: ${finding.reason}\n      ${finding.segment}`).join("\n")
