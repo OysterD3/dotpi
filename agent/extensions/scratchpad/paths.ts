@@ -37,8 +37,27 @@
  * whole layout is testable as a table.
  */
 
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { CONFIG } from "./config.ts";
+
+/**
+ * A configured `scratchpad.root`, made absolute.
+ *
+ * `~` has to be expanded here because nothing downstream will: `join` treats it
+ * as an ordinary directory name, so `scratchpad.root: "~/scratch"` would create
+ * a literal `~` folder next to wherever pi happened to be started. The absolute
+ * resolution matters for a second, quieter reason — permissions refuses to
+ * exempt a scratchpad that is not an absolute path, so a relative root would
+ * create a working directory and silently lose the no-prompt half of the
+ * feature, which is the failure nobody would think to look for.
+ */
+export function expandRoot(input: string): string {
+	const trimmed = input.trim();
+	if (trimmed === "~") return homedir();
+	if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
+	return resolve(trimmed);
+}
 
 /**
  * The project's directory name, slugged the way the memory store slugs a cwd:
@@ -77,17 +96,13 @@ export type PathParts = {
 	sessionId: string | undefined;
 };
 
-/** The per-user root: `<tmp>/pi-<uid>`. Everything pi puts in temp hangs off this. */
-export function userRoot(tmp: string, uid: number | undefined): string {
-	return join(tmp, `pi-${uid ?? "user"}`);
-}
-
 /** The full scratchpad path for one session. */
 export function scratchpadPath(parts: PathParts): string {
 	return join(
-		userRoot(parts.tmp, parts.uid),
+		parts.tmp,
+		`pi-${parts.uid ?? "user"}`,
 		projectSlug(parts.cwd),
 		sessionSegment(parts.sessionId),
-		CONFIG.dirName,
+		"scratchpad",
 	);
 }

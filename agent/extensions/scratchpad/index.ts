@@ -41,12 +41,12 @@
  *                       means os.tmpdir(). Set to "/tmp" for a shorter path.
  */
 
-import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ANNOUNCE, CONFIG, defaultSettings, SETTINGS_KEY, type ScratchpadSettings } from "./config.ts";
-import { scratchpadPath } from "./paths.ts";
+import { expandRoot, scratchpadPath } from "./paths.ts";
 import { buildPromptBlock } from "./prompt.ts";
 
 export function loadSettings(agentDir: string): ScratchpadSettings {
@@ -56,7 +56,9 @@ export function loadSettings(agentDir: string): ScratchpadSettings {
 		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
 		return {
 			enabled: typeof block?.enabled === "boolean" ? block.enabled : base.enabled,
-			root: typeof block?.root === "string" && block.root.trim() ? block.root.trim() : base.root,
+			// Expanded on the way in, so everything downstream sees one absolute
+			// path — see expandRoot for what a literal `~` would otherwise cost.
+			root: typeof block?.root === "string" && block.root.trim() ? expandRoot(block.root) : base.root,
 		};
 	} catch {
 		return base;
@@ -76,18 +78,21 @@ export function loadSettings(agentDir: string): ScratchpadSettings {
  * 0700 because the system temp directory is shared: on a multi-user machine the
  * default would let anyone read whatever the agent was working on.
  */
-export function prepare(dir: string): { dir: string } | { error: string } {
+export function prepare(dir: string): string | undefined {
 	try {
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
-		return { dir };
+		return undefined;
 	} catch (error) {
-		return { error: error instanceof Error ? error.message : String(error) };
+		return error instanceof Error ? error.message : String(error);
 	}
 }
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
-	let settings = loadSettings(agentDir);
+	// Not read from disk here: `session_start` reloads before anything can read
+	// it, and nothing else runs in between — `before_agent_start` looks only at
+	// `dir`, and `/scratchpad` needs a human, who arrives later still.
+	let settings = defaultSettings();
 	let dir: string | undefined;
 
 	pi.on("session_start", (_event, ctx) => {
@@ -102,11 +107,11 @@ export default function (pi: ExtensionAPI) {
 				sessionId: ctx.sessionManager.getSessionId(),
 			});
 
-			const prepared = prepare(wanted);
-			if ("error" in prepared) {
-				ctx.ui.notify(`Scratchpad: could not create ${wanted} — ${prepared.error}. Continuing without one.`, "warning");
+			const failure = prepare(wanted);
+			if (failure) {
+				ctx.ui.notify(`Scratchpad: could not create ${wanted} — ${failure}. Continuing without one.`, "warning");
 			} else {
-				dir = prepared.dir;
+				dir = wanted;
 			}
 		}
 
@@ -130,22 +135,27 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: event.systemPrompt + buildPromptBlock(dir) };
 	});
 
-	const status = (): string => {
-		if (!settings.enabled) return "Scratchpad is off (scratchpad.enabled is false).";
-		if (!dir) return "No scratchpad this session — it could not be created. See the warning at startup.";
-		return [
-			dir,
-			"",
-			describeContents(list(dir)),
-			"",
-			"Session-scoped and outside the project. Writes here are pre-approved and never prompt.",
-		].join("\n");
-	};
-
 	pi.registerCommand("scratchpad", {
 		description: "Show this session's scratchpad directory and what is in it",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify(status(), "info");
+			if (!settings.enabled) {
+				ctx.ui.notify("Scratchpad is off (scratchpad.enabled is false).", "info");
+				return;
+			}
+			if (!dir) {
+				ctx.ui.notify("No scratchpad this session — it could not be created. See the warning at startup.", "info");
+				return;
+			}
+			ctx.ui.notify(
+				[
+					dir,
+					"",
+					describeContents(list(dir)),
+					"",
+					"Session-scoped and outside the project. Writes here are pre-approved and never prompt.",
+				].join("\n"),
+				"info",
+			);
 		},
 	});
 }
@@ -158,20 +168,21 @@ export function describeContents(entries: string[]): string {
 	return shown.join("\n");
 }
 
-/** Top-level entries, directories marked with a trailing slash. Empty on any error. */
+/**
+ * Top-level entries, directories marked with a trailing slash. Empty on any error.
+ *
+ * `withFileTypes` rather than a `statSync` per name: the listing is capped at
+ * twenty lines, and stat-ing every entry to render twenty of them costs one
+ * syscall per file in a directory an agent may have filled. The one difference
+ * is that a symlink pointing at a directory no longer gets its trailing slash,
+ * which is cosmetic.
+ */
 export function list(dir: string): string[] {
-	let names: string[];
 	try {
-		names = readdirSync(dir);
+		return readdirSync(dir, { withFileTypes: true })
+			.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+			.sort();
 	} catch {
 		return [];
 	}
-
-	return names.sort().map((name) => {
-		try {
-			return statSync(join(dir, name)).isDirectory() ? `${name}/` : name;
-		} catch {
-			return name;
-		}
-	});
 }

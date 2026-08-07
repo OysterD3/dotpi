@@ -47,6 +47,7 @@
  */
 
 import { isAbsolute, posix, resolve } from "node:path";
+import { ruleTarget } from "./rules.ts";
 import { PATH_TOOLS } from "./tools.ts";
 
 /**
@@ -74,24 +75,40 @@ export function isWithin(child: string, parent: string): boolean {
  * True when this call is a path tool writing to, editing, or reading a path
  * inside the scratchpad.
  *
+ * The path comes out of `ruleTarget`, the same extraction the rule engine uses,
+ * rather than reading `input.path` here. That keeps one idea of "the path this
+ * call targets": if pi ever moves or renames the key, `rules.ts` gets fixed and
+ * this follows, instead of silently returning false forever and quietly costing
+ * the exemption. `ruleTarget` also answers for bash, hence the PATH_TOOLS guard
+ * above it rather than after.
+ *
  * Relative paths are resolved against the cwd first, the way the tool itself
  * will resolve them, so `write` with `../../tmp/…` is judged on where it lands
- * rather than on how it was spelled. A null byte rejects: it is never legitimate
- * in a path, and `resolve` would throw on it.
+ * rather than on how it was spelled. A null byte rejects for the ordinary reason
+ * that it is never legitimate in a path — not because anything here would throw
+ * on one; `resolve` carries a NUL through happily, and it is Node's fs layer
+ * that eventually refuses it.
+ *
+ * Takes the `Call` shape rather than four positional arguments: `cwd` and
+ * `scratchDir` are adjacent absolute-directory strings, which is exactly the
+ * pair a positional signature invites a caller to swap.
  */
-export function targetsScratchpad(
-	tool: string,
-	input: Record<string, unknown>,
-	cwd: string,
-	scratchDir: string | undefined,
-): boolean {
+export type ScratchCall = {
+	tool: string;
+	input: Record<string, unknown>;
+	cwd: string;
+	scratchDir?: string;
+};
+
+export function targetsScratchpad(call: ScratchCall): boolean {
+	const { tool, input, cwd, scratchDir } = call;
+
 	if (!scratchDir) return false;
 	if (!PATH_TOOLS.has(tool)) return false;
-
-	const path = input.path;
-	if (typeof path !== "string" || path.length === 0) return false;
-	if (path.includes("\0") || cwd.includes("\0") || scratchDir.includes("\0")) return false;
 	if (!isAbsolute(scratchDir)) return false;
+
+	const path = ruleTarget(tool, input);
+	if (path === undefined || path.length === 0 || path.includes("\0")) return false;
 
 	return isWithin(resolve(cwd, path), scratchDir);
 }

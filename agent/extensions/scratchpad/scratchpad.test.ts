@@ -11,7 +11,7 @@
  */
 
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = mkdtempSync(join(tmpdir(), "scratchpad-test-"));
@@ -25,7 +25,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { CONFIG } = await import("./config.ts");
-const { projectSlug, sessionSegment, scratchpadPath, userRoot } = await import("./paths.ts");
+const { expandRoot, projectSlug, sessionSegment, scratchpadPath } = await import("./paths.ts");
 const { buildPromptBlock } = await import("./prompt.ts");
 const { loadSettings, prepare, list, describeContents } = await import("./index.ts");
 
@@ -70,8 +70,11 @@ console.log("scratchpadPath — the four levels, in order");
 
 const path = scratchpadPath({ tmp: "/tmp", uid: 501, cwd: "/Users/me/app", sessionId: "abc123" });
 eq("the whole layout", path, "/tmp/pi-501/-Users-me-app/abc123/scratchpad");
-eq("the per-user root is the first level", userRoot("/tmp", 501), "/tmp/pi-501");
-eq("no uid (Windows) still gets a root of our own", userRoot("/tmp", undefined), "/tmp/pi-user");
+eq(
+	"no uid (Windows) still gets a per-user root of our own",
+	scratchpadPath({ tmp: "/tmp", uid: undefined, cwd: "/a", sessionId: "s" }),
+	"/tmp/pi-user/-a/s/scratchpad",
+);
 
 const other = scratchpadPath({ tmp: "/tmp", uid: 501, cwd: "/Users/me/app", sessionId: "def456" });
 check("two sessions in one project do not collide", path !== other);
@@ -87,6 +90,18 @@ eq(
 );
 
 // ---------------------------------------------------------------------------
+console.log("expandRoot — a configured root, made absolute");
+
+eq("an absolute root is left alone", expandRoot("/tmp"), "/tmp");
+// A literal `~` directory next to wherever pi was started is the visible half of
+// getting this wrong; the invisible half is that permissions refuses to exempt a
+// scratchpad that is not absolute, so the no-prompt guarantee quietly lapses.
+eq("a bare tilde becomes the home directory", expandRoot("~"), homedir());
+eq("a tilde path is expanded, not treated as a directory name", expandRoot("~/scratch"), join(homedir(), "scratch"));
+check("a relative root is made absolute", expandRoot("scratch").startsWith("/"));
+check("surrounding whitespace does not become a path segment", !expandRoot("  /tmp  ").includes(" "));
+
+// ---------------------------------------------------------------------------
 console.log("loadSettings — defaults, overrides, and a broken file");
 
 eq("no settings file at all leaves the feature on", loadSettings(AGENT).enabled, true);
@@ -99,6 +114,9 @@ eq("root is read", loadSettings(AGENT).root, "/tmp");
 writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: "   " } }));
 eq("a blank root falls back to the default rather than making an empty segment", loadSettings(AGENT).root, "");
 
+writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: "~/scratch" } }));
+eq("a tilde root is expanded on the way in", loadSettings(AGENT).root, join(homedir(), "scratch"));
+
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
 eq("an unparseable settings file does not disable the scratchpad", loadSettings(AGENT).enabled, true);
 
@@ -108,17 +126,15 @@ writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
 console.log("prepare — creating the directory, and surviving not being able to");
 
 const made = join(ROOT, "made", "deep", "scratchpad");
-const result = prepare(made);
-check("a nested path is created recursively", "dir" in result && result.dir === made);
+eq("a nested path is created recursively, with nothing to report", prepare(made), undefined);
 check("it is a directory", statSync(made).isDirectory());
 // The temp directory is shared with every other user on the machine.
 eq("it is created private to this user", statSync(made).mode & 0o777, 0o700);
-check("creating it twice is not an error", "dir" in prepare(made));
+eq("creating it twice is not an error", prepare(made), undefined);
 
 const blocked = join(ROOT, "a-file");
 writeFileSync(blocked, "not a directory");
-const failed = prepare(join(blocked, "scratchpad"));
-check("an impossible path reports rather than throws", "error" in failed);
+check("an impossible path reports the reason rather than throwing", typeof prepare(join(blocked, "scratchpad")) === "string");
 
 // ---------------------------------------------------------------------------
 console.log("list / describeContents — what /scratchpad shows");

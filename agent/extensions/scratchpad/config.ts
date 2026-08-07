@@ -41,9 +41,6 @@ export const ANNOUNCE = {
 };
 
 export const CONFIG = {
-	/** The leaf directory name, under the session directory. */
-	dirName: "scratchpad",
-
 	/**
 	 * Cap on the slugified project path (see paths.ts).
 	 *

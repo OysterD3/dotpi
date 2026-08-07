@@ -119,6 +119,10 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		return { behavior: "allow", reason: `allowed by rule ${allowed.source}`, rule: allowed.source };
 	}
 
+	if (findings.length > 0) {
+		return { behavior: "ask", reason: describe(findings), findings };
+	}
+
 	// The scratchpad, at the allow step and under the allow step's bounds. Not in
 	// `denyAll`: there, an explicit allow rule is the only thing that lets
 	// anything run, and an implicit one written in no settings file should not
@@ -126,12 +130,13 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	// for this session, outside the project, and the model was told in its system
 	// prompt to put scratch files there — so a prompt here is one the user would
 	// approve every time, which is the kind that teaches them to stop reading.
-	if (mode !== "denyAll" && targetsScratchpad(tool, input, cwd, call.scratchDir)) {
+	//
+	// Below the findings re-check rather than above it, though the two cannot
+	// interact — findings exist only for bash, which is not a path tool. Ordering
+	// it this way means "it is bounded by everything an allow rule is bounded by"
+	// can be read off the file instead of proved.
+	if (mode !== "denyAll" && targetsScratchpad(call)) {
 		return { behavior: "allow", reason: "inside this session's scratchpad" };
-	}
-
-	if (findings.length > 0) {
-		return { behavior: "ask", reason: describe(findings), findings };
 	}
 
 	switch (mode) {

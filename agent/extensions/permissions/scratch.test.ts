@@ -71,31 +71,31 @@ check("and the same for /var/folders", isWithin("/private/var/folders/x/T/s/a", 
 // ---------------------------------------------------------------------------
 console.log("targetsScratchpad — which calls it recognises");
 
-check("a write inside", targetsScratchpad("write", { path: FILE }, CWD, SCRATCH));
-check("an edit inside", targetsScratchpad("edit", { path: FILE }, CWD, SCRATCH));
-check("a read inside", targetsScratchpad("read", { path: FILE }, CWD, SCRATCH));
-check("a write outside", !targetsScratchpad("write", { path: "/work/project/src/a.ts" }, CWD, SCRATCH));
+check("a write inside", targetsScratchpad({ tool: "write", input: { path: FILE }, cwd: CWD, scratchDir: SCRATCH }));
+check("an edit inside", targetsScratchpad({ tool: "edit", input: { path: FILE }, cwd: CWD, scratchDir: SCRATCH }));
+check("a read inside", targetsScratchpad({ tool: "read", input: { path: FILE }, cwd: CWD, scratchDir: SCRATCH }));
+check("a write outside", !targetsScratchpad({ tool: "write", input: { path: "/work/project/src/a.ts" }, cwd: CWD, scratchDir: SCRATCH }));
 
 // bash is deliberately not covered: a command is not judged by the paths it
 // mentions, and `curl … > $SCRATCH/x.sh && sh $SCRATCH/x.sh` writes only inside.
-check("bash is never exempted, whatever path it names", !targetsScratchpad("bash", { command: `cat ${FILE}` }, CWD, SCRATCH));
-check("nor is a custom tool with a path argument", !targetsScratchpad("my_tool", { path: FILE }, CWD, SCRATCH));
+check("bash is never exempted, whatever path it names", !targetsScratchpad({ tool: "bash", input: { command: `cat ${FILE}` }, cwd: CWD, scratchDir: SCRATCH }));
+check("nor is a custom tool with a path argument", !targetsScratchpad({ tool: "my_tool", input: { path: FILE }, cwd: CWD, scratchDir: SCRATCH }));
 
-check("no scratchpad announced means nothing is exempt", !targetsScratchpad("write", { path: FILE }, CWD, undefined));
-check("a missing path argument is not a match", !targetsScratchpad("write", {}, CWD, SCRATCH));
-check("a non-string path is not a match", !targetsScratchpad("write", { path: 42 }, CWD, SCRATCH));
-check("an empty path is not a match", !targetsScratchpad("write", { path: "" }, CWD, SCRATCH));
-check("a null byte rejects rather than throwing", !targetsScratchpad("write", { path: `${SCRATCH}/a\0b` }, CWD, SCRATCH));
-check("a relative scratchpad is refused outright", !targetsScratchpad("write", { path: FILE }, CWD, "scratchpad"));
+check("no scratchpad announced means nothing is exempt", !targetsScratchpad({ tool: "write", input: { path: FILE }, cwd: CWD, scratchDir: undefined }));
+check("a missing path argument is not a match", !targetsScratchpad({ tool: "write", input: {}, cwd: CWD, scratchDir: SCRATCH }));
+check("a non-string path is not a match", !targetsScratchpad({ tool: "write", input: { path: 42 }, cwd: CWD, scratchDir: SCRATCH }));
+check("an empty path is not a match", !targetsScratchpad({ tool: "write", input: { path: "" }, cwd: CWD, scratchDir: SCRATCH }));
+check("a null byte rejects rather than throwing", !targetsScratchpad({ tool: "write", input: { path: `${SCRATCH}/a\0b` }, cwd: CWD, scratchDir: SCRATCH }));
+check("a relative scratchpad is refused outright", !targetsScratchpad({ tool: "write", input: { path: FILE }, cwd: CWD, scratchDir: "scratchpad" }));
 
 // Judged on where it lands, not how it was spelled.
 check(
 	"a relative path is resolved against the cwd first",
-	targetsScratchpad("write", { path: "../../tmp/pi-501/-work-project/abc123/scratchpad/a.md" }, CWD, SCRATCH),
+	targetsScratchpad({ tool: "write", input: { path: "../../tmp/pi-501/-work-project/abc123/scratchpad/a.md" }, cwd: CWD, scratchDir: SCRATCH }),
 );
 check(
 	"a traversal out of the scratchpad is not exempt",
-	!targetsScratchpad("write", { path: `${SCRATCH}/../../../../../etc/hosts` }, CWD, SCRATCH),
+	!targetsScratchpad({ tool: "write", input: { path: `${SCRATCH}/../../../../../etc/hosts` }, cwd: CWD, scratchDir: SCRATCH }),
 );
 
 // ---------------------------------------------------------------------------
