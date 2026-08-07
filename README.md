@@ -815,6 +815,76 @@ told about it.
 | `config.ts` | Settings, the announcement channel, caps |
 | `scratchpad.test.ts` | Layout, settings, creation, and the wiring against a fake pi |
 
+**`agent/extensions/skill-loading/`** — decide, per skill, what it costs you every turn. Adds
+`/skills`:
+
+```
+name (2) — Listed for the model to find and read. pi's default.
+  dataviz
+  skill-creator
+
+command (6) — Hidden from the prompt. Still reachable with /skill:<name>.
+  chrome-devtools-mcp:a11y-debugging
+  chrome-devtools-mcp:troubleshooting
+  pptx
+  ...
+
+preload (1) — Listed, and its whole body is in the prompt already.
+  design-principles
+
+Saving about 2,400 characters (~600 tokens) per request.
+Hidden skills are still available as /skill:<name>.
+```
+
+**First, the thing worth knowing before you tune anything: pi never puts a skill's body in the
+prompt.** `formatSkillsForPrompt` emits name, description and path per skill, and the model reads
+the file when a task matches. So the popular worry — "my skills are eating my context" — is already
+mostly handled, and this extension is not a fix for a leak. What it addresses is the residue: that
+listing is fixed cost, paid on every request, for skills this session was never going to touch. Six
+skills from one MCP package is a few hundred tokens a turn to advertise things you invoke by hand.
+
+Three modes, set by name or glob:
+
+```jsonc
+{ "skillLoading": { "skills": {
+    "chrome-devtools-mcp:*": "command",   // hidden; /skill:<name> still works
+    "pptx": "command",
+    "dataviz": "preload"                  // body inlined, no read round trip
+} } }
+```
+
+`command` is the one that reads wrong at first, because "hidden" sounds like "disabled" and is not.
+pi builds its `/skill:<name>` commands from the loaded skill list, not from what reached the prompt
+(`modes/interactive/interactive-mode.js`), so hiding costs the model the ability to *notice* the
+skill and costs you nothing else. For a deck generator or a scaffolder that is the whole
+transaction: you already know when you want it. `preload` goes the other way and inlines the body,
+so the model can act without stopping to read — worth it for the one skill that applies to nearly
+every turn, and budgeted (12k chars per skill, 24k total) because a preloaded body is re-sent
+forever.
+
+**It edits pi's own block rather than reimplementing discovery.** pi has no hook that removes a
+skill — `resources_discover` only *adds* paths, and `skillsOverride` is an SDK option an extension
+never sees — so the lever is `before_agent_start`, which can return a replacement system prompt.
+Rewriting pi's output has a real advantage over re-deriving it: the list being edited *is* the list
+pi loaded, names and absolute paths included, across every directory and package that contributed
+one, so this cannot disagree with pi about what exists. The cost is a dependency on a format this
+repo does not own, so every step **fails open** — an absent block, an unterminated one, or entries
+that do not parse all leave the prompt byte-identical. Installing this and configuring nothing
+changes not one token, which the tests assert directly.
+
+The tests build their fixture with pi's *real* `formatSkillsForPrompt`, imported by filesystem path
+past the package's `exports` map. A hand-written fixture would keep passing on the day pi changes
+its format, which is the one failure this extension has to notice.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Settings, the rewrite, `/skills` |
+| `parse.ts` | Finding and rewriting the `<available_skills>` block (pure) |
+| `select.ts` | Names and globs to a mode, most specific first (pure) |
+| `body.ts` | Preloaded bodies, frontmatter-stripped and budgeted |
+| `config.ts` | The modes and what each one costs |
+| `skill-loading.test.ts` | Round trip against pi's own formatter |
+
 **`agent/extensions/recap/`** — adds `/recap`, an "away summary": a one- or two-line plain-text
 summary of where the session stands.
 

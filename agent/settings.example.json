@@ -87,6 +87,16 @@
     "enabled": true,
     "root": ""
   },
+  "skillLoading": {
+    "enabled": true,
+    "default": "name",
+    "skills": {
+      "chrome-devtools-mcp:*": "command",
+      "pptx": "command"
+    },
+    "maxCharsPerSkill": 12000,
+    "maxChars": 24000
+  },
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#6956615",
     "npm:pi-web-access@0.17.1",
