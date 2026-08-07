@@ -372,6 +372,13 @@ const SCRATCH_ROOTS = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/
  *     second rule to know a first one is safe is how holes are made.)
  *   - A `..` segment anywhere rejects: `/tmp/../etc` is under the prefix as a
  *     string and nowhere near it on disk.
+ *   - A glob in the FIRST segment below the root rejects, which is the same rule
+ *     as the one above it wearing a different coat: `rm -rf /tmp/*` empties all
+ *     of scratch space — every other process's sockets and working files — and
+ *     is a delete OF it, not of something in it. `/tmp/.*` is worse, since it
+ *     has historically expanded over `..`. A glob deeper down is fine, because
+ *     the directory it is confined to was named literally: `/tmp/bench/*` can
+ *     only reach inside `/tmp/bench`.
  *   - A trailing slash rejects. BSD `rm -rf /tmp/link/` follows the symlink that
  *     `rm -rf /tmp/link` would merely unlink, and telling those apart needs the
  *     filesystem. The miss costs one prompt.
@@ -400,6 +407,10 @@ export function deletesOnlyScratch(segment: string): boolean {
 		const root = SCRATCH_ROOTS.find((prefix) => token.startsWith(prefix));
 		if (!root) return false;
 		if (token.length <= root.length) return false;
+
+		// The directory immediately below the root has to be named, not matched.
+		const below = token.slice(root.length).split("/", 1)[0] ?? "";
+		if (/[*?[]/.test(below)) return false;
 
 		targets++;
 	}

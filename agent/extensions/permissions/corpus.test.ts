@@ -152,6 +152,11 @@ const DANGEROUS = [
 	// A quote anywhere rejects rather than being parsed a second way. The cost is
 	// this line: a scratch delete with a space in it still asks.
 	"rm -rf '/tmp/with space'",
+	// A glob directly below the root empties all of scratch space — every other
+	// process's sockets and working files — so it is a delete OF it, not of
+	// something in it, exactly like the bare `rm -rf /tmp` above.
+	"rm -rf /tmp/*", "rm /tmp/*", "rm -rf /var/folders/*", "rm -rf /tmp/.*",
+	"rm -rf /private/tmp/*", "rm -rf /tmp/?", "rm -rf /tmp/[a-z]*",
 ];
 
 let failures = 0;
