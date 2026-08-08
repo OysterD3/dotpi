@@ -205,12 +205,14 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`Cannot use "${arg}" as an advisor: ${resolved.error}.`, "error");
 				return;
 			}
-			// The override is stored canonical, but a level the argument carried
-			// (`/advisor frontier` mapping to "…opus-5:high") is user-written
-			// configuration and must survive the canonicalization — the same
-			// reference set as advisor.model would keep it. Reattached, it splits
-			// back off identically on every later resolve, so the spawn honors it.
-			sessionModel = resolved.thinking ? `${modelRef(resolved.model)}:${resolved.thinking}` : modelRef(resolved.model);
+			// The override is stored AS TYPED, the same contract as the --advisor
+			// flag above. Canonicalizing would have to reattach a carried level to
+			// the canonical id, and "provider/id:level" can collide with a
+			// registry id that literally ends in a level name — the full-first
+			// rule would then match that other model on every later resolve and
+			// drop the level. The typed string re-resolves by the same rules each
+			// time, so what was validated here is what the spawn gets.
+			sessionModel = arg;
 			sessionOff = false;
 			syncActive(ctx);
 			ctx.ui.notify(

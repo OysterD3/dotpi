@@ -132,6 +132,30 @@ export function profileFor(block: ModelsBlock, name: string | undefined): Profil
 }
 
 /**
+ * Decide what a session reference means against the registry.
+ *
+ * The full reference is tried first — a model whose id genuinely ends in a
+ * level name keeps it — and the split is committed only when the registry
+ * confirms the bare reference. On a double miss the configured string stays an
+ * unsplittable literal, the reading every consumer gives it: a genuine-colon
+ * id merely absent from the registry at switch time must not be persisted
+ * mangled, and a level that never resolved must not clobber the one the user
+ * last set.
+ */
+export function splitSession(
+	session: string | undefined,
+	resolves: (reference: string) => boolean,
+): { reference?: string; thinking?: string; resolved: boolean } {
+	if (!session) return { resolved: false };
+	if (resolves(session)) return { reference: session, resolved: true };
+	const split = splitThinking(session);
+	if (split.thinking && resolves(split.reference)) {
+		return { reference: split.reference, thinking: split.thinking, resolved: true };
+	}
+	return { reference: session, resolved: false };
+}
+
+/**
  * What changes when the active profile becomes `next`.
  *
  * Reported before anything is written, because "switched provider" is a claim

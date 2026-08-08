@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseBlock, planSwitch, profileFor, resolveRole, splitThinking } from "./roles.ts";
+import { parseBlock, planSwitch, profileFor, resolveRole, splitSession, splitThinking } from "./roles.ts";
 import { readSettings, writeActive } from "./settings.ts";
 
 let failures = 0;
@@ -99,6 +99,39 @@ console.log("splitThinking — a trailing :level splits, anything else is the id
 	eq("and whitespace-tolerant", splitThinking("a/b: high").thinking, "high");
 	eq("a lone :level is not a reference to split", splitThinking(":high").reference, ":high");
 	eq("an empty base refuses to split", splitThinking(" :high").reference, " :high");
+}
+
+// ---------------------------------------------------------------------------
+console.log("splitSession — the split is committed only when the registry confirms it");
+
+{
+	const knows = (...known: string[]) => (reference: string) => known.includes(reference);
+
+	// The full reference winning means an id genuinely ending in a level name
+	// is never split at all.
+	check(
+		"a full match keeps the whole reference",
+		JSON.stringify(splitSession("or/llama-3:max", knows("or/llama-3:max"))) ===
+			JSON.stringify({ reference: "or/llama-3:max", resolved: true }),
+	);
+	check(
+		"a confirmed split carries the level",
+		JSON.stringify(splitSession("a/b:high", knows("a/b"))) ===
+			JSON.stringify({ reference: "a/b", thinking: "high", resolved: true }),
+	);
+
+	// The failure the review caught: a double miss must NOT persist the split.
+	// The configured string stays an unsplittable literal — a genuine-colon id
+	// merely absent from the registry comes back intact, and no level that
+	// never resolved is written over the one the user last set.
+	const doubleMiss = splitSession("or/llama-3:max", knows());
+	eq("a double miss keeps the configured string", doubleMiss.reference, "or/llama-3:max");
+	check("and carries no level", doubleMiss.thinking === undefined);
+	eq("and reports itself unresolved", doubleMiss.resolved, false);
+
+	const plainMiss = splitSession("a/nope", knows());
+	eq("a suffix-less miss is unchanged too", plainMiss.reference, "a/nope");
+	eq("no session role decides nothing", JSON.stringify(splitSession(undefined, knows("a/b"))), JSON.stringify({ resolved: false }));
 }
 
 // ---------------------------------------------------------------------------

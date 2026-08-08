@@ -643,11 +643,11 @@ function makePi() {
 	};
 	// isIdle defaults to false: a tool_call always lands mid-turn (see index.ts's
 	// resurface handler), so that is the realistic case to exercise by default.
-	const uiCtx = (model: { id: string; provider: string }, opts: { isIdle?: boolean } = {}) => ({
+	const uiCtx = (model: { id: string; provider: string }, opts: { isIdle?: boolean; registry?: typeof MODELS } = {}) => ({
 		hasUI: true,
 		cwd: ROOT,
 		model,
-		modelRegistry: { getAll: () => MODELS },
+		modelRegistry: { getAll: () => opts.registry ?? MODELS },
 		isIdle: () => opts.isIdle ?? false,
 		ui: {
 			setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
@@ -745,9 +745,9 @@ console.log("\n--- /advisor command ---");
 
 console.log("\n--- /advisor keeps a carried level ---");
 {
-	// The override is stored canonical, so a level the argument carried has to
-	// survive that canonicalization on purpose — otherwise `/advisor opus:high`
-	// would silently drop configuration that `advisor.model: "opus:high"` honors.
+	// The override is stored as typed, so `/advisor opus:high` keeps the level
+	// the same way `advisor.model: "opus:high"` does: the string re-resolves by
+	// the same rules on every later use.
 	writeSettings({});
 	const h = makePi();
 	extension(h.pi as never);
@@ -769,6 +769,32 @@ console.log("\n--- /advisor keeps a carried level ---");
 	await advisor.handler("opus", ctx);
 	await advisor.handler("status", ctx);
 	checkTrue("a bare override says nothing about thinking", !h.notices.at(-1)![1].includes("thinking"));
+}
+
+console.log("\n--- /advisor override survives a colliding registry id ---");
+{
+	// Why the override is stored as typed rather than canonicalized:
+	// reattaching the level to the canonical id would store "or/foo:high",
+	// and a registry id that literally ends in a level name full-matches that
+	// string — every later resolve would silently switch to the other model
+	// and drop the level. The typed string re-resolves to what was validated.
+	writeSettings({});
+	const h = makePi();
+	extension(h.pi as never);
+	const COLLIDING = [
+		{ id: "foo", name: "Alpha", provider: "or", contextWindow: 64_000 },
+		{ id: "foo:high", name: "Beta", provider: "or", contextWindow: 64_000 },
+	];
+	const ctx = h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" }, { registry: COLLIDING });
+	h.events.get("session_start")!({}, ctx);
+	const advisor = h.commands.get("advisor");
+
+	await advisor.handler("Alpha:high", ctx);
+	check("the chip shows the model the user named", h.statuses.at(-1), ["advisor", "✦ advisor: foo"]);
+	await advisor.handler("status", ctx);
+	const status = h.notices.at(-1)![1];
+	checkTrue("later resolves keep the carried level", status.includes("at high thinking"));
+	checkTrue("and never defect to the colliding id", !status.includes("foo:high"));
 }
 
 // Kill switch: enabled=false keeps the tool off even with a model set.
