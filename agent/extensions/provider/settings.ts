@@ -48,8 +48,15 @@ export type WriteResult = { ok: true } | { ok: false; error: string };
  * concretely. Writing them is what makes the switch survive a restart; the live
  * session is moved separately with `pi.setModel`, because the file alone would
  * not change the model you are talking to right now.
+ *
+ * `sessionReference` must arrive with any `:level` suffix already split off —
+ * the caller has the model registry and so owns the suffix-or-id call — because
+ * pi reads `defaultModel` and `defaultThinkingLevel` as separate keys and would
+ * not parse a suffixed id. A `thinkingLevel` is written out; its absence leaves
+ * the existing `defaultThinkingLevel` untouched, so profiles that never state a
+ * level keep whatever the user last set.
  */
-export function writeActive(agentDir: string, active: string, sessionReference?: string): WriteResult {
+export function writeActive(agentDir: string, active: string, sessionReference?: string, thinkingLevel?: string): WriteResult {
 	const path = settingsPath(agentDir);
 
 	let current: Record<string, unknown>;
@@ -83,6 +90,8 @@ export function writeActive(agentDir: string, active: string, sessionReference?:
 			current.defaultModel = sessionReference;
 		}
 	}
+
+	if (thinkingLevel) current.defaultThinkingLevel = thinkingLevel;
 
 	const temporary = `${path}.provider-${process.pid}.tmp`;
 	try {

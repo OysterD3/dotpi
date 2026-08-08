@@ -6,13 +6,20 @@
  *   "models": {
  *     "active": "openai",
  *     "providers": {
- *       "openai":    { "session": "openai-codex/gpt-5.6-sol", "cheap": "openai-codex/gpt-5.4-mini" },
- *       "anthropic": { "session": "anthropic/claude-opus-4-5", "cheap": "anthropic/claude-haiku-4-5" }
+ *       "openai":    { "session": "openai-codex/gpt-5.6-sol:max", "cheap": "openai-codex/gpt-5.4-mini" },
+ *       "anthropic": { "session": "anthropic/claude-opus-4-5:high", "cheap": "anthropic/claude-haiku-4-5" }
  *     }
  *   }
  *
  * Extensions then name a ROLE where they used to name a model —
  * `permissions.auto.model: "cheap"` — and switching provider is one key.
+ *
+ * A reference may end in `:level` (pi's own `--model` syntax; one of off,
+ * minimal, low, medium, high, xhigh, max) to say what thinking level that
+ * model should run at. Each model carries its own, because levels are not
+ * portable across models: the level that suits one is a waste or an
+ * unsupported request on another. The suffix is optional everywhere, and a
+ * profile that never states one leaves the level alone on switch.
  *
  * ## Shared by string, not by module
  *

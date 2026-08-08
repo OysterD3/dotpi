@@ -3,12 +3,12 @@
  *
  * Pure apart from one `readFileSync`, so the whole policy is testable.
  *
- * `resolveRole` below is the part that gets COPIED into each extension that
- * resolves models — fifteen lines, deliberately self-contained, with no imports
- * beyond node's. Extensions here may not import across boundaries, and a role
- * map that only worked when some other extension happened to be installed would
- * be worse than none. Copy it whole; do not import this file from another
- * extension.
+ * `resolveRole` and `splitThinking` below are the parts that get COPIED into
+ * each extension that resolves models — deliberately self-contained, with no
+ * imports beyond node's. Extensions here may not import across boundaries, and
+ * a role map that only worked when some other extension happened to be
+ * installed would be worse than none. Copy them whole; do not import this file
+ * from another extension.
  *
  * Every failure returns the reference unchanged. A missing block, a malformed
  * one, an unreadable settings.json, a role nobody defined — all mean "this was
@@ -47,6 +47,26 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` off a model reference.
+ *
+ * The suffix is pi's own `--model` syntax (`provider/id:high`), so a role can
+ * carry the thinking level the model should run at. Only pi's seven levels
+ * split; any other suffix stays part of the id, because ids with colons are
+ * real (OpenRouter ships `deepseek/deepseek-chat:free`). Callers that match
+ * against a model registry must try the FULL reference first and split only
+ * when that misses — the same order as pi's parseModelPattern, and the only
+ * defence for a model id that genuinely ends in a level name.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }
 
 // ---------------------------------------------------------------------------

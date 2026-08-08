@@ -12,13 +12,16 @@
  *   "models": {
  *     "active": "openai",
  *     "providers": {
- *       "openai":    { "session": "openai-codex/gpt-5.6-sol",  "cheap": "openai-codex/gpt-5.4-mini" },
- *       "anthropic": { "session": "anthropic/claude-opus-4-5", "cheap": "anthropic/claude-haiku-4-5" }
+ *       "openai":    { "session": "openai-codex/gpt-5.6-sol:max",  "cheap": "openai-codex/gpt-5.4-mini" },
+ *       "anthropic": { "session": "anthropic/claude-opus-4-5:high", "cheap": "anthropic/claude-haiku-4-5" }
  *     }
  *   }
  *
  * With `permissions.auto.model: "cheap"` and `advisor.model: "session"`,
- * `/provider anthropic` moves all of it at once.
+ * `/provider anthropic` moves all of it at once. A reference may end in
+ * `:level` — pi's own `--model` syntax — to pin the thinking level that model
+ * runs at; the session role's level is applied live and persisted as
+ * `defaultThinkingLevel`.
  *
  *   config.ts    the contract, and the reserved `session` role
  *   roles.ts     reading the block; resolveRole is the copied part
@@ -31,7 +34,7 @@
 
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG, SESSION_ROLE, SETTINGS_KEY } from "./config.ts";
-import { parseBlock, planSwitch, profileFor, type ModelsBlock } from "./roles.ts";
+import { parseBlock, planSwitch, profileFor, splitThinking, type ModelsBlock } from "./roles.ts";
 import { readSettings, settingsPath, writeActive } from "./settings.ts";
 
 function load(agentDir: string): { block: ModelsBlock; warnings: string[] } {
@@ -111,7 +114,26 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const written = writeActive(agentDir, text, plan.session);
+			// The session reference may carry a `:level` suffix. Whether that
+			// trailing token is a thinking level or part of the id is the
+			// registry's call: the full reference is tried first, and only a miss
+			// splits — so a model whose id genuinely ends in a level name keeps it.
+			const registry = ctx.modelRegistry.getAll();
+			const find = (reference: string) =>
+				registry.find((model) => `${model.provider}/${model.id}`.toLowerCase() === reference.toLowerCase());
+			let sessionReference = plan.session;
+			let thinking: string | undefined;
+			let target = plan.session ? find(plan.session) : undefined;
+			if (plan.session && !target) {
+				const split = splitThinking(plan.session);
+				if (split.thinking) {
+					sessionReference = split.reference;
+					thinking = split.thinking;
+					target = find(split.reference);
+				}
+			}
+
+			const written = writeActive(agentDir, text, sessionReference, thinking);
 			if (!written.ok) {
 				ctx.ui.notify(`Could not switch: ${written.error}`, "error");
 				return;
@@ -126,17 +148,23 @@ export default function (pi: ExtensionAPI) {
 			// the model answering you is still the old one until a restart, which is
 			// the kind of half-applied state that gets blamed on the model.
 			if (plan.session) {
-				const target = ctx.modelRegistry
-					.getAll()
-					.find((model) => `${model.provider}/${model.id}`.toLowerCase() === plan.session!.toLowerCase());
 				if (!target) {
-					report.push("", `The ${SESSION_ROLE} role names ${plan.session}, which is not a model pi knows. Session model unchanged.`);
+					report.push("", `The ${SESSION_ROLE} role names ${sessionReference}, which is not a model pi knows. Session model unchanged.`);
 				} else if (!(await pi.setModel(target))) {
 					// setModel's own answer, not a guess: it returns false when the
 					// provider has no usable credential.
-					report.push("", `Switched on disk, but ${plan.session} has no API key configured — the session model is unchanged.`);
+					report.push("", `Switched on disk, but ${sessionReference} has no API key configured — the session model is unchanged.`);
 				} else {
-					report.push("", `Session model is now ${plan.session}.`);
+					// Level after model, because pi clamps the level to what the model
+					// supports — and the applied level is read back so a clamp is
+					// reported instead of silently pretending the request took.
+					let note = "";
+					if (thinking) {
+						pi.setThinkingLevel(thinking as Parameters<typeof pi.setThinkingLevel>[0]);
+						const applied = pi.getThinkingLevel();
+						note = applied === thinking ? ` (thinking: ${thinking})` : ` (thinking: ${thinking}, applied as ${applied})`;
+					}
+					report.push("", `Session model is now ${sessionReference}${note}.`);
 				}
 			} else {
 				report.push("", `This profile defines no "${SESSION_ROLE}" role, so the session model is unchanged.`);

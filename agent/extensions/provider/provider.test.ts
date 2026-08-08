@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseBlock, planSwitch, profileFor, resolveRole } from "./roles.ts";
+import { parseBlock, planSwitch, profileFor, resolveRole, splitThinking } from "./roles.ts";
 import { readSettings, writeActive } from "./settings.ts";
 
 let failures = 0;
@@ -76,6 +76,30 @@ eq("active names no profile", resolveRole("cheap", agentDirWith({ models: { acti
 eq("providers is not an object", resolveRole("cheap", agentDirWith({ models: { active: "a", providers: 7 } })), "cheap");
 eq("the role maps to a non-string", resolveRole("cheap", agentDirWith({ models: { active: "a", providers: { a: { cheap: 7 } } } })), "cheap");
 eq("the role maps to blank", resolveRole("cheap", agentDirWith({ models: { active: "a", providers: { a: { cheap: "  " } } } })), "cheap");
+
+// ---------------------------------------------------------------------------
+console.log("splitThinking — a trailing :level splits, anything else is the id");
+
+{
+	for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+		const split = splitThinking(`anthropic/claude-opus-5:${level}`);
+		eq(`:${level} splits`, split.thinking, level);
+		eq(`and leaves the reference bare`, split.reference, "anthropic/claude-opus-5");
+	}
+
+	// Ids with colons are real — OpenRouter ships them — so an unknown suffix
+	// must stay part of the id, not vanish.
+	eq("an unknown suffix stays put", splitThinking("openrouter/deepseek-chat:free").reference, "openrouter/deepseek-chat:free");
+	check("and carries no level", splitThinking("openrouter/deepseek-chat:free").thinking === undefined);
+	eq("only the LAST colon is the seam", splitThinking("openrouter/model:free:high").reference, "openrouter/model:free");
+	eq("with the level split off", splitThinking("openrouter/model:free:high").thinking, "high");
+
+	eq("no suffix passes through", splitThinking("openai-codex/gpt-5.6-sol").reference, "openai-codex/gpt-5.6-sol");
+	eq("the level is case-insensitive", splitThinking("a/b:HIGH").thinking, "high");
+	eq("and whitespace-tolerant", splitThinking("a/b: high").thinking, "high");
+	eq("a lone :level is not a reference to split", splitThinking(":high").reference, ":high");
+	eq("an empty base refuses to split", splitThinking(" :high").reference, " :high");
+}
 
 // ---------------------------------------------------------------------------
 console.log("parseBlock — one bad entry does not cost the rest");
@@ -170,6 +194,28 @@ console.log("writeActive — preserves everything it does not own");
 	writeActive(noSession, "b", undefined);
 	eq("no session role, no change to defaultModel", readSettings(noSession).defaultModel, "keep");
 	eq("but active still moves", (readSettings(noSession).models as { active: string }).active, "b");
+}
+
+// ---------------------------------------------------------------------------
+console.log("writeActive — a thinking level persists, its absence changes nothing");
+
+{
+	// The level rides along with the model because pi reads them as separate
+	// keys: a suffixed defaultModel would name a model that does not exist.
+	const dir = agentDirWith({ defaultThinkingLevel: "max", models: BLOCK.models });
+	writeActive(dir, "anthropic", "anthropic/claude-opus-4-5", "high");
+	eq("the level is written", readSettings(dir).defaultThinkingLevel, "high");
+	eq("next to the split model", readSettings(dir).defaultModel, "claude-opus-4-5");
+
+	// A profile that states no level must not clobber the one the user set by
+	// hand — that is the same "absent means untouched" rule as everything else.
+	const silent = agentDirWith({ defaultThinkingLevel: "max", models: BLOCK.models });
+	writeActive(silent, "anthropic", "anthropic/claude-opus-4-5");
+	eq("no level leaves defaultThinkingLevel alone", readSettings(silent).defaultThinkingLevel, "max");
+
+	const never = agentDirWith({ models: BLOCK.models });
+	writeActive(never, "anthropic", "anthropic/claude-opus-4-5");
+	check("and does not invent one", readSettings(never).defaultThinkingLevel === undefined);
 }
 
 // ---------------------------------------------------------------------------
