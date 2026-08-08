@@ -1,8 +1,8 @@
 /**
  * provider — switch every model this config uses, in one command.
  *
- * Six extensions here resolve a model reference of their own (advisor, goal,
- * permissions' auto classifier, recap, subagents, ultracode), and pi has its
+ * Seven extensions here resolve a model reference of their own (advisor, goal,
+ * permissions' auto classifier, recap, session-ref, subagents, ultracode), and pi has its
  * own `defaultProvider`/`defaultModel` on top. Written out concretely, changing
  * provider means finding eight fully-qualified `provider/id` strings across two
  * files — and every one you miss goes on quietly billing the old provider.

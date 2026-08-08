@@ -3,7 +3,7 @@
  *
  *     pnpm dlx jiti agent/extensions/provider/provider.test.ts
  *
- * Two things carry the weight. `resolveRole` is copied into six other
+ * Two things carry the weight. `resolveRole` is copied into seven other
  * extensions, so its fallback behaviour is the contract they all depend on —
  * anything unusable must return the reference untouched, because that is what
  * every one of those settings meant before roles existed. And `writeActive`
@@ -46,7 +46,7 @@ const BLOCK = {
 };
 
 // ---------------------------------------------------------------------------
-console.log("\nresolveRole — the contract the other six extensions copy");
+console.log("\nresolveRole — the contract the other seven extensions copy");
 
 {
 	const dir = agentDirWith(BLOCK);
@@ -309,6 +309,7 @@ console.log("the copies have not drifted");
 			"advisor/models.ts",
 			"ultracode/models.ts",
 			"subagents/models.ts",
+			"session-ref/model.ts",
 		]) {
 			const path = join(extensions, copy);
 			if (!existsSync(path)) {

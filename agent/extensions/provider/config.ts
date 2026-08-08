@@ -23,7 +23,7 @@
  *
  * ## Shared by string, not by module
  *
- * Six extensions here resolve model references, each with its own copy of the
+ * Seven extensions here resolve model references, each with its own copy of the
  * matching rules, because every extension in this repo installs independently
  * and may not import across boundaries. This block is the same kind of contract
  * as the `usage:spend` channel: a shape both sides agree on, duplicated in a

@@ -617,8 +617,8 @@ nor, in auto mode, anything a model was talked out of naming.
 
 **`agent/extensions/provider/`** — adds `/provider`: switch every model this config uses, at once.
 
-Six extensions here resolve a model reference of their own — advisor, goal, permissions' auto
-classifier, recap, subagents, ultracode — and pi has `defaultProvider`/`defaultModel` on top.
+Seven extensions here resolve a model reference of their own — advisor, goal, permissions' auto
+classifier, recap, session-ref, subagents, ultracode — and pi has `defaultProvider`/`defaultModel` on top.
 Written out concretely, changing provider means finding eight fully-qualified `provider/id` strings
 across two files, and every one you miss goes on quietly billing the old provider.
 
@@ -656,9 +656,9 @@ leaves your current level alone. Splitting is registry-aware in the other direct
 reference is matched first and the split is committed only when the registry confirms the bare
 reference, so an id that genuinely ends in a level-shaped token — OpenRouter ships
 `deepseek/deepseek-chat:free`-style ids — is never mangled, and a reference the registry cannot
-confirm at all is persisted exactly as configured, level untouched. The six role consumers resolve
+confirm at all is persisted exactly as configured, level untouched. The role consumers resolve
 suffixed values the same way (`splitThinking` is copied and drift-locked alongside `resolveRole`);
-recap, goal, permissions, and ultracode strip the level because their thinking is task-pinned,
+recap, goal, permissions, session-ref, and ultracode strip the level because their thinking is task-pinned,
 while advisor and subagents honor it — explicit pin beats the carried level beats the fallback.
 Changing the level live has one audible side effect: ultracode exits its mode when the level moves
 under it, and says so itself.
@@ -672,7 +672,7 @@ you are running, so pointing it at `session` quietly defeats it.
 **The map is a data contract, not a module.** Every extension here installs independently and may
 not import across boundaries, so each carries its own fifteen-line reader — the same arrangement as
 the `usage:spend` channel. Consequences worth knowing: this extension is optional (roles work
-without it; you just edit `models.active` by hand), and `provider.test.ts` asserts the six copies
+without it; you just edit `models.active` by hand), and `provider.test.ts` asserts the seven copies
 have not drifted from the original, so a fix in one is not silently missing from the others.
 
 Every failure returns the reference untouched — no block, a malformed one, an unreadable
@@ -997,6 +997,41 @@ where your transcript is sent.
 | `render.ts` | The recap entry's appearance (pure) |
 | `config.ts` | Limits and constants |
 | `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
+
+**`agent/extensions/session-ref/`** — adds `/ref`: tag another session into this one, as a summary
+or its full transcript.
+
+```
+/ref              # pick from this project's sessions (all projects on request)
+/ref dark mode    # filter by name, id, or anything said in the session
+```
+
+Pick a session, then pick HOW it comes in. **Summary** is a structured handoff (goal, done,
+decisions, state, open items) written by the cheap-role model — the same zero-config policy as
+recap: the `cheap` role when the role map defines it, the session model otherwise. **Full** is the
+flattened transcript (messages and tool-call lines; tool results are not replayed), and it is
+always behind a confirm that states the price in tokens against the context you actually have
+LEFT, not the window on paper — the injection becomes part of this session's context and re-costs
+on every future turn. When it cannot fit, the oldest messages drop first and the drop is said out
+loud.
+
+Three details worth knowing. The injected block is a custom *message* entry — it enters LLM
+context, unlike a display entry — wrapped with provenance (name, id, date, the referenced
+session's cwd) and one guard line marking the transcript as record, not fresh instructions. A
+rewound session contributes only the branch it would itself resume with — pi's own
+compaction-aware walk from the file's last entry — never the abandoned forks. And every dialog
+step escapes cleanly; nothing is injected until the last one.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | The `/ref` command, the dialogs, and the injected message's renderer |
+| `sessions.ts` | Picker rules (pure) and loading the chosen branch |
+| `transcript.ts` | Branch → budgeted plain text (recap's flattening, adapted) |
+| `summarize.ts` | The handoff-summary call |
+| `model.ts` | Cheap-role model policy (recap's, copied) |
+| `prompts.ts` | Summariser prompt + the injected block |
+| `config.ts` | Budgets and thresholds |
+| `session-ref.test.ts` | Picker rules, branch loading, budgets, and the wiring end-to-end |
 
 **`agent/extensions/ultracode/`** — ultracode: a `workflow` tool that orchestrates fleets of
 subagents from a script, and the triggers that opt the model into using it.
