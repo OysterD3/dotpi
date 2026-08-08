@@ -629,9 +629,9 @@ So a setting names a **role**, and roles are defined per provider:
 "models": {
   "active": "openai",
   "providers": {
-    "openai":    { "session": "openai-codex/gpt-5.6-sol", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-terra", "cheap": "openai-codex/gpt-5.6-luna" },
-    "anthropic": { "session": "anthropic/claude-opus-5",  "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" },
-    "qoder":     { "session": "qoder/ultimate",           "frontier": "qoder/ultimate",           "fast": "qoder/auto",                "cheap": "qoder/lite" }
+    "openai":    { "session": "openai-codex/gpt-5.6-sol:max", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-terra", "cheap": "openai-codex/gpt-5.6-luna" },
+    "anthropic": { "session": "anthropic/claude-opus-5:high", "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" },
+    "qoder":     { "session": "qoder/ultimate",               "frontier": "qoder/ultimate",           "fast": "qoder/auto",                "cheap": "qoder/lite" }
   }
 },
 
@@ -644,6 +644,24 @@ role became. `/provider` on its own shows where things stand. Role names are you
 the only reserved one, and it is what `/provider` writes into pi's `defaultProvider`/`defaultModel`
 and pushes into the running session with `setModel`. Those two keys can't be roles themselves: pi
 resolves them before any extension runs.
+
+**A reference may end in `:level`** — pi's own `--model` syntax, one of `off` `minimal` `low`
+`medium` `high` `xhigh` `max` — to pin the thinking level that model runs at. The level rides with
+the model, not the profile, because levels are not portable: `max` is right for one session model
+and a waste or an unsupported request on another, and a mixed profile holds both at once. On
+switch, the `session` role's level is applied live (`setModel` first — pi clamps the level to what
+the model supports, and the applied level is read back and reported when it differs) and persisted
+as `defaultThinkingLevel` next to the split-off `defaultModel`; a profile that states no level
+leaves your current level alone. Splitting is registry-aware in the other direction too: the full
+reference is matched first and the split is committed only when the registry confirms the bare
+reference, so an id that genuinely ends in a level-shaped token — OpenRouter ships
+`deepseek/deepseek-chat:free`-style ids — is never mangled, and a reference the registry cannot
+confirm at all is persisted exactly as configured, level untouched. The six role consumers resolve
+suffixed values the same way (`splitThinking` is copied and drift-locked alongside `resolveRole`);
+recap, goal, permissions, and ultracode strip the level because their thinking is task-pinned,
+while advisor and subagents honor it — explicit pin beats the carried level beats the fallback.
+Changing the level live has one audible side effect: ultracode exits its mode when the level moves
+under it, and says so itself.
 
 **`session` and `frontier` are worth keeping apart even when they name the same model**, which they
 do above. They answer different questions — what you talk to, versus the best thing available — and
@@ -670,7 +688,7 @@ where it was. `setModel` returns false in that case, so that is reported rather 
 | File | Role |
 | --- | --- |
 | `index.ts` | The `/provider` command |
-| `roles.ts` | Reading the block; **`resolveRole` is the copied part** |
+| `roles.ts` | Reading the block; **`resolveRole` and `splitThinking` are the copied part** |
 | `settings.ts` | Rewriting settings.json — atomically, preserving every key it does not own |
 | `config.ts` | The contract and the reserved `session` role |
 | `provider.test.ts` | Fallbacks, the switch plan, the writer, and copy drift |

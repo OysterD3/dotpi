@@ -12,13 +12,13 @@
     "active": "openai",
     "providers": {
       "openai": {
-        "session": "openai-codex/gpt-5.6-sol",
+        "session": "openai-codex/gpt-5.6-sol:max",
         "frontier": "openai-codex/gpt-5.6-sol",
         "fast": "openai-codex/gpt-5.6-terra",
         "cheap": "openai-codex/gpt-5.6-luna"
       },
       "anthropic": {
-        "session": "anthropic/claude-opus-5",
+        "session": "anthropic/claude-opus-5:high",
         "frontier": "anthropic/claude-opus-5",
         "fast": "anthropic/claude-sonnet-5",
         "cheap": "anthropic/claude-haiku-4-5"
