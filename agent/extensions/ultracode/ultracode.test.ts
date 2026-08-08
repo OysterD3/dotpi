@@ -20,7 +20,7 @@ import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { SUBAGENT_PREAMBLE } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
-import { resolveModelReference } from "./models.ts";
+import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
 	allAgentsFailed,
@@ -544,6 +544,79 @@ console.log("\n--- models: reference resolution ---");
 	const many = Array.from({ length: 12 }, (_, i) => ({ provider: "p", id: `m-${i}`, name: `M ${i}` }));
 	const capped = resolveModelReference("zzz", many);
 	check("a long list is capped", capped.ok ? "" : capped.error.includes("and 4 more"), true);
+}
+
+console.log("\n--- models: a role value may carry a :level suffix ---");
+{
+	// The suffix is pi's --model syntax ("provider/id:high"), written into a
+	// provider profile so a role can carry a thinking level. This extension
+	// pins thinking per agent type and per run, so the level is only ever
+	// stripped — but the model under it still has to resolve.
+	const MODELS = [
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
+		{ provider: "anthropic", id: "claude-sonnet-5-20250929", name: "Sonnet 5 (dated)" },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5" },
+		// Ids with colons are real; OpenRouter ships this shape.
+		{ provider: "openrouter", id: "deepseek/deepseek-chat:free", name: "DeepSeek (free)" },
+		// And nothing stops a provider ending an id in a level name.
+		{ provider: "acme", id: "some-model:high", name: "Acme high" },
+		{ provider: "acme", id: "some-model", name: "Acme plain" },
+	];
+	const resolve = (reference: string) => {
+		const outcome = resolveSuffixedReference(reference, MODELS);
+		return outcome.ok ? `${outcome.model.provider}/${outcome.model.id}` : `error:${outcome.error.includes("matches") ? "ambiguous" : "none"}`;
+	};
+
+	check("a suffixed canonical reference resolves", resolve("anthropic/claude-sonnet-5:high"), "anthropic/claude-sonnet-5");
+	check("to the same model as the bare one", resolve("anthropic/claude-sonnet-5:high"), resolve("anthropic/claude-sonnet-5"));
+	check("a suffixed partial reference resolves too", resolve("sonnet:high"), resolve("sonnet"));
+	check(
+		"every one of the seven levels strips",
+		["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => resolve(`haiku:${level}`)),
+		Array(7).fill("anthropic/claude-haiku-4-5"),
+	);
+	check("the suffix does not survive into the result", resolve("sonnet:max").includes(":"), false);
+
+	// FULL first, split on miss — the order under test. Split-first would turn
+	// "acme/some-model:high" into "acme/some-model" and hand back the WRONG
+	// model; a colon suffix that is not a level must never split at all.
+	check("an id genuinely ending in a level matches whole", resolve("acme/some-model:high"), "acme/some-model:high");
+	check("while its bare sibling stays reachable", resolve("acme/some-model"), "acme/some-model");
+	check("an unknown suffix is matched as-is", resolve("openrouter/deepseek/deepseek-chat:free"), "openrouter/deepseek/deepseek-chat:free");
+	check("and is not retried as a split", resolve("deepseek-chat:free"), "openrouter/deepseek/deepseek-chat:free");
+
+	// Failures still fail, with the error about the id the user actually named.
+	check("an unknown model keeps its error", resolve("nope:high"), "error:none");
+	check("a suffixed ambiguous reference says so", resolve("claude:high"), "error:ambiguous");
+	const ambiguous = resolveSuffixedReference("claude:high", MODELS);
+	check("naming candidates for the bare id", ambiguous.ok ? "" : ambiguous.error.includes("anthropic/claude-haiku-4-5"), true);
+	check("a colon suffix that is no level does not resurrect a miss", resolve("claude-sonnet-5:hot"), "error:none");
+
+	// A FULL reference that is itself ambiguous FOUND models, so it must keep
+	// its ambiguity error rather than split: the bare retry here would slip
+	// past the two dated matches and quietly resolve to the alias the full
+	// reference never named. Every extension resolving suffixed references
+	// pins this rule.
+	const FULL_AMBIGUOUS = [
+		{ provider: "p", id: "m:high-20250101", name: "M One" },
+		{ provider: "p", id: "m:high-20250202", name: "M Two" },
+		{ provider: "p", id: "m", name: "M" },
+	];
+	const kept = resolveSuffixedReference("m:high", FULL_AMBIGUOUS);
+	check("an ambiguous full reference stays its own error", kept.ok, false);
+	check("and is not rescued by the split", kept.ok ? "" : kept.error.includes("m:high"), true);
+}
+
+console.log("\n--- models: splitThinking (the provider copy) ---");
+{
+	check("a trailing level splits", splitThinking("anthropic/claude-opus-5:high"), { reference: "anthropic/claude-opus-5", thinking: "high" });
+	check("any of the seven does", splitThinking("a/b:xhigh"), { reference: "a/b", thinking: "xhigh" });
+	check("an unknown suffix stays part of the id", splitThinking("openrouter/deepseek-chat:free"), { reference: "openrouter/deepseek-chat:free" });
+	check("no colon passes through", splitThinking("openai-codex/gpt-5.4-mini"), { reference: "openai-codex/gpt-5.4-mini" });
+	check("only the LAST colon is the seam", splitThinking("openrouter/model:free:high"), { reference: "openrouter/model:free", thinking: "high" });
+	check("the level is case-insensitive", splitThinking("a/b:HIGH"), { reference: "a/b", thinking: "high" });
+	check("a lone :level is not a reference to split", splitThinking(":high"), { reference: ":high" });
+	check("an empty base refuses to split", splitThinking(" :high"), { reference: " :high" });
 }
 
 // --------------------------------------------------- routing in the request

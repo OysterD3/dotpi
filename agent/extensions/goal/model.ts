@@ -12,6 +12,12 @@
  *   3. bare `id`                          exact, but rejected if ambiguous
  *   4. partial                            substring of id or name; prefer an alias
  *
+ * A role may hand this a reference wearing a `:level` thinking suffix (see
+ * splitThinking at the bottom). The whole ladder runs on the full reference
+ * first, and the suffix is split off only when that misses — the order pi's own
+ * parseModelPattern uses, and the only defence for ids that genuinely contain a
+ * colon.
+ *
  * Ambiguity is an error rather than a silent pick: a judge running on a model you
  * did not choose is worse than being told the reference was ambiguous.
  *
@@ -75,13 +81,8 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
 	return "ambiguous";
 }
 
-/**
- * Resolve `reference` against `models`. Exact matching first, then partial.
- * `models` should be the registry's list; pass `getAll()` so an explicitly named
- * model resolves even when its provider has no key yet — the auth check that
- * follows will produce the clearer error.
- */
-export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+/** One pass of the ladder. `undefined` is a clean miss: nothing matched at all. */
+function matchOnce<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> | undefined {
 	const exact = exactMatch(reference, models);
 	if (exact === "ambiguous") {
 		return { ok: false, error: `goal.model "${reference}" matches more than one model — qualify it as provider/id` };
@@ -93,6 +94,31 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
 		return { ok: false, error: `goal.model "${reference}" matches several models — use a more specific id` };
 	}
 	if (partial) return { ok: true, model: partial };
+
+	return undefined;
+}
+
+/**
+ * Resolve `reference` against `models`. Exact matching first, then partial.
+ * `models` should be the registry's list; pass `getAll()` so an explicitly named
+ * model resolves even when its provider has no key yet — the auth check that
+ * follows will produce the clearer error.
+ */
+export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+	const full = matchOnce(reference, models);
+	if (full) return full;
+
+	// Split only on a clean miss, never first: model ids with colons are real
+	// (OpenRouter ships `deepseek/deepseek-chat:free`), and an ambiguous full
+	// reference DID find models, so it keeps its ambiguity error. The level
+	// itself is dropped rather than plumbed through — the evaluator's thinking
+	// is pinned in judge.ts, deliberately, per call — so the suffix exists here
+	// only to be got out of the match's way.
+	const { reference: bare, thinking } = splitThinking(reference);
+	if (thinking) {
+		const split = matchOnce(bare, models);
+		if (split) return split;
+	}
 
 	return { ok: false, error: `goal.model "${reference}" matched no available model` };
 }
@@ -125,4 +151,21 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` — pi's own `--model` syntax — off a model
+ * reference, so a role can carry the thinking level its model should run at.
+ *
+ * A COPY, like resolveRole above; see agent/extensions/provider/roles.ts for the
+ * original. Only pi's seven levels split, and resolveModel honours the
+ * full-reference-first order the original's comment demands.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }

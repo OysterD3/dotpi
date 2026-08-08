@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG } from "./config.ts";
 import { hasPriorRecap, shouldAutoRecap, totalUserTurns, userTurnsSinceLastRecap } from "./gate.ts";
-import { resolveModel } from "./model.ts";
+import { resolveModel, splitThinking } from "./model.ts";
 import { formatIdle } from "./render.ts";
 import { loadSettings } from "./settings.ts";
 import { buildSections, buildTranscript, countUserTurns } from "./transcript.ts";
@@ -37,6 +37,8 @@ const MODELS = [
 	M("anthropic", "claude-sonnet-5", "Sonnet 5"),
 	M("openai-codex", "gpt-5.6-sol"),
 	M("openrouter", "claude-haiku-4-5"), // same id, different provider — bare id is ambiguous
+	M("openrouter", "deepseek-chat:free"), // a colon that is part of the id, not a level
+	M("openrouter", "model:max"), // an id that genuinely ends in a level name
 ];
 
 const pick = (ref: string) => {
@@ -57,6 +59,21 @@ check("no match is an error", resolveModel("does-not-exist", MODELS).ok, false);
 // The error names the reference so a typo in settings is diagnosable.
 const err = resolveModel("nope", MODELS);
 check("error mentions the reference", err.ok === false && err.error.includes("nope"), true);
+
+// A role value may end in `:level` (pi's --model syntax). The full reference is
+// matched first, so a colon that belongs to the id can never be split away.
+check("suffixed reference resolves like the bare one", pick("anthropic/claude-sonnet-5:high"), pick("anthropic/claude-sonnet-5"));
+check("suffixed bare id resolves", pick("gpt-5.6-sol:low"), "openai-codex/gpt-5.6-sol");
+check("unknown suffix is matched as part of the id", pick("openrouter/deepseek-chat:free"), "openrouter/deepseek-chat:free");
+check("an id ending in a level name matches whole, unsplit", pick("openrouter/model:max"), "openrouter/model:max");
+const suffixedErr = resolveModel("nope:high", MODELS);
+check("suffixed no-match is an error", suffixedErr.ok, false);
+check("naming the reference as configured", suffixedErr.ok === false && suffixedErr.error.includes("nope:high"), true);
+
+console.log("\n--- splitThinking ---");
+check("a level splits", splitThinking("anthropic/claude-opus-5:high"), { reference: "anthropic/claude-opus-5", thinking: "high" });
+check("a non-level suffix stays put", splitThinking("deepseek/deepseek-chat:free"), { reference: "deepseek/deepseek-chat:free" });
+check("no colon passes through", splitThinking("anthropic/claude-sonnet-5"), { reference: "anthropic/claude-sonnet-5" });
 
 console.log("\n--- transcript ---");
 const conversation = [

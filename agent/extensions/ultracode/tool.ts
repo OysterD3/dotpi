@@ -52,7 +52,7 @@ import {
 	type ShellOptions,
 } from "./engine.ts";
 import { ReplayIndex, shellKey, type JournalInput, type ShellResult } from "./journal.ts";
-import { resolveModelReference, resolveRole } from "./models.ts";
+import { resolveRole, resolveSuffixedReference } from "./models.ts";
 import {
 	allAgentsFailed,
 	newProgress,
@@ -1202,16 +1202,20 @@ export function usableModels(ctx: ExtensionContext): ReturnType<ExtensionContext
 }
 
 function resolveReference(reference: string, ctx: ExtensionContext): string {
+	// A role value may carry a `:level` suffix; the suffix-aware resolver strips
+	// it only after the full reference misses, and only the matched model's own
+	// provider/id leaves this function — a suffix must never reach --model, the
+	// panel, or the journal, which all expect a plain provider/id.
 	const mapped = resolveRole(reference, getAgentDir());
 	const usable = usableModels(ctx);
-	const resolved = resolveModelReference(mapped, usable);
+	const resolved = resolveSuffixedReference(mapped, usable);
 	if (resolved.ok) return `${resolved.model.provider}/${resolved.model.id}`;
 
 	// Resolvable only among models we cannot run: say THAT, at resolution time,
 	// instead of letting every agent spawn and die on a missing key.
 	const all = ctx.modelRegistry.getAll();
 	if (all.length !== usable.length) {
-		const anywhere = resolveModelReference(mapped, all);
+		const anywhere = resolveSuffixedReference(mapped, all);
 		if (anywhere.ok) {
 			throw new Error(
 				`model "${reference}" resolves to ${anywhere.model.provider}/${anywhere.model.id}, but there are no credentials for ${anywhere.model.provider} — run /login for it, or name a model from a provider you are signed in to`,

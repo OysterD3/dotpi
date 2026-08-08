@@ -12,6 +12,11 @@
  *   3. bare `id`                          exact, but rejected if ambiguous
  *   4. partial                            substring of id or name; prefer an alias
  *
+ * A reference that matches nothing and ends in one of pi's thinking levels —
+ * `provider/id:high`, the `--model` suffix a role value may carry — runs the
+ * same four steps again without the suffix. The level itself goes nowhere: the
+ * classifier's thinking is pinned in config.ts, not carried on the reference.
+ *
  * Ambiguity is an error rather than a silent pick, and here that matters more
  * than it does elsewhere: an unresolvable reference degrades auto mode to the
  * deterministic table, and being told which model was meant is the difference
@@ -77,6 +82,18 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
 	return "ambiguous";
 }
 
+function matchOnce<M extends ModelLike>(
+	reference: string,
+	models: readonly M[],
+): M | undefined | "ambiguous-exact" | "ambiguous-partial" {
+	const exact = exactMatch(reference, models);
+	if (exact === "ambiguous") return "ambiguous-exact";
+	if (exact) return exact;
+	const partial = partialMatch(reference, models);
+	if (partial === "ambiguous") return "ambiguous-partial";
+	return partial;
+}
+
 /**
  * Resolve `reference` against `models`. Exact matching first, then partial.
  * `models` should be the registry's list; pass `getAll()` so an explicitly named
@@ -84,17 +101,28 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
  * follows will produce the clearer error.
  */
 export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
-	const exact = exactMatch(reference, models);
-	if (exact === "ambiguous") {
+	// Full reference first, split only on a miss. Ids with colons are real —
+	// OpenRouter ships `deepseek/deepseek-chat:free` — so a registry carrying
+	// both `m` and `m:high` must answer `m:high` for the full string, and an
+	// ambiguous match is not a miss: the reference found models as-is, and
+	// splitting it would answer a different question. Same order as pi's own
+	// parseModelPattern.
+	let match = matchOnce(reference, models);
+	if (match === undefined) {
+		const split = splitThinking(reference);
+		// The level is stripped, never plumbed: the classifier's thinking is
+		// pinned in config.ts (`AUTO.reasoning`), a deliberate choice the role
+		// map does not get to override. The split exists so the model resolves.
+		if (split.thinking !== undefined) match = matchOnce(split.reference, models);
+	}
+
+	if (match === "ambiguous-exact") {
 		return { ok: false, error: `permissions.auto.model "${reference}" matches more than one model — qualify it as provider/id` };
 	}
-	if (exact) return { ok: true, model: exact };
-
-	const partial = partialMatch(reference, models);
-	if (partial === "ambiguous") {
+	if (match === "ambiguous-partial") {
 		return { ok: false, error: `permissions.auto.model "${reference}" matches several models — use a more specific id` };
 	}
-	if (partial) return { ok: true, model: partial };
+	if (match) return { ok: true, model: match };
 
 	return { ok: false, error: `permissions.auto.model "${reference}" matched no available model` };
 }
@@ -127,4 +155,24 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` off a model reference.
+ *
+ * A COPY, like resolveRole above — see agent/extensions/provider/roles.ts for
+ * the original. The suffix is pi's `--model` syntax (`provider/id:high`), so a
+ * role value can carry a thinking level; only pi's seven levels split, because
+ * ids with colons are real (OpenRouter ships `deepseek/deepseek-chat:free`).
+ * resolveModel tries the full reference first and splits only on a miss, and
+ * discards the level it finds — this extension's thinking is pinned in
+ * config.ts, so the split exists purely so the model resolves.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }

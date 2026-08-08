@@ -20,6 +20,7 @@ import { BUILTIN, loadSettings, type PermissionSettings } from "./settings.ts";
 import { extractJson, readVerdict, toVerdict } from "./verdict.ts";
 import { findDestructive } from "./destructive.ts";
 import { SessionGrants } from "./grants.ts";
+import { resolveModel, splitThinking } from "./model.ts";
 import { expandDir, workspaceDirs } from "./workspace.ts";
 
 let failures = 0;
@@ -420,6 +421,52 @@ eq(
 eq("BUILTIN.auto.onError is untouched", BUILTIN.auto.onError, "allow");
 eq("BUILTIN.auto.model is untouched", BUILTIN.auto.model, undefined);
 eq("BUILTIN.additionalDirectories is untouched", BUILTIN.additionalDirectories.length, 0);
+
+// ---------------------------------------------------------------------------
+console.log("model resolution — a role value may carry a :level the registry never sees");
+
+// A role can end in pi's `--model` suffix (`anthropic/claude-opus-5:high`).
+// The registry knows no such reference, so resolution retries without the
+// suffix — but only after the full string misses, because ids with colons are
+// real: OpenRouter ships `deepseek/deepseek-chat:free`. The level itself goes
+// nowhere; the classifier's thinking is pinned in config.ts.
+{
+	const models = [
+		{ provider: "anthropic", id: "claude-opus-5", name: "Claude Opus 5" },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+		{ provider: "openrouter", id: "deepseek/deepseek-chat:free", name: "DeepSeek Chat (free)" },
+		{ provider: "openrouter", id: "model", name: "Plain" },
+		{ provider: "openrouter", id: "model:high", name: "Colon" },
+	];
+	const resolved = (reference: string): string | undefined => {
+		const r = resolveModel(reference, models);
+		return r.ok ? `${r.model.provider}/${r.model.id}` : undefined;
+	};
+
+	eq("a suffixed reference resolves", resolved("anthropic/claude-opus-5:high"), "anthropic/claude-opus-5");
+	eq("to the same model as the bare one", resolved("anthropic/claude-opus-5"), "anthropic/claude-opus-5");
+	eq("an id whose colon is not a level matches as-is", resolved("openrouter/deepseek/deepseek-chat:free"), "openrouter/deepseek/deepseek-chat:free");
+	// The order is the whole defence: a model id that genuinely ends in a level
+	// name must win over the split, or it becomes unreachable.
+	eq("a registry id ending in a level beats the split", resolved("openrouter/model:high"), "openrouter/model:high");
+	eq("while a miss still strips down to the bare id", resolved("openrouter/model:xhigh"), "openrouter/model");
+	eq("the retry runs the whole pipeline, partial included", resolved("opus:high"), "anthropic/claude-opus-5");
+
+	const missed = resolveModel("nope/x:high", models);
+	check(
+		"a suffixed miss errors naming the configured string",
+		!missed.ok && missed.error.includes('"nope/x:high"'),
+		missed.ok ? `${missed.model.provider}/${missed.model.id}` : missed.error,
+	);
+
+	eq("splitThinking splits a level off", splitThinking("anthropic/claude-opus-5:high").reference, "anthropic/claude-opus-5");
+	eq("and carries it", splitThinking("anthropic/claude-opus-5:high").thinking, "high");
+	eq("an unknown suffix stays part of the id", splitThinking("deepseek/deepseek-chat:free").reference, "deepseek/deepseek-chat:free");
+	check("and yields no level", splitThinking("deepseek/deepseek-chat:free").thinking === undefined);
+	eq("only the last colon is the seam", splitThinking("openrouter/model:free:high").reference, "openrouter/model:free");
+	eq("no suffix passes through", splitThinking("openai-codex/gpt-5.4-mini").reference, "openai-codex/gpt-5.4-mini");
+	eq("a lone :level refuses to split", splitThinking(":high").reference, ":high");
+}
 
 // ---------------------------------------------------------------------------
 console.log("the workspace — what the classifier is told counts as the project");

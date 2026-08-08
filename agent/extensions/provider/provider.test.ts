@@ -257,32 +257,35 @@ console.log("the copies have not drifted");
 {
 	const here = new URL(".", import.meta.url).pathname;
 	const extensions = new URL("../", import.meta.url).pathname;
-	const body = (source: string): string | undefined => {
-		const start = source.indexOf("export function resolveRole(");
+	const body = (source: string, name: string): string | undefined => {
+		const start = source.indexOf(`export function ${name}(`);
 		if (start === -1) return undefined;
 		const end = source.indexOf("\n}", start);
 		return end === -1 ? undefined : source.slice(start, end + 2).replace(/\s+/g, " ").trim();
 	};
 
-	const original = body(readFileSync(join(here, "roles.ts"), "utf8"));
-	check("the original is findable", original !== undefined);
+	const source = readFileSync(join(here, "roles.ts"), "utf8");
+	for (const name of ["resolveRole", "splitThinking"]) {
+		const original = body(source, name);
+		check(`the original ${name} is findable`, original !== undefined);
 
-	for (const copy of [
-		"goal/model.ts",
-		"recap/model.ts",
-		"permissions/model.ts",
-		"advisor/models.ts",
-		"ultracode/models.ts",
-		"subagents/models.ts",
-	]) {
-		const path = join(extensions, copy);
-		if (!existsSync(path)) {
-			console.log(`  SKIP  ${copy} is not installed`);
-			continue;
+		for (const copy of [
+			"goal/model.ts",
+			"recap/model.ts",
+			"permissions/model.ts",
+			"advisor/models.ts",
+			"ultracode/models.ts",
+			"subagents/models.ts",
+		]) {
+			const path = join(extensions, copy);
+			if (!existsSync(path)) {
+				console.log(`  SKIP  ${copy} is not installed`);
+				continue;
+			}
+			const found = body(readFileSync(path, "utf8"), name);
+			check(`${copy} still has a copy of ${name}`, found !== undefined);
+			if (found !== undefined) eq(`${copy} matches the original ${name}`, found, original);
 		}
-		const found = body(readFileSync(path, "utf8"));
-		check(`${copy} still has a copy`, found !== undefined);
-		if (found !== undefined) eq(`${copy} matches the original`, found, original);
 	}
 }
 

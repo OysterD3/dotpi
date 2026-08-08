@@ -15,7 +15,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
 import { TOOL_NAME } from "./config.ts";
-import { modelRef, resolveModelReference, resolveRole } from "./models.ts";
+import { modelRef, resolveRole, resolveSuffixedReference } from "./models.ts";
 import { effective, findAgent } from "./registry.ts";
 import type { SubagentsSettings } from "./config.ts";
 import { runSubagent, type SpawnUsage, SubagentError } from "./spawn.ts";
@@ -98,11 +98,14 @@ export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): vo
 			if (!prompt) throw new Error(`The "${name}" subagent needs a prompt describing the task.`);
 
 			// Resolve the effective model. An explicit model must resolve; when a
-			// subagent pins no model, it inherits the session model.
+			// subagent pins no model, it inherits the session model. A role value
+			// may carry a `:level` suffix — it is stripped, not applied: reasoning
+			// here is pinned per subagent, and the spawn's --model needs a bare
+			// provider/id.
 			const { model: modelReference, reasoning } = effective(agent, settings.defaults);
 			let model: string | undefined;
 			if (modelReference) {
-				const resolved = resolveModelReference(resolveRole(modelReference, getAgentDir()), ctx.modelRegistry.getAll());
+				const resolved = resolveSuffixedReference(resolveRole(modelReference, getAgentDir()), ctx.modelRegistry.getAll());
 				if (!resolved.ok) {
 					throw new Error(`Subagent "${name}" model "${modelReference}" could not be used: ${resolved.error}.`);
 				}

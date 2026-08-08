@@ -14,6 +14,13 @@
  *
  * Ambiguity is an error rather than a silent pick, because "recap ran on a model
  * I didn't expect" is worse than "recap told me the reference was ambiguous".
+ *
+ * A reference may end in `:level` — pi's `--model` syntax, which a role value
+ * can now carry. The FULL reference is matched first and the suffix split off
+ * only when that finds nothing, because ids with colons are real (OpenRouter
+ * ships `deepseek/deepseek-chat:free`). Recap ignores the level itself: its own
+ * thinking setting is task-pinned in generate.ts, so the suffix exists here only
+ * to be stripped so the model resolves.
  */
 
 import { readFileSync } from "node:fs";
@@ -71,13 +78,8 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
 	return "ambiguous";
 }
 
-/**
- * Resolve `reference` against `models`. Exact matching first, then partial.
- * `models` should be the registry's list; pass `getAll()` so an explicitly named
- * model resolves even when its provider has no key yet — the auth check that
- * follows will produce the clearer error.
- */
-export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+/** One pass of the matching rules. `undefined` means it found nothing at all. */
+function matchReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> | undefined {
 	const exact = exactMatch(reference, models);
 	if (exact === "ambiguous") {
 		return { ok: false, error: `recap.model "${reference}" matches more than one model — qualify it as provider/id` };
@@ -90,6 +92,30 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
 	}
 	if (partial) return { ok: true, model: partial };
 
+	return undefined;
+}
+
+/**
+ * Resolve `reference` against `models`. Exact matching first, then partial.
+ * `models` should be the registry's list; pass `getAll()` so an explicitly named
+ * model resolves even when its provider has no key yet — the auth check that
+ * follows will produce the clearer error.
+ *
+ * The split-on-miss retry runs only when the whole reference matched nothing:
+ * an ambiguous full reference DID find models, so treating its tail as a
+ * thinking level would resolve it to a model the reference never named.
+ */
+export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+	const full = matchReference(reference, models);
+	if (full !== undefined) return full;
+
+	const { reference: bare, thinking } = splitThinking(reference);
+	if (thinking !== undefined) {
+		const stripped = matchReference(bare, models);
+		if (stripped !== undefined) return stripped;
+	}
+
+	// Both misses name the reference as configured — the suffix may be the typo.
 	return { ok: false, error: `recap.model "${reference}" matched no available model` };
 }
 
@@ -121,4 +147,21 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` off a model reference.
+ *
+ * A COPY, part of the same shared-by-string contract as `resolveRole` above; see
+ * agent/extensions/provider/roles.ts for the original. Only pi's seven thinking
+ * levels split — any other suffix is part of the id, because ids with colons are
+ * real. Match the FULL reference first; split only when that misses.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }

@@ -1,6 +1,7 @@
 /**
  * Unit coverage for the /goal pure logic: verdict parsing, the too-long
- * detector, evaluator model selection, transcript budgeting, goal state and its
+ * detector, evaluator model selection (including the `:level` thinking-suffix
+ * retry and the splitThinking copy), transcript budgeting, goal state and its
  * persistence round-trip, the settings loader, and the render helpers whose
  * wording is load-bearing. Also covers the autoCapture and compaction/resume
  * reassertion additions: extraction-response parsing, the capture trigger
@@ -23,7 +24,7 @@ import { join } from "node:path";
 import { isCaptureCandidate } from "./capture.ts";
 import { CONFIG } from "./config.ts";
 import { extractJson, selectModel, toExtraction, toVerdict } from "./judge.ts";
-import { resolveModel } from "./model.ts";
+import { resolveModel, splitThinking } from "./model.ts";
 import { formatDuration, formatTokens, oneLine, plural, statsLine, summaryLine } from "./render.ts";
 import { loadSettings } from "./settings.ts";
 import { goalElapsed, GoalState, restoreGoal, tokensSpent, type GoalEntryData } from "./state.ts";
@@ -131,6 +132,50 @@ check("no model at all is an error", pickWithoutSession(undefined), "ERR: no mod
 // A bad goal.model must not silently fall back — that would send the transcript
 // somewhere the user did not choose.
 check("a bad reference does not fall back", pick("gpt-9").includes("gpt-5.6-sol"), false);
+
+console.log("\n--- a role can carry a :level thinking suffix ---");
+// The full reference is matched first and split only on a clean miss: ids with
+// colons are real (OpenRouter ships `deepseek/deepseek-chat:free`), so
+// splitting first would mangle them. The level itself goes nowhere — the
+// evaluator's thinking is pinned in judge.ts — it is stripped only so the
+// model resolves.
+check("a suffixed reference resolves like the bare one", pick("anthropic/claude-sonnet-5:high"), pick("anthropic/claude-sonnet-5"));
+check("to the model the bare reference names", pick("anthropic/claude-sonnet-5:high"), "anthropic/claude-sonnet-5");
+check("the retry runs the whole ladder, partials included", pick("sonnet:high"), "anthropic/claude-sonnet-5");
+check("a suffix does not hide an ambiguity", pick("claude-haiku-4-5:xhigh").startsWith("ERR:"), true);
+check("a miss both ways names the reference as configured", resolveModel("gpt-9:high", MODELS), {
+	ok: false,
+	error: 'goal.model "gpt-9:high" matched no available model',
+});
+
+{
+	const colonModels = [...MODELS, M("openrouter", "deepseek/deepseek-chat:free"), M("acme", "brainstorm"), M("acme", "brainstorm:max")];
+	check("a colon id that is not a level is matched as-is", resolveModel("deepseek/deepseek-chat:free", colonModels), {
+		ok: true,
+		model: M("openrouter", "deepseek/deepseek-chat:free"),
+	});
+	// The order is the whole defence for an id that genuinely ends in a level
+	// name: matched whole it finds itself; split first it would have quietly
+	// become its sibling.
+	check("an id ending in a level name still wins whole", resolveModel("acme/brainstorm:max", colonModels), {
+		ok: true,
+		model: M("acme", "brainstorm:max"),
+	});
+}
+
+console.log("\n--- splitThinking, the copy ---");
+check("a trailing level splits", splitThinking("anthropic/claude-opus-5:high"), {
+	reference: "anthropic/claude-opus-5",
+	thinking: "high",
+});
+check("an unknown suffix stays part of the id", splitThinking("openrouter/deepseek-chat:free"), {
+	reference: "openrouter/deepseek-chat:free",
+});
+check("only the LAST colon is the seam", splitThinking("openrouter/model:free:high"), {
+	reference: "openrouter/model:free",
+	thinking: "high",
+});
+check("no colon passes through", splitThinking("openai-codex/gpt-5.6-sol"), { reference: "openai-codex/gpt-5.6-sol" });
 
 console.log("\n--- resolveModel error wording names its own key ---");
 check("error mentions goal.model", resolveModel("nope", MODELS), {

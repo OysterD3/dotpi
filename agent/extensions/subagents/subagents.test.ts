@@ -26,7 +26,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { parseSubagents, effective, loadSubagents, saveSubagents, storePath } = await import("./registry.ts");
 const { formatReasoning, tableLines } = await import("./panel.ts");
-const { resolveModelReference, modelRef } = await import("./models.ts");
+const { resolveModelReference, modelRef, resolveSuffixedReference, splitThinking } = await import("./models.ts");
 const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
@@ -132,6 +132,43 @@ check("bare id -> canonical", rid("gpt-5.6-luna"), "openai-codex/gpt-5.6-luna");
 check("partial name", rid("sol"), "openai-codex/gpt-5.6-sol");
 check("unknown is an error", rid("nope"), "ERR");
 
+console.log("\n--- model resolution: a role value's :level suffix ---");
+{
+	// Ids with colons are real (OpenRouter ships :free) — including one that
+	// ends in a level name, the case the full-first order exists for.
+	const COLONED = [
+		...MODELS,
+		{ id: "deepseek-chat:free", name: "DeepSeek (free)", provider: "openrouter" },
+		{ id: "prompt-machine:high", name: "Prompt Machine", provider: "weird" },
+	];
+	const rids = (ref: string) => {
+		const r = resolveSuffixedReference(ref, COLONED);
+		return r.ok ? modelRef(r.model) : "ERR";
+	};
+	check("a suffixed reference resolves to the bare model", rids("openai-codex/gpt-5.6-luna:high"), "openai-codex/gpt-5.6-luna");
+	check("suffixed and bare agree", rids("openai-codex/gpt-5.6-luna:high"), rids("openai-codex/gpt-5.6-luna"));
+	check("an unknown suffix is part of the id", rids("openrouter/deepseek-chat:free"), "openrouter/deepseek-chat:free");
+	check("an id ending in a level name is matched whole, not split", rids("weird/prompt-machine:high"), "weird/prompt-machine:high");
+	check("a level on a colon id splits only the level", rids("openrouter/deepseek-chat:free:max"), "openrouter/deepseek-chat:free");
+	check("a level does not rescue an unknown model", rids("nope:high"), "ERR");
+
+	// An ambiguous full reference FOUND models, so it must keep its ambiguity
+	// error rather than split: here the bare retry would slip past the two
+	// dated matches and quietly resolve to the alias the full reference never
+	// named. Every extension resolving suffixed references pins this rule.
+	const AMBIGUOUS = [
+		{ id: "m:high-20250101", name: "M One", provider: "p" },
+		{ id: "m:high-20250202", name: "M Two", provider: "p" },
+		{ id: "m", name: "M", provider: "p" },
+	];
+	const amb = resolveSuffixedReference("m:high", AMBIGUOUS);
+	check("an ambiguous suffixed reference stays an error", amb.ok, false);
+
+	check("splitThinking splits a trailing level", splitThinking("a/b:high"), { reference: "a/b", thinking: "high" });
+	check("splitThinking keeps a non-level suffix in the id", splitThinking("openrouter/deepseek-chat:free"), { reference: "openrouter/deepseek-chat:free" });
+	check("splitThinking passes a plain reference through", splitThinking("a/b"), { reference: "a/b" });
+}
+
 // ------------------------------------------------------------- tool description
 
 console.log("\n--- the task tool description + usage mapping ---");
@@ -167,7 +204,7 @@ console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 {
 	let toolDef: any;
 	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, {
-		settings: () => ({ defaults: {}, agents: [{ name: "explorer", purpose: "look", model: "luna", tools: ["read"] }, { name: "ghost", purpose: "x", model: "does-not-exist" }] }) as never,
+		settings: () => ({ defaults: {}, agents: [{ name: "explorer", purpose: "look", model: "luna", tools: ["read"] }, { name: "ghost", purpose: "x", model: "does-not-exist" }, { name: "suffixed", purpose: "x", model: "openai-codex/gpt-5.6-luna:high" }] }) as never,
 	});
 	const ctx = { cwd: ROOT, model: { id: "gpt-5.6-luna", provider: "openai-codex" }, modelRegistry: { getAll: () => MODELS }, isProjectTrusted: () => false };
 	const throws = async (params: any) => {
@@ -176,6 +213,19 @@ console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 	checkTrue("unknown subagent lists valid options", (await throws({ subagent_type: "nobody", prompt: "hi" })).includes("Valid options"));
 	checkTrue("empty prompt is rejected", (await throws({ subagent_type: "explorer", prompt: " " })).includes("needs a prompt"));
 	checkTrue("unresolvable model is rejected", (await throws({ subagent_type: "ghost", prompt: "go" })).includes("could not be used"));
+
+	// A pre-aborted signal stops runSubagent before any subprocess, but after
+	// the model was resolved and reported — so this pins that a role-carried
+	// `:level` never reaches the --model pi would be spawned with.
+	const updates: any[] = [];
+	let abortMessage = "";
+	try {
+		await toolDef.execute("id", { subagent_type: "suffixed", prompt: "go" }, AbortSignal.abort(), (u: any) => updates.push(u), ctx);
+	} catch (e) {
+		abortMessage = (e as Error).message;
+	}
+	checkTrue("the aborted spawn failed instead of running", abortMessage.includes("aborted"));
+	check("the forwarded model is the bare reference", updates[0]?.details?.model, "openai-codex/gpt-5.6-luna");
 }
 
 // --------------------------------------------------- the interactive wizard

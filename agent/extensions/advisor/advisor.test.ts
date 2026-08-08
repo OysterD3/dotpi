@@ -27,7 +27,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { buildSections, buildTranscript } = await import("./transcript.ts");
 const { buildReviewerPrompt, REVIEWER_PROMPT, ADVISOR_TOOL_GUIDANCE } = await import("./guidance.ts");
-const { resolveModelReference, modelRef, sameModel } = await import("./models.ts");
+const { resolveModelReference, modelRef, sameModel, splitThinking } = await import("./models.ts");
 const { CONFIG } = await import("./config.ts");
 const { buildArgs, scrubArg } = await import("./spawn.ts");
 const { advisorStatus, compactCount, emptyProgress, formatElapsed, phaseFor, scanBlocks } = await import("./progress.ts");
@@ -141,6 +141,28 @@ check("bare exact id", resolvedId("gpt-5.6-sol"), "openai-codex/gpt-5.6-sol");
 checkTrue("ambiguous partial is rejected", resolvedId("claude").startsWith("ERR:"));
 checkTrue("unknown reference is rejected", resolvedId("does-not-exist").startsWith("ERR:"));
 checkTrue("empty reference is rejected", resolvedId("").startsWith("ERR:"));
+
+console.log("\n--- a trailing :level on the reference ---");
+{
+	check("a level splits off", splitThinking("anthropic/claude-opus-4-8:high"), { reference: "anthropic/claude-opus-4-8", thinking: "high" });
+	check("no suffix, no split", splitThinking("anthropic/claude-opus-4-8"), { reference: "anthropic/claude-opus-4-8" });
+	check("an unknown suffix stays part of the id", splitThinking("openrouter/deepseek-chat:free"), { reference: "openrouter/deepseek-chat:free" });
+
+	// Full-first is what protects ids with real colons: a registry model whose
+	// id genuinely ends in ":free" must be matched whole, never split apart.
+	const WITH_COLON_ID = [...MODELS, { id: "deepseek-chat:free", name: "DeepSeek Chat (free)", provider: "openrouter", contextWindow: 64_000 }];
+	const suffixed = (ref: string) => {
+		const r = resolveModelReference(ref, WITH_COLON_ID);
+		return r.ok ? modelRef(r.model) : `ERR:${r.error}`;
+	};
+	check("a suffixed reference resolves to the bare model", suffixed("anthropic/claude-opus-4-8:high"), "anthropic/claude-opus-4-8");
+	check("...the same model the bare reference resolves to", suffixed("anthropic/claude-opus-4-8"), "anthropic/claude-opus-4-8");
+	check("a partial with a level resolves too", suffixed("opus:max"), "anthropic/claude-opus-4-8");
+	check("a colon id is matched whole, not split", suffixed("openrouter/deepseek-chat:free"), "openrouter/deepseek-chat:free");
+	check("a level on top of a colon id still finds it", suffixed("openrouter/deepseek-chat:free:high"), "openrouter/deepseek-chat:free");
+	checkTrue("an unknown model keeps failing with its level", suffixed("ghost-model:high").startsWith("ERR:"));
+	checkTrue("...and the error quotes the reference as configured", suffixed("ghost-model:high").includes('"ghost-model:high"'));
+}
 
 console.log("\n--- sameModel: labels a self-advising setup (allowed on purpose) ---");
 const opus = MODELS[0];
@@ -574,6 +596,18 @@ const extension = (await import("./index.ts")).default;
 	h.events.get("session_start")!({}, h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" }));
 	checkTrue("tool is active when configured and resolvable", h.getActive().includes("advisor"));
 	check("status chip shows the reviewer", h.statuses.at(-1), ["advisor", "✦ advisor: claude-opus-4-8"]);
+}
+
+// A `:level` suffix on the setting (pi's --model syntax, carried by role
+// values) must still resolve — and everything shown or forwarded downstream is
+// the bare id, so the suffix never reaches a place expecting plain provider/id.
+{
+	writeSettings({ model: "opus:high" });
+	const h = makePi();
+	extension(h.pi as never);
+	h.events.get("session_start")!({}, h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" }));
+	checkTrue("a suffixed setting still activates the tool", h.getActive().includes("advisor"));
+	check("and the chip carries the bare id, not the suffix", h.statuses.at(-1), ["advisor", "✦ advisor: claude-opus-4-8"]);
 }
 
 // No model configured -> tool deactivated, no chip.

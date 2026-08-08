@@ -11,6 +11,9 @@
  *   2. `provider/id` split       exact provider + exact id
  *   3. bare `id`                 exact, but rejected if ambiguous
  *   4. partial                   substring of id or name; prefer an alias
+ *   5. `ref:level` retry         only after 1–4 all miss, a trailing thinking
+ *                                level (pi's own `--model` syntax) is split off
+ *                                and the bare reference retried
  *
  * Two capability checks you might expect, and what happens to them here:
  *   - "the advisor must be at least as capable as the main model". This needs a
@@ -77,7 +80,7 @@ function partialMatch<M extends ModelLike>(reference: string, models: readonly M
 	return "ambiguous";
 }
 
-/** Resolve `reference` against `models`. Exact matching first, then partial. */
+/** Resolve `reference` against `models`. Exact matching first, then partial; a trailing `:level` splits off only after the full reference misses. */
 export function resolveModelReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
 	const trimmed = reference.trim();
 	if (!trimmed) return { ok: false, error: "no advisor model configured" };
@@ -93,6 +96,31 @@ export function resolveModelReference<M extends ModelLike>(reference: string, mo
 		return { ok: false, error: `model "${reference}" matches several models — use a more specific id` };
 	}
 	if (partial) return { ok: true, model: partial };
+
+	// A total miss may be a role value carrying a `:level` suffix
+	// ("anthropic/claude-opus-5:high"). Full-first is load-bearing: ids with
+	// colons are real (OpenRouter ships `deepseek/deepseek-chat:free`), so the
+	// split happens only here, after the complete reference matched nothing.
+	// The ladder runs ONCE on the bare reference, not recursively — a second
+	// suffix is part of the id, the reading every other copy of this rule
+	// gives it — and a bare ambiguity is reported as such, since "matched no
+	// model" would be a lie about a reference that matched several. The level
+	// itself is dropped: this extension pins the reviewer's thinking level on
+	// purpose (CONFIG.reviewerThinking), so the suffix exists only to let the
+	// shared role value resolve to a model at all.
+	const split = splitThinking(trimmed);
+	if (split.thinking) {
+		const bareExact = exactMatch(split.reference, models);
+		if (bareExact === "ambiguous") {
+			return { ok: false, error: `model "${split.reference}" matches more than one model — qualify it as provider/id` };
+		}
+		if (bareExact) return { ok: true, model: bareExact };
+		const barePartial = partialMatch(split.reference, models);
+		if (barePartial === "ambiguous") {
+			return { ok: false, error: `model "${split.reference}" matches several models — use a more specific id` };
+		}
+		if (barePartial) return { ok: true, model: barePartial };
+	}
 
 	return { ok: false, error: `model "${reference}" matched no available model` };
 }
@@ -140,4 +168,22 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` off a model reference.
+ *
+ * A COPY, like resolveRole above — see agent/extensions/provider/roles.ts for
+ * the original. The suffix is pi's own `--model` syntax (`provider/id:high`),
+ * so a role value can carry a thinking level. Only pi's seven levels split; any
+ * other suffix stays part of the id, because ids with colons are real. The
+ * FULL-first ordering that protects them lives in resolveModelReference.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }

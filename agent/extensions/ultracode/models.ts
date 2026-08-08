@@ -128,6 +128,38 @@ export function resolveModelReference<M extends ModelLike>(reference: string, mo
 }
 
 /**
+ * Resolve a reference that may carry a role's `:level` suffix.
+ *
+ * FULL first, split only on a clean miss — the order is load-bearing, because
+ * ids with colons are real (OpenRouter ships `deepseek/deepseek-chat:free`)
+ * and splitting first would mangle them. An ambiguous full reference FOUND
+ * models as-is, so its error answers the question the user configured; the
+ * bare retry could quietly resolve to a model the full reference never named.
+ * Every extension that resolves suffixed references keeps this rule; diverging
+ * here would make the same role value resolve in one extension and error in
+ * another.
+ *
+ * The level itself is discarded. Thinking here is pinned per agent type and
+ * per run (resolveThinking), all of it configuration written deliberately, and
+ * a profile's suffix must not override it; the suffix is stripped only so the
+ * model resolves.
+ */
+export function resolveSuffixedReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+	const full = resolveModelReference(reference, models);
+	if (full.ok) return full;
+	const trimmed = reference.trim();
+	if (exactMatch(trimmed, models) === "ambiguous" || partialMatch(trimmed, models) === "ambiguous") return full;
+	const split = splitThinking(reference);
+	if (split.thinking === undefined) return full;
+	const bare = resolveModelReference(split.reference, models);
+	// A double miss reports the reference as configured — that is the string
+	// in settings.json, so the one worth diagnosing. A bare ambiguity is the
+	// exception: it found models, and naming them is the actionable error.
+	if (!bare.ok && exactMatch(split.reference, models) !== "ambiguous" && partialMatch(split.reference, models) !== "ambiguous") return full;
+	return bare;
+}
+
+/**
  * Map a model reference through the active provider profile in settings.json.
  *
  * A COPY. The `models` block is a data contract shared by string, not a module —
@@ -155,4 +187,20 @@ export function resolveRole(reference: string, agentDir: string): string {
 	} catch {
 		return reference;
 	}
+}
+
+/**
+ * Split an optional trailing `:level` off a model reference.
+ *
+ * A COPY, for the same reason as resolveRole above — the suffix is part of the
+ * role-value contract, shared by string, not by module. See
+ * agent/extensions/provider/roles.ts for the original.
+ */
+export function splitThinking(reference: string): { reference: string; thinking?: string } {
+	const colon = reference.lastIndexOf(":");
+	if (colon <= 0) return { reference };
+	const suffix = reference.slice(colon + 1).trim().toLowerCase();
+	const base = reference.slice(0, colon).trim();
+	if (!base || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(suffix)) return { reference };
+	return { reference: base, thinking: suffix };
 }

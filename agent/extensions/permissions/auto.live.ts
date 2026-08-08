@@ -155,8 +155,6 @@ if (!fallback) throw new Error("no models available — check auth.json");
 /** The slice of ExtensionContext that classify() actually touches. */
 const ctx = { modelRegistry: registry, model: fallback, cwd: CWD, signal: undefined } as never;
 
-console.log(`classifier: ${modelReference ?? `${fallback.provider}/${fallback.id}`}\n`);
-
 let spent = 0;
 let calls = 0;
 
@@ -164,6 +162,10 @@ let calls = 0;
 const chosen = modelReference ? resolveModel(modelReference, available) : ({ ok: true, model: fallback } as const);
 if (!chosen.ok) throw new Error(chosen.error);
 const model = chosen.model;
+
+// The resolved pair, not the raw reference — PI_CLASSIFIER_MODEL may carry a
+// `:level` suffix, and the header must name the model actually asked.
+console.log(`classifier: ${model.provider}/${model.id}\n`);
 
 async function verdictFor(tool: string, input: Record<string, unknown>) {
 	return classify(ctx, buildQuestion(tool, input, DIRS), {

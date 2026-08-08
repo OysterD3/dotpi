@@ -26,7 +26,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { type SubagentsSettings, TOOL_NAME } from "./config.ts";
 import { pickName, runWizard, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
-import { modelRef, resolveModelReference, resolveRole } from "./models.ts";
+import { resolveRole, resolveSuffixedReference } from "./models.ts";
 import { effective, findAgent, loadSubagents, type ParseResult, saveSubagents, storePath } from "./registry.ts";
 import { registerTaskTool } from "./tool.ts";
 
@@ -62,7 +62,10 @@ export default function (pi: ExtensionAPI) {
 			const eff = effective(agent, settings.defaults);
 			let model: string;
 			if (eff.model) {
-				const resolved = resolveModelReference(resolveRole(eff.model, getAgentDir()), models);
+				// The panel shows the resolved model's own id, so a role's `:level`
+				// suffix never reaches the table; the raw reference appears only when
+				// resolution failed and naming what the user configured is the point.
+				const resolved = resolveSuffixedReference(resolveRole(eff.model, getAgentDir()), models);
 				model = resolved.ok ? resolved.model.id : `⚠ ${eff.model}`;
 			} else {
 				model = "(session default)";
