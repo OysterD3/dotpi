@@ -11,7 +11,7 @@
  * Run with jiti from a directory where pi's packages resolve:
  *     jiti agent/extensions/advisor/advisor.test.ts
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -162,6 +162,22 @@ console.log("\n--- a trailing :level on the reference ---");
 	check("a level on top of a colon id still finds it", suffixed("openrouter/deepseek-chat:free:high"), "openrouter/deepseek-chat:free");
 	checkTrue("an unknown model keeps failing with its level", suffixed("ghost-model:high").startsWith("ERR:"));
 	checkTrue("...and the error quotes the reference as configured", suffixed("ghost-model:high").includes('"ghost-model:high"'));
+
+	// The split-off level rides out on the Resolution, and ONLY when the split
+	// path actually ran. An id that merely ENDS in a level name is the hard
+	// case — splitting it would produce a plausible level — and the full match
+	// must win, carrying nothing.
+	const WITH_LEVEL_ID = [...WITH_COLON_ID, { id: "chat-turbo:high", name: "Chat Turbo (high)", provider: "openrouter", contextWindow: 64_000 }];
+	const carried = (ref: string, models = WITH_COLON_ID) => {
+		const r = resolveModelReference(ref, models);
+		return r.ok ? [modelRef(r.model), r.thinking] : ["ERR", undefined];
+	};
+	check("a split-off level rides out on the resolution", carried("anthropic/claude-opus-4-8:high"), ["anthropic/claude-opus-4-8", "high"]);
+	check("a partial's level rides out too", carried("opus:max"), ["anthropic/claude-opus-4-8", "max"]);
+	check("no suffix, no level", carried("anthropic/claude-opus-4-8"), ["anthropic/claude-opus-4-8", undefined]);
+	check("a colon id matched whole carries no level", carried("openrouter/deepseek-chat:free"), ["openrouter/deepseek-chat:free", undefined]);
+	check("a level on top of a colon id rides out", carried("openrouter/deepseek-chat:free:high"), ["openrouter/deepseek-chat:free", "high"]);
+	check("a level-shaped id matched whole is all id, no level", carried("openrouter/chat-turbo:high", WITH_LEVEL_ID), ["openrouter/chat-turbo:high", undefined]);
 }
 
 console.log("\n--- sameModel: labels a self-advising setup (allowed on purpose) ---");
@@ -541,6 +557,65 @@ console.log("\n--- the tool's pre-spawn branches (no subprocess) ---");
 	// branch left to assert. advisor.live.ts covers the real call.
 }
 
+console.log("\n--- the spawn honors a role-carried level (fake child) ---");
+{
+	// End to end: advisor.model names a role, the profile maps it to a reference
+	// carrying pi's `:level` syntax, and the child's --thinking must receive
+	// that level — user-written configuration outranks CONFIG.reviewerThinking,
+	// which remains the fallback for references that carry nothing.
+	const argSink = join(ROOT, "spawned-args.json");
+	const echoArgs = join(ROOT, "fake-pi-echo-args.js");
+	writeFileSync(
+		echoArgs,
+		`require("node:fs").writeFileSync(${JSON.stringify(argSink)}, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Looks fine." }],
+  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } }, stopReason: "stop" } }) + "\\n");
+`,
+	);
+
+	const REGISTRY = [...MODELS, { id: "deepseek-chat:high", name: "DeepSeek Chat (high)", provider: "openrouter", contextWindow: 64_000 }];
+	const { registerAdvisorTool } = await import("./tool.ts");
+	let toolDef: any;
+	let reference = "frontier";
+	registerAdvisorTool({ registerTool: (def: any) => (toolDef = def) } as never, { reference: () => reference });
+	const ctx = {
+		cwd: ROOT,
+		model: { id: "claude-sonnet-5", provider: "anthropic" },
+		modelRegistry: { getAll: () => REGISTRY },
+		sessionManager: { getBranch: () => BRANCH },
+	};
+	writeFileSync(
+		join(AGENT, "settings.json"),
+		JSON.stringify({ models: { active: "main", providers: { main: { frontier: "anthropic/claude-opus-4-8:high" } } } }),
+	);
+
+	const originalArgv1 = process.argv[1];
+	process.argv[1] = echoArgs;
+	const spawnedArgs = async (): Promise<string[]> => {
+		await toolDef.execute("id", {}, undefined, undefined, ctx);
+		return JSON.parse(readFileSync(argSink, "utf8"));
+	};
+	try {
+		const viaRole = await spawnedArgs();
+		check("the role's level reaches --thinking", viaRole[viaRole.indexOf("--thinking") + 1], "high");
+		checkTrue("...which is not the constant it beat", CONFIG.reviewerThinking !== "high");
+		check("--model gets the bare reference, no suffix", viaRole[viaRole.indexOf("--model") + 1], "anthropic/claude-opus-4-8");
+
+		reference = "anthropic/claude-opus-4-8";
+		const bare = await spawnedArgs();
+		check("a reference carrying nothing falls back to the constant", bare[bare.indexOf("--thinking") + 1], CONFIG.reviewerThinking);
+
+		// A level-shaped colon suffix that matched WHOLE is part of the id: the
+		// full match wins, no level was split, and the constant stands.
+		reference = "openrouter/deepseek-chat:high";
+		const wholeMatch = await spawnedArgs();
+		check("a level-shaped id matched whole spawns with the constant", wholeMatch[wholeMatch.indexOf("--thinking") + 1], CONFIG.reviewerThinking);
+		check("...and the whole id as the model", wholeMatch[wholeMatch.indexOf("--model") + 1], "openrouter/deepseek-chat:high");
+	} finally {
+		process.argv[1] = originalArgv1;
+	}
+}
+
 // ------------------------------------------------------ wiring against a fake pi
 
 console.log("\n--- wiring against a fake pi ---");
@@ -668,6 +743,34 @@ console.log("\n--- /advisor command ---");
 	checkTrue("same-model activates the tool", h.getActive().includes("advisor"));
 }
 
+console.log("\n--- /advisor keeps a carried level ---");
+{
+	// The override is stored canonical, so a level the argument carried has to
+	// survive that canonicalization on purpose — otherwise `/advisor opus:high`
+	// would silently drop configuration that `advisor.model: "opus:high"` honors.
+	writeSettings({});
+	const h = makePi();
+	extension(h.pi as never);
+	const ctx = h.uiCtx({ id: "claude-sonnet-5", provider: "anthropic" });
+	h.events.get("session_start")!({}, ctx);
+	const advisor = h.commands.get("advisor");
+
+	await advisor.handler("opus:high", ctx);
+	checkTrue("a suffixed override activates the tool", h.getActive().includes("advisor"));
+	check("the chip still carries the bare id", h.statuses.at(-1), ["advisor", "✦ advisor: claude-opus-4-8"]);
+
+	await advisor.handler("status", ctx);
+	const status = h.notices.at(-1)![1];
+	checkTrue("status names the carried level in words", status.includes("at high thinking"));
+	checkTrue("never as a suffix on the id", !status.includes("claude-opus-4-8:high"));
+
+	// Without a carried level the reviewer runs at CONFIG.reviewerThinking, but
+	// that is spawn-side policy, not configuration worth echoing in status.
+	await advisor.handler("opus", ctx);
+	await advisor.handler("status", ctx);
+	checkTrue("a bare override says nothing about thinking", !h.notices.at(-1)![1].includes("thinking"));
+}
+
 // Kill switch: enabled=false keeps the tool off even with a model set.
 {
 	writeSettings({ model: "opus", enabled: false });
@@ -785,6 +888,16 @@ console.log("\n--- spawn: a null byte must not disable the advisor ---");
 	// silently raised every consult with it.
 	check("the reasoning level is stated, not inherited", args[args.indexOf("--thinking") + 1], CONFIG.reviewerThinking);
 	check("and an explicit level overrides it", buildArgs({ prompt: "p", model: "m", thinking: "high" } as never).includes("high"), true);
+
+	// The explicit slot is how a role-carried level arrives: tool.ts hands
+	// Resolution.thinking straight through, so the user's `:xhigh` beats the
+	// constant — and a resolution that carried nothing still yields one.
+	const viaRole = resolveModelReference("anthropic/claude-opus-4-8:xhigh", MODELS);
+	const roleArgs = buildArgs({ prompt: "p", model: "m", thinking: viaRole.ok ? viaRole.thinking : undefined } as never);
+	check("a role-carried level lands in --thinking ahead of the constant", roleArgs[roleArgs.indexOf("--thinking") + 1], "xhigh");
+	const viaBare = resolveModelReference("anthropic/claude-opus-4-8", MODELS);
+	const bareArgs = buildArgs({ prompt: "p", model: "m", thinking: viaBare.ok ? viaBare.thinking : undefined } as never);
+	check("an uncarried level falls back to the constant", bareArgs[bareArgs.indexOf("--thinking") + 1], CONFIG.reviewerThinking);
 }
 
 rmSync(ROOT, { recursive: true, force: true });

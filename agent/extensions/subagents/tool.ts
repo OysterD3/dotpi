@@ -98,21 +98,28 @@ export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): vo
 			if (!prompt) throw new Error(`The "${name}" subagent needs a prompt describing the task.`);
 
 			// Resolve the effective model. An explicit model must resolve; when a
-			// subagent pins no model, it inherits the session model. A role value
-			// may carry a `:level` suffix — it is stripped, not applied: reasoning
-			// here is pinned per subagent, and the spawn's --model needs a bare
-			// provider/id.
-			const { model: modelReference, reasoning } = effective(agent, settings.defaults);
+			// subagent pins no model, it inherits the session model. A model
+			// reference may carry a `:level` suffix — the spawn's --model still
+			// needs the bare provider/id, but the level is honored, not dropped.
+			// It counts only when resolution actually split: on a full match the
+			// colon was the id's own, and there is no level.
+			const { model: modelReference } = effective(agent, settings.defaults);
 			let model: string | undefined;
+			let carried: string | undefined;
 			if (modelReference) {
 				const resolved = resolveSuffixedReference(resolveRole(modelReference, getAgentDir()), ctx.modelRegistry.getAll());
 				if (!resolved.ok) {
 					throw new Error(`Subagent "${name}" model "${modelReference}" could not be used: ${resolved.error}.`);
 				}
 				model = modelRef(resolved.model);
+				carried = resolved.thinking;
 			} else if (ctx.model) {
 				model = `${ctx.model.provider}/${ctx.model.id}`;
 			}
+
+			// agent.reasoning ?? carried ?? defaults.reasoning — effective() holds
+			// why the carried level sits between the pin and the blanket default.
+			const { reasoning } = effective(agent, settings.defaults, carried);
 
 			onUpdate?.({
 				content: [{ type: "text", text: `Delegating to ${name}${model ? ` (${model}${reasoning ? `, ${reasoning}` : ""})` : ""}…` }],

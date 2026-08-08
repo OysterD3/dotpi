@@ -173,11 +173,19 @@ export function saveSubagents(agentDir: string, settings: SubagentsSettings): vo
 	writeFileSync(storePath(agentDir), `${JSON.stringify(out, null, 2)}\n`);
 }
 
-/** The model/reasoning a subagent will actually run with, applying defaults. */
-export function effective(agent: SubagentDef, defaults: SubagentDefaults): { model?: string; reasoning?: string } {
+/**
+ * The model/reasoning a subagent will actually run with. `carried` is the
+ * `:level` the model reference resolved with (models.ts) — known only after
+ * resolution, which is why callers apply it in a second pass. It sits between
+ * the two configured levels: the per-agent pin stays strongest because it
+ * names this exact subagent, and the blanket default must not silently eat the
+ * model-specific level, or the suffix no-ops for anyone with defaults.reasoning
+ * set.
+ */
+export function effective(agent: SubagentDef, defaults: SubagentDefaults, carried?: string): { model?: string; reasoning?: string } {
 	return {
 		model: agent.model ?? defaults.model,
-		reasoning: agent.reasoning ?? defaults.reasoning,
+		reasoning: agent.reasoning ?? carried ?? defaults.reasoning,
 	};
 }
 

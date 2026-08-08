@@ -115,6 +115,12 @@ export function registerAdvisorTool(pi: ExtensionAPI, options: AdvisorToolOption
 					prompt,
 					cwd: ctx.cwd,
 					model: reviewerModel,
+					// A level the reference carried ("frontier" resolving to
+					// "…opus-5:high") is the user's own configuration, so it outranks
+					// CONFIG.reviewerThinking — buildArgs falls back to the constant
+					// when resolution carried nothing, and --thinking itself is never
+					// omitted either way (see spawn.ts).
+					thinking: resolved.thinking,
 					signal,
 					onProgress: (next) => {
 						progress = next;

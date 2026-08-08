@@ -61,16 +61,21 @@ export default function (pi: ExtensionAPI) {
 		return settings.agents.map((agent) => {
 			const eff = effective(agent, settings.defaults);
 			let model: string;
+			// The Reasoning column shows what a spawn would use, so a carried
+			// `:level` folds in with the same precedence as tool.ts; on a failed
+			// resolution no level is knowable and the configured pair stands.
+			let reasoning = eff.reasoning;
 			if (eff.model) {
 				// The panel shows the resolved model's own id, so a role's `:level`
 				// suffix never reaches the table; the raw reference appears only when
 				// resolution failed and naming what the user configured is the point.
 				const resolved = resolveSuffixedReference(resolveRole(eff.model, getAgentDir()), models);
 				model = resolved.ok ? resolved.model.id : `⚠ ${eff.model}`;
+				if (resolved.ok) reasoning = effective(agent, settings.defaults, resolved.thinking).reasoning;
 			} else {
 				model = "(session default)";
 			}
-			return { name: agent.name, model, reasoning: formatReasoning(eff.reasoning), purpose: agent.purpose };
+			return { name: agent.name, model, reasoning: formatReasoning(reasoning), purpose: agent.purpose };
 		});
 	};
 

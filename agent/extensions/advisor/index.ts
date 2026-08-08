@@ -159,10 +159,13 @@ export default function (pi: ExtensionAPI) {
 		const resolved = resolveModelReference(resolveRole(reference, getAgentDir()), ctx.modelRegistry.getAll());
 		if (!resolved.ok) return `Advisor model "${reference}" is not available: ${resolved.error}.`;
 		const source = sessionModel ? "session override" : pi.getFlag("advisor") ? "--advisor flag" : "advisor.model setting";
+		// As words, never as a `:level` suffix on the id — the suffix is
+		// configuration syntax, not part of any model reference shown to the user.
+		const levelNote = resolved.thinking ? ` at ${resolved.thinking} thinking` : "";
 		const selfNote = sameModel(resolved.model, ctx.model)
 			? " — the same model driving this session, so it reviews its own transcript with a clean context"
 			: "";
-		return `Advisor is on: ${modelRef(resolved.model)} (${source})${selfNote}. Call it before committing to an approach and before declaring done.`;
+		return `Advisor is on: ${modelRef(resolved.model)}${levelNote} (${source})${selfNote}. Call it before committing to an approach and before declaring done.`;
 	};
 
 	pi.registerCommand("advisor", {
@@ -202,7 +205,12 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`Cannot use "${arg}" as an advisor: ${resolved.error}.`, "error");
 				return;
 			}
-			sessionModel = modelRef(resolved.model);
+			// The override is stored canonical, but a level the argument carried
+			// (`/advisor frontier` mapping to "…opus-5:high") is user-written
+			// configuration and must survive the canonicalization — the same
+			// reference set as advisor.model would keep it. Reattached, it splits
+			// back off identically on every later resolve, so the spawn honors it.
+			sessionModel = resolved.thinking ? `${modelRef(resolved.model)}:${resolved.thinking}` : modelRef(resolved.model);
 			sessionOff = false;
 			syncActive(ctx);
 			ctx.ui.notify(

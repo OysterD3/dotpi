@@ -1,9 +1,10 @@
 /**
  * Tests for the subagents extension: parsing/validation, the file-first store
  * (agent/subagents.json) and its precedence over the settings.json fallback,
- * effective model/reasoning, the panel, model resolution, the dispatch tool's
- * pre-spawn branches, the interactive wizard (driven by a scripted fake ui),
- * and the /subagents add|edit|remove flows against a fake pi.
+ * effective model/reasoning (including the carried `:level` precedence), the
+ * panel, model resolution, the dispatch tool's pre-spawn branches, the
+ * interactive wizard (driven by a scripted fake ui), and the /subagents
+ * add|edit|remove flows against a fake pi.
  *
  * The happy path — an actual subagent spawn — needs the network and lives in
  * subagents.live.ts, excluded from this suite.
@@ -28,6 +29,7 @@ const { parseSubagents, effective, loadSubagents, saveSubagents, storePath } = a
 const { formatReasoning, tableLines } = await import("./panel.ts");
 const { resolveModelReference, modelRef, resolveSuffixedReference, splitThinking } = await import("./models.ts");
 const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
+const { buildArgs } = await import("./spawn.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
 const STORE = storePath(AGENT);
@@ -80,6 +82,19 @@ const D = parsed.settings.defaults;
 check("agent inherits default model, keeps own reasoning", effective(parsed.settings.agents[0], D), { model: "gpt-5.6-luna", reasoning: "high" });
 check("agent overrides model and reasoning", effective(parsed.settings.agents[1], D), { model: "gpt-5.6-sol", reasoning: "low" });
 check("dropped reasoning falls back to default", effective(parsed.settings.agents[2], D), { model: "gpt-5.6-luna", reasoning: "high" });
+
+console.log("\n--- registry: a carried :level sits between the pin and the default ---");
+{
+	// The third argument is the level a model reference resolved with. The pin
+	// names this exact subagent, so it must win; the blanket default must not
+	// silently eat the model-specific level, or the suffix no-ops for anyone
+	// with defaults.reasoning set.
+	const bare = { name: "x", purpose: "y" };
+	check("a per-agent pin beats a carried level", effective({ ...bare, reasoning: "low" }, { reasoning: "medium" }, "high").reasoning, "low");
+	check("a carried level beats the blanket default", effective(bare, { reasoning: "medium" }, "high").reasoning, "high");
+	check("no carried level falls back to the default", effective(bare, { reasoning: "medium" }, undefined).reasoning, "medium");
+	check("a carried level alone stands", effective(bare, {}, "xhigh").reasoning, "xhigh");
+}
 
 // ------------------------------------------------------------ store & precedence
 
@@ -152,6 +167,19 @@ console.log("\n--- model resolution: a role value's :level suffix ---");
 	check("a level on a colon id splits only the level", rids("openrouter/deepseek-chat:free:max"), "openrouter/deepseek-chat:free");
 	check("a level does not rescue an unknown model", rids("nope:high"), "ERR");
 
+	// The carried level exists ONLY when resolution used the split path — a
+	// full match means the colon was part of the model id, however
+	// level-shaped its tail looks.
+	const thinkingOf = (ref: string) => {
+		const r = resolveSuffixedReference(ref, COLONED);
+		return r.ok ? r.thinking : "ERR";
+	};
+	check("the split path carries its level", thinkingOf("openai-codex/gpt-5.6-luna:high"), "high");
+	check("a whole-matched level-shaped tail carries none", thinkingOf("weird/prompt-machine:high"), undefined);
+	check("a level split off a colon id is carried", thinkingOf("openrouter/deepseek-chat:free:max"), "max");
+	check("a plain reference carries none", thinkingOf("sol"), undefined);
+	check("a non-level suffix carries none", thinkingOf("openrouter/deepseek-chat:free"), undefined);
+
 	// An ambiguous full reference FOUND models, so it must keep its ambiguity
 	// error rather than split: here the bare retry would slip past the two
 	// dated matches and quietly resolve to the alias the full reference never
@@ -215,8 +243,10 @@ console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 	checkTrue("unresolvable model is rejected", (await throws({ subagent_type: "ghost", prompt: "go" })).includes("could not be used"));
 
 	// A pre-aborted signal stops runSubagent before any subprocess, but after
-	// the model was resolved and reported — so this pins that a role-carried
-	// `:level` never reaches the --model pi would be spawned with.
+	// the model was resolved and reported — so this pins that a carried
+	// `:level` never reaches the --model pi would be spawned with, while it
+	// DOES arrive as the reasoning the spawn runs at (details.reasoning is the
+	// same value tool.ts forwards as the spawn's thinking).
 	const updates: any[] = [];
 	let abortMessage = "";
 	try {
@@ -226,6 +256,64 @@ console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 	}
 	checkTrue("the aborted spawn failed instead of running", abortMessage.includes("aborted"));
 	check("the forwarded model is the bare reference", updates[0]?.details?.model, "openai-codex/gpt-5.6-luna");
+	check("the carried level is the spawn's reasoning", updates[0]?.details?.reasoning, "high");
+}
+
+// ------------------------------------- the carried :level precedence, end to end
+
+console.log("\n--- the task tool: carried :level precedence (no subprocess) ---");
+{
+	// The registry carries an id whose tail LOOKS like a level, to pin that a
+	// whole match never manufactures one; the role in settings.json carries a
+	// real level, so the suffix arrives the way a provider profile ships it.
+	const REGISTRY = [...MODELS, { id: "prompt-machine:high", name: "Prompt Machine", provider: "weird" }];
+	writeFileSync(
+		join(AGENT, "settings.json"),
+		JSON.stringify({ models: { active: "test", providers: { test: { boosted: "openai-codex/gpt-5.6-sol:max" } } } }),
+	);
+
+	let toolDef: any;
+	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, {
+		settings: () => ({
+			defaults: { reasoning: "medium" },
+			agents: [
+				{ name: "pinned", purpose: "x", model: "openai-codex/gpt-5.6-luna:high", reasoning: "low" },
+				{ name: "role-carried", purpose: "x", model: "boosted" },
+				{ name: "whole-match", purpose: "x", model: "weird/prompt-machine:high" },
+				{ name: "plain", purpose: "x", model: "openai-codex/gpt-5.6-luna" },
+			],
+		}) as never,
+	});
+	const ctx = { cwd: ROOT, modelRegistry: { getAll: () => REGISTRY }, isProjectTrusted: () => false };
+	const spawnDetails = async (agentName: string) => {
+		const updates: any[] = [];
+		try {
+			await toolDef.execute("id", { subagent_type: agentName, prompt: "go" }, AbortSignal.abort(), (u: any) => updates.push(u), ctx);
+		} catch {
+			/* the pre-aborted signal is the point — no subprocess runs */
+		}
+		return updates[0]?.details ?? {};
+	};
+
+	check("a per-agent pin beats the carried level", (await spawnDetails("pinned")).reasoning, "low");
+	const carried = await spawnDetails("role-carried");
+	check("a role-carried level beats the blanket default", carried.reasoning, "max");
+	check("and the role's model spawns bare", carried.model, "openai-codex/gpt-5.6-sol");
+	const whole = await spawnDetails("whole-match");
+	check("a whole-matched level-shaped tail yields no level", whole.reasoning, "medium");
+	check("with the colon kept in the model id", whole.model, "weird/prompt-machine:high");
+	check("no suffix anywhere falls back to the default", (await spawnDetails("plain")).reasoning, "medium");
+
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+}
+
+console.log("\n--- spawn args: the reasoning becomes --thinking ---");
+{
+	// buildArgs is the last hop before the subprocess; details.reasoning above
+	// is exactly what tool.ts hands it as `thinking`.
+	const args = buildArgs({ prompt: "go", cwd: ROOT, model: "openai-codex/gpt-5.6-sol", thinking: "max", approved: false });
+	check("--thinking carries the level", args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), ["--thinking", "max"]);
+	checkTrue("no level, no flag", !buildArgs({ prompt: "go", cwd: ROOT, approved: false }).includes("--thinking"));
 }
 
 // --------------------------------------------------- the interactive wizard
@@ -392,6 +480,33 @@ const extension = (await import("./index.ts")).default;
 	await h.commands.get("subagents").handler("remove reviewer", ctx2);
 	check("subagent removed from the store", loadSubagents(AGENT).settings.agents.map((a) => a.name), []);
 	checkTrue("task tool inactive again", !h.getActive().includes("task"));
+	rmStore();
+}
+
+console.log("\n--- wiring: the panel shows what a spawn would use ---");
+{
+	// A suffixed model with no per-agent pin and a blanket default: the
+	// Reasoning column must show the carried level, and the Model column the
+	// bare id — a suffix leaking into either would misreport the spawn.
+	rmStore();
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+	saveSubagents(AGENT, {
+		defaults: { reasoning: "medium" },
+		agents: [{ name: "veiled", purpose: "suffix carrier", model: "openai-codex/gpt-5.6-luna:high" }],
+	});
+	const h = makePi();
+	extension(h.pi as never);
+	const notices: Array<[string, string]> = [];
+	const ctx: any = {
+		hasUI: true,
+		cwd: ROOT,
+		modelRegistry: { getAll: () => MODELS },
+		ui: { notify: (m: string, l: string) => notices.push([l, m]), setStatus: () => {} },
+	};
+	await h.commands.get("subagents").handler("list", ctx);
+	const table = notices.find(([, m]) => m.includes("Subagent"))?.[1] ?? "";
+	checkTrue("the model cell is the bare id", table.includes("gpt-5.6-luna") && !table.includes(":high"));
+	checkTrue("the reasoning cell is the carried level, not the default", table.includes("High") && !table.includes("Medium"));
 	rmStore();
 }
 

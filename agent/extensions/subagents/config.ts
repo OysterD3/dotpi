@@ -38,7 +38,7 @@ export interface SubagentDef {
 	name: string;
 	/** pi model reference; falls back to defaults.model, then the session model. */
 	model?: string;
-	/** pi thinking level; falls back to defaults.reasoning, then the session level. */
+	/** pi thinking level; falls back to a `:level` the model reference resolved with, then defaults.reasoning, then the session level. */
 	reasoning?: string;
 	/** Shown to the main agent (so it knows when to delegate) and in the panel. */
 	purpose: string;

@@ -41,10 +41,14 @@ export const CONFIG = {
 	/** Wall-clock ceiling for one reviewer call, so a hung spawn cannot wedge the turn. */
 	reviewerTimeoutMs: 5 * 60_000,
 	/**
-	 * Reasoning level for the reviewer, passed explicitly on every call.
+	 * Reasoning level for the reviewer when the configured reference carries
+	 * none. A `:level` suffix on the reference (a role value like
+	 * "anthropic/claude-opus-5:high") is user-written configuration and beats
+	 * this constant — see Resolution.thinking in models.ts.
 	 *
-	 * The point is that it is stated at all. Omitting --thinking does not mean
-	 * "the model's default", it means the child reads settings.json and takes
+	 * Either way --thinking is passed explicitly on every call. The point is
+	 * that it is stated at all: omitting --thinking does not mean "the model's
+	 * default", it means the child reads settings.json and takes
 	 * `defaultThinkingLevel` — so raising that for the session you are typing in
 	 * silently raised every advisor consult too, and the advisor is spawned
 	 * per tool call with the whole transcript in its prompt. That coupling is

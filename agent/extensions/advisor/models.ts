@@ -12,8 +12,9 @@
  *   3. bare `id`                 exact, but rejected if ambiguous
  *   4. partial                   substring of id or name; prefer an alias
  *   5. `ref:level` retry         only after 1–4 all miss, a trailing thinking
- *                                level (pi's own `--model` syntax) is split off
- *                                and the bare reference retried
+ *                                level (pi's own `--model` syntax) is split off,
+ *                                the bare reference retried, and the level
+ *                                carried out on the Resolution for the spawn
  *
  * Two capability checks you might expect, and what happens to them here:
  *   - "the advisor must be at least as capable as the main model". This needs a
@@ -33,7 +34,8 @@ import { join } from "node:path";
 
 export type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string; readonly contextWindow?: number };
 
-export type Resolution<M> = { ok: true; model: M } | { ok: false; error: string };
+/** `thinking` is set only when resolution split a `:level` off the reference — a full match means the colon was part of the id, and there is no level. */
+export type Resolution<M> = { ok: true; model: M; thinking?: string } | { ok: false; error: string };
 
 /** True for an undated alias id (no trailing `-YYYYMMDD`). */
 function isAlias(id: string): boolean {
@@ -105,21 +107,22 @@ export function resolveModelReference<M extends ModelLike>(reference: string, mo
 	// suffix is part of the id, the reading every other copy of this rule
 	// gives it — and a bare ambiguity is reported as such, since "matched no
 	// model" would be a lie about a reference that matched several. The level
-	// itself is dropped: this extension pins the reviewer's thinking level on
-	// purpose (CONFIG.reviewerThinking), so the suffix exists only to let the
-	// shared role value resolve to a model at all.
+	// itself rides out on the Resolution: the suffix is user-written
+	// configuration, so the spawn lets it beat CONFIG.reviewerThinking — and it
+	// is set only on this path, because a reference that matched whole had no
+	// level, just a colon in its id.
 	const split = splitThinking(trimmed);
 	if (split.thinking) {
 		const bareExact = exactMatch(split.reference, models);
 		if (bareExact === "ambiguous") {
 			return { ok: false, error: `model "${split.reference}" matches more than one model — qualify it as provider/id` };
 		}
-		if (bareExact) return { ok: true, model: bareExact };
+		if (bareExact) return { ok: true, model: bareExact, thinking: split.thinking };
 		const barePartial = partialMatch(split.reference, models);
 		if (barePartial === "ambiguous") {
 			return { ok: false, error: `model "${split.reference}" matches several models — use a more specific id` };
 		}
-		if (barePartial) return { ok: true, model: barePartial };
+		if (barePartial) return { ok: true, model: barePartial, thinking: split.thinking };
 	}
 
 	return { ok: false, error: `model "${reference}" matched no available model` };

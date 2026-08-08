@@ -14,6 +14,13 @@ export type ModelLike = { readonly id: string; readonly name?: string; readonly 
 
 export type Resolution<M> = { ok: true; model: M } | { ok: false; error: string };
 
+/**
+ * A Resolution that may carry the `:level` split off the reference. `thinking`
+ * is set ONLY when the split path resolved — on a full match the colon was part
+ * of the model id, so there is no level to carry.
+ */
+export type SuffixedResolution<M> = { ok: true; model: M; thinking?: string } | { ok: false; error: string };
+
 /** True for an undated alias id (no trailing `-YYYYMMDD`). */
 function isAlias(id: string): boolean {
 	return !/-\d{8}$/.test(id);
@@ -94,10 +101,12 @@ export function modelRef(model: ModelLike): string {
  * suffixed references keeps this rule; diverging here would make the same role
  * value resolve in one extension and error in another.
  *
- * The level itself is dropped, never applied — reasoning here is pinned per
- * subagent on purpose; the suffix is stripped only so the model resolves.
+ * The split's level rides back on the ok result so the caller can weigh it
+ * against per-agent and default reasoning (tool.ts holds that precedence). A
+ * full match carries none — its colon belonged to the id — and which model any
+ * reference resolves to is unchanged from when the level was discarded.
  */
-export function resolveSuffixedReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
+export function resolveSuffixedReference<M extends ModelLike>(reference: string, models: readonly M[]): SuffixedResolution<M> {
 	const full = resolveModelReference(reference, models);
 	if (full.ok) return full;
 	const trimmed = reference.trim();
@@ -109,7 +118,7 @@ export function resolveSuffixedReference<M extends ModelLike>(reference: string,
 	// in settings.json, so the one worth diagnosing. A bare ambiguity is the
 	// exception: it found models, and naming them is the actionable error.
 	if (!bare.ok && exactMatch(split.reference, models) !== "ambiguous" && partialMatch(split.reference, models) !== "ambiguous") return full;
-	return bare;
+	return bare.ok ? { ok: true, model: bare.model, thinking: split.thinking } : bare;
 }
 
 /**
