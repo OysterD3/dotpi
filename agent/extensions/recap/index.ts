@@ -10,9 +10,10 @@
  *   - `/recap` is always available and does exactly what it says.
  *   - Auto-on-return is approximated from wall-clock idle — the gap between the
  *     agent going idle and your next message — and generated reactively when you
- *     return, not proactively. Because that costs a model call and a short wait in
- *     front of your own message, it is OFF by default. Turn it on with
- *     `recap.autoOnReturn: true`.
+ *     return, not proactively. It is ON by default (config.ts says why); the
+ *     cost is a cheap-model call and a bounded wait in front of your own
+ *     message, only after a real absence. Turn it off with
+ *     `recap.autoOnReturn: false`.
  *
  * The recap model is configurable: `recap.model` in settings.json, falling back
  * to the active session model. A recap is display-only — information for the

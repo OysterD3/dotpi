@@ -52,8 +52,7 @@
     "model": "frontier"
   },
   "recap": {
-    "model": "cheap",
-    "autoOnReturn": true
+    "model": "cheap"
   },
   "compaction": {
     "enabled": true

@@ -55,12 +55,13 @@ export const CONFIG = {
 	/**
 	 * Whether auto-recap-on-return is on by default.
 	 *
-	 * With real focus detection the recap could be generated proactively while you
-	 * are away, costing nothing extra and ready the instant you return. pi has no
-	 * focus events, so an auto-recap here costs a model call and a few seconds in
-	 * front of your own message every time you return after an idle gap. That is a
-	 * real cost to opt into, so it defaults off. Enable with
-	 * `recap.autoOnReturn: true`.
+	 * On, because a recap you have to configure first is a recap you never see —
+	 * this ran for weeks without producing a single entry before that lesson
+	 * landed. The cost of being on is a cheap-model call and a few seconds in
+	 * front of your own message, and only after a genuine 5-minute absence with
+	 * the other gates passed; the wait is bounded by autoTimeoutMs and any
+	 * failure lets the message through untouched. Opt out with
+	 * `recap.autoOnReturn: false`.
 	 */
-	autoOnReturnDefault: false,
+	autoOnReturnDefault: true,
 };

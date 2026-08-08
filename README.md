@@ -958,7 +958,7 @@ pick:
 {
   "recap": {
     "model": "<small-fast-model>", // optional; default: the active model
-    "autoOnReturn": false,          // optional; see below
+    "autoOnReturn": true,           // optional; on by default — see below
     "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
     "minUserTurns": 3               // optional
   }
@@ -973,8 +973,10 @@ is ready the instant you come back. pi exposes no focus events, so:
 - `/recap` is always available and does exactly what it says.
 - Auto-on-return is approximated from wall-clock idle — the gap between the agent going idle
   (`agent_settled`) and your next message — and generated *reactively* when you return, not
-  proactively. Because that costs a model call and a few seconds in front of your own message,
-  it is **off by default**. Enable it with `recap.autoOnReturn: true`.
+  proactively. It is **on by default**: a recap that must be configured first is a recap that never
+  gets seen (this one ran for weeks without producing an entry). The cost is a cheap-model call and
+  a bounded few-second wait in front of your own message, only after a genuine absence; opt out
+  with `recap.autoOnReturn: false`.
 
 The auto path has three more gates: a minimum of user turns before a recap is worthwhile (3), a
 minimum of turns since the last recap so the same spot is not recapped twice (2), and never while
