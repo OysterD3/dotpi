@@ -957,7 +957,7 @@ pick:
 ```jsonc
 {
   "recap": {
-    "model": "<small-fast-model>", // optional; default: the active model
+    "model": "<small-fast-model>", // optional; default: the `cheap` role if defined, else the active model
     "autoOnReturn": true,           // optional; on by default — see below
     "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
     "minUserTurns": 3               // optional

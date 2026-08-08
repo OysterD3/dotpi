@@ -20,6 +20,15 @@ export const CONFIG = {
 	charsPerToken: 4,
 
 	/**
+	 * The role tried when no `recap.model` is configured. A recap is exactly the
+	 * job role maps put on their cheapest model, so the default reaches for the
+	 * role rather than making everyone write one line of settings. When no role
+	 * map defines it, the session model stands in (selectModel in model.ts) — a
+	 * setup without roles configured nothing and must break nothing.
+	 */
+	defaultModelRole: "cheap",
+
+	/**
 	 * Manual `/recap` request timeout. 30s matches what the goal evaluator uses;
 	 * a summary slower than that is not worth waiting on.
 	 */

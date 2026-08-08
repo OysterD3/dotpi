@@ -8,10 +8,9 @@
  */
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
-import { resolveModel, resolveRole } from "./model.ts";
+import { selectModel } from "./model.ts";
 import { RECAP_SYSTEM, recapRequest } from "./prompts.ts";
 import { loadSettings } from "./settings.ts";
 import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
@@ -43,20 +42,17 @@ export type GenerateOptions = {
 /**
  * Produce a recap of the current session, or explain why one could not be made.
  *
- * Model selection: the configured `recap.model` if set and resolvable, otherwise
- * the active session model — the same fallback the goal evaluator uses.
+ * Model selection: an explicit `recap.model` must resolve; unconfigured, the
+ * `cheap` role when a role map defines it, else the active session model —
+ * selectModel in model.ts states the policy.
  */
 export async function generateRecap(ctx: ExtensionContext, options: GenerateOptions): Promise<RecapOutcome> {
 	const { settings } = loadSettings(options.agentDir, ctx.cwd, ctx.isProjectTrusted());
 
-	let model = ctx.model as ModelLike | undefined;
-	if (settings.model) {
-		const all = ctx.modelRegistry.getAll() as unknown as ModelLike[];
-		const resolved = resolveModel(resolveRole(settings.model, getAgentDir()), all);
-		if (!resolved.ok) return { kind: "failed", reason: resolved.error };
-		model = resolved.model;
-	}
-	if (!model) return { kind: "failed", reason: "no model selected" };
+	const all = ctx.modelRegistry.getAll() as unknown as ModelLike[];
+	const selected = selectModel(settings.model, ctx.model as ModelLike | undefined, all, options.agentDir);
+	if (!selected.ok) return { kind: "failed", reason: selected.error };
+	const model = selected.model;
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model as never);
 	if (!auth.ok) return { kind: "failed", reason: auth.error };

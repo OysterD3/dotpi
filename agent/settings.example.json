@@ -80,9 +80,6 @@
   "goal": {
     "model": "cheap"
   },
-  "recap": {
-    "model": "cheap"
-  },
   "scratchpad": {
     "enabled": true,
     "root": ""

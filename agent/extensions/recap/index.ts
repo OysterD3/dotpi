@@ -15,8 +15,9 @@
  *     message, only after a real absence. Turn it off with
  *     `recap.autoOnReturn: false`.
  *
- * The recap model is configurable: `recap.model` in settings.json, falling back
- * to the active session model. A recap is display-only — information for the
+ * The recap model needs no configuration: unconfigured, the `cheap` role is
+ * used when a role map defines it, else the active session model; an explicit
+ * `recap.model` overrides. A recap is display-only — information for the
  * person returning, stored as a custom entry that never enters LLM context.
  *
  *   prompts.ts     the recap prompt

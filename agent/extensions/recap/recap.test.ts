@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG } from "./config.ts";
 import { hasPriorRecap, shouldAutoRecap, totalUserTurns, userTurnsSinceLastRecap } from "./gate.ts";
-import { resolveModel, splitThinking } from "./model.ts";
+import { resolveModel, selectModel, splitThinking } from "./model.ts";
 import { formatIdle } from "./render.ts";
 import { loadSettings } from "./settings.ts";
 import { buildSections, buildTranscript, countUserTurns } from "./transcript.ts";
@@ -74,6 +74,39 @@ console.log("\n--- splitThinking ---");
 check("a level splits", splitThinking("anthropic/claude-opus-5:high"), { reference: "anthropic/claude-opus-5", thinking: "high" });
 check("a non-level suffix stays put", splitThinking("deepseek/deepseek-chat:free"), { reference: "deepseek/deepseek-chat:free" });
 check("no colon passes through", splitThinking("anthropic/claude-sonnet-5"), { reference: "anthropic/claude-sonnet-5" });
+
+console.log("\n--- selectModel: cheap role by default, session model when roles are absent ---");
+{
+	const dirWith = (settings: unknown) => {
+		const dir = mkdtempSync(join(tmpdir(), "recap-select-"));
+		writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
+		return dir;
+	};
+	const roleMap = dirWith({ models: { active: "a", providers: { a: { cheap: "openai-codex/gpt-5.6-sol" } } } });
+	const suffixedMap = dirWith({ models: { active: "a", providers: { a: { cheap: "anthropic/claude-sonnet-5:low" } } } });
+	const deadMap = dirWith({ models: { active: "a", providers: { a: { cheap: "gone/away" } } } });
+	const noCheap = dirWith({ models: { active: "a", providers: { a: { fast: "openai-codex/gpt-5.6-sol" } } } });
+	const bare = dirWith({});
+	const session = M("qoder", "ultimate");
+	const picked = (r: { ok: true; model: { provider: string; id: string } } | { ok: false }) => (r.ok ? `${r.model.provider}/${r.model.id}` : "ERR");
+
+	// Explicit config is a promise: it resolves or the recap fails, session
+	// model or not — a silent stand-in would run the transcript elsewhere.
+	check("an explicit model wins", picked(selectModel("gpt-5.6-sol", session, MODELS, roleMap)), "openai-codex/gpt-5.6-sol");
+	check("an explicit miss fails, never falls back", picked(selectModel("nope", session, MODELS, roleMap)), "ERR");
+
+	// Unconfigured: the cheap role when a map defines it...
+	check("the cheap role is the default", picked(selectModel(undefined, session, MODELS, roleMap)), "openai-codex/gpt-5.6-sol");
+	check("a role value's :level strips on the way", picked(selectModel(undefined, session, MODELS, suffixedMap)), "anthropic/claude-sonnet-5");
+
+	// ...and the session model everywhere else. The default configured nothing,
+	// so it must break nothing: no map, no cheap role, or a cheap role naming a
+	// dead model all degrade to what the session already runs.
+	check("no role map -> session model", picked(selectModel(undefined, session, MODELS, bare)), "qoder/ultimate");
+	check("no cheap role -> session model", picked(selectModel(undefined, session, MODELS, noCheap)), "qoder/ultimate");
+	check("a dead cheap role -> session model", picked(selectModel(undefined, session, MODELS, deadMap)), "qoder/ultimate");
+	check("nothing anywhere is the only failure", selectModel(undefined, undefined, MODELS, bare).ok, false);
+}
 
 console.log("\n--- transcript ---");
 const conversation = [

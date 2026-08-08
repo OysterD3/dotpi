@@ -25,6 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIG } from "./config.ts";
 
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
@@ -117,6 +118,33 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
 
 	// Both misses name the reference as configured — the suffix may be the typo.
 	return { ok: false, error: `recap.model "${reference}" matched no available model` };
+}
+
+/**
+ * Pick the model a recap call runs on.
+ *
+ * An explicit `recap.model` must resolve or the recap fails: the user named
+ * it, and a silent stand-in would send their transcript somewhere they did
+ * not choose. With nothing configured, the `cheap` role is tried — but only
+ * when a role map actually defines it; an unmapped "cheap" is a role name,
+ * not a reference worth partial-matching against model ids. In every other
+ * case the session model stands in: the default must not be able to break a
+ * setup that configured nothing.
+ */
+export function selectModel<M extends ModelLike>(
+	configured: string | undefined,
+	sessionModel: M | undefined,
+	models: readonly M[],
+	agentDir: string,
+): Resolution<M> {
+	if (configured) return resolveModel(resolveRole(configured, agentDir), models);
+
+	const mapped = resolveRole(CONFIG.defaultModelRole, agentDir);
+	if (mapped !== CONFIG.defaultModelRole) {
+		const resolved = resolveModel(mapped, models);
+		if (resolved.ok) return resolved;
+	}
+	return sessionModel ? { ok: true, model: sessionModel } : { ok: false, error: "no model selected" };
 }
 
 /**

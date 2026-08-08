@@ -51,9 +51,6 @@
   "advisor": {
     "model": "frontier"
   },
-  "recap": {
-    "model": "cheap"
-  },
   "compaction": {
     "enabled": true
   },
