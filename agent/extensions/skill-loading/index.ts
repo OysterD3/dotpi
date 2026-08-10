@@ -47,7 +47,7 @@
 import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadBodies, renderBodies } from "./body.ts";
 import { MODE_HELP, MODES, type Mode, type SkillLoadingSettings } from "./config.ts";
-import { findSkillsSection, renderSection } from "./parse.ts";
+import { findSkillsSection, renderSection, stripDescription } from "./parse.ts";
 import { decide, modeFor } from "./select.ts";
 import { read, storePath, write } from "./store.ts";
 
@@ -69,14 +69,19 @@ export function apply(prompt: string, settings: SkillLoadingSettings): Applied |
 	if (!section) return undefined;
 
 	const decided = decide(section.entries, settings);
-	const kept = decided.filter((d) => d.mode !== "command").map((d) => d.entry);
+	// `brief` keeps its entry and loses its description; the cut is made on the
+	// entry's own text so everything else pi wrote survives it.
+	const kept = decided
+		.filter((d) => d.mode !== "command")
+		.map((d) => (d.mode === "brief" ? { ...d.entry, raw: stripDescription(d.entry.raw) } : d.entry));
 	const preloaded = decided.filter((d) => d.mode === "preload").map((d) => d.entry);
+	const briefed = decided.filter((d) => d.mode === "brief").length;
 
-	// Nothing hidden and nothing preloaded is pi's own prompt. Returning it
+	// Nothing hidden, shortened or preloaded is pi's own prompt. Returning it
 	// unmodified rather than a rebuilt copy keeps the no-configuration case
 	// byte-identical, so installing this extension and setting nothing cannot
 	// change a single token.
-	if (kept.length === section.entries.length && preloaded.length === 0) return undefined;
+	if (kept.length === section.entries.length && preloaded.length === 0 && briefed === 0) return undefined;
 
 	const bodies =
 		preloaded.length > 0

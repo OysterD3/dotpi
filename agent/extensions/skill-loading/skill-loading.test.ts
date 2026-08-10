@@ -193,8 +193,26 @@ check("and the entry is still listed", preloaded.prompt.includes("<name>dataviz<
 check("the model is told not to read it again", preloaded.prompt.includes("without reading their files first"));
 check("the rest of the prompt is intact", preloaded.prompt.startsWith(BASE) && preloaded.prompt.endsWith(TAIL));
 
+const brief = apply(FULL, settingsWith({ skills: { pptx: "brief" } }))!;
+const briefEntry = /<skill>\s*<name>pptx<\/name>[\s\S]*?<\/skill>/.exec(brief.prompt)?.[0] ?? "";
+check("dropping a description shortens the prompt", brief.delta > 0);
+check("the skill is still listed", briefEntry.includes("<name>pptx</name>"));
+// The path is what makes a name usable — without it the model knows a skill
+// exists and has no way to open it.
+check("with its path", briefEntry.includes("pptx/SKILL.md"));
+check("and without its description", !briefEntry.includes("<description>"));
+// Exactly one entry loses one element. A skill nobody configured keeps
+// everything pi gave it, which counting the block says better than naming one.
+eq(
+	"and no other entry loses anything",
+	(brief.prompt.match(/<description>/g) ?? []).length,
+	(FULL.match(/<description>/g) ?? []).length - 1,
+);
+check("the rest of the prompt is intact", brief.prompt.startsWith(BASE) && brief.prompt.endsWith(TAIL));
+eq("and the mode is reported", brief.decided.find((d) => d.name === "pptx")?.mode, "brief");
+
 // The combination is the point: hide the ones you invoke by hand, inline the one
-// you always want, list the rest.
+// you always want, shorten the ones whose names say enough, list the rest.
 const mixed = apply(FULL, settingsWith({ skills: { dataviz: "preload", "chrome-devtools-mcp:*": "command" } }))!;
 check("a hidden skill is out", !mixed.prompt.includes("<name>chrome-devtools-mcp:a11y</name>"));
 check("a preloaded skill is in, with its body", mixed.prompt.includes("Use a bar chart."));

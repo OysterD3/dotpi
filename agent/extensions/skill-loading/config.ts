@@ -13,6 +13,11 @@
  *   name     pi's own behaviour: name, description and file path in the
  *            `<available_skills>` block, so the model can decide to read it.
  *            A few dozen tokens per skill, every turn, forever.
+ *   brief    the same entry with the description taken out — name and path
+ *            only. The description is the sentence or three that explains when
+ *            the skill applies, and it is most of what an entry costs; the
+ *            path is one line and is what makes a name usable, so it stays.
+ *            For a skill whose name already says when you want it.
  *   command  nothing in the prompt at all. `/skill:<name>` still works — pi
  *            builds those commands from the full skill list, not from what
  *            reached the prompt — so the skill is not disabled, just no longer
@@ -22,12 +27,13 @@
  *            file before it can act. For the one or two skills that apply to
  *            nearly every turn.
  */
-export const MODES = ["name", "command", "preload"] as const;
+export const MODES = ["name", "brief", "command", "preload"] as const;
 
 export type Mode = (typeof MODES)[number];
 
 export const MODE_HELP: Record<Mode, string> = {
-	name: "Listed for the model to find and read. pi's default.",
+	name: "Name, description and path — pi's default, and what a skill costs unless you say otherwise.",
+	brief: "Name and path only. The description, which is most of the cost, is dropped.",
 	command: "Hidden from the prompt. Still reachable with /skill:<name>.",
 	preload: "Listed, and its whole body is in the prompt already.",
 };

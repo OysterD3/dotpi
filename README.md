@@ -868,7 +868,8 @@ request:
 ```
 Skill loading — pick a skill to change what it costs
 
-  name      Listed for the model to find and read. pi's default.
+  name      Name, description and path — pi's default, and what a skill costs unless you say otherwise.
+  brief     Name and path only. The description, which is most of the cost, is dropped.
   command   Hidden from the prompt. Still reachable with /skill:<name>.
   preload   Listed, and its whole body is in the prompt already.
 
@@ -895,6 +896,15 @@ The file is plain enough to edit by hand when you want a glob — `"chrome-devto
 "command"` covers a whole plugin family including members it does not have yet. Exact names beat
 globs, longer globs beat shorter ones, and the picker always writes an exact name so a later glob
 edit cannot silently move a skill you pinned.
+
+`brief` sits between the two cheap ends. An entry is a name, a description and a path, and the
+description — the sentence or three saying when the skill applies — is most of what it costs; the
+path is one line. So `brief` cuts the description and keeps the rest, which leaves the model knowing
+the skill exists and able to open it, having paid almost nothing to be told. That is the right trade
+for a skill whose name already says when you want it (`pptx`, `chrome-devtools-mcp:a11y-debugging`)
+and the wrong one for a skill whose value is that the model recognises the *situation* from the
+description without being told. The cut is made on the entry's own text rather than by rebuilding
+it, so the path, the indentation and anything in pi's format this repo does not model survive it.
 
 `command` is the one that reads wrong at first, because "hidden" sounds like "disabled" and is not.
 pi builds its `/skill:<name>` commands from the loaded skill list, not from what reached the prompt

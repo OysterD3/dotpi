@@ -110,6 +110,21 @@ export function findSkillsSection(prompt: string): SkillsSection | undefined {
 	return { start, end, entries };
 }
 
+const DESCRIPTION = /\s*<description>[\s\S]*?<\/description>/;
+
+/**
+ * One entry's text with its description element taken out.
+ *
+ * Cut from `raw` rather than rebuilt from the parsed fields, for the same
+ * reason `renderSection` re-emits `raw`: everything else pi wrote — the path,
+ * the indentation, any element this file does not model — survives untouched,
+ * and exactly one thing is removed. An entry with no description to cut comes
+ * back unchanged, which is what a `replace` with no match already does.
+ */
+export function stripDescription(raw: string): string {
+	return raw.replace(DESCRIPTION, "");
+}
+
 /**
  * The replacement text for the section: the kept entries, in their original
  * order and wording.
