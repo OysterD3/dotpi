@@ -9,6 +9,7 @@ pi reads its config from `~/.pi/agent/`, so this repo *is* `~/.pi`.
 
 | Path | What it does |
 | --- | --- |
+| `agent/AGENTS.md` | Global instructions, loaded into every session. A project's own `AGENTS.md`/`CLAUDE.md` layers on top. |
 | `agent/settings.json` | Global pi settings: theme, model, and the `permissions` policy. |
 | `agent/keybindings.json` | Key overrides. Frees Shift+Tab for the permission-mode cycler. |
 | `agent/themes/one-dark-pro.json` | One Dark Pro colour theme. |
