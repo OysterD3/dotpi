@@ -1955,6 +1955,48 @@ empty.
 | `render.ts` | The one-line transcript entry |
 | `context-diet.test.ts` | 101 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
 
+**`agent/extensions/test-streak/`** — says something when the suite is being re-run instead of read.
+
+A turn that keeps running `pnpm test` with nothing changed between the calls stopped verifying
+anything after the first one. Nothing else here catches it: every run is a legitimate tool call, the
+turn never stalls, `stalled-turn` sees content, `context-diet` sees a turn doing work. From inside
+the loop each round looks like the first. The failure is already recorded in this repo — the
+workflow agent that ran `pnpm check` twenty-five times and reported success without once starting
+the thing it built (see **Why the output did not work** above).
+
+**The discriminator is not the command, it is what sits between two of them.** Test, edit, test is
+work. Test, test, test cannot tell the model anything the first one did not, and no phrasing of a
+task makes the second run informative. So an `edit` or `write` ends a streak and nothing else does:
+reads, greps and `git status` neither count nor clear, because none of them changes what the suite
+sees. Four consecutive runs with no edit at all between them is not something a working session
+does; that is the threshold, and it repeats at every multiple, up to three times per turn.
+
+**A reminder, not a block.** The streak is a heuristic about intent, and refusing a suite run on a
+heuristic would eventually refuse the one that mattered. A wrong reminder costs a sentence of
+context and the model is free to disagree with it.
+
+It is delivered as **`steer`, not `followUp`** — the same reasoning `context-diet` writes out at its
+escalation, and the reason that mode exists. `followUp` only drains once the model stops calling
+tools of its own accord, which is precisely the behaviour this exists to interrupt; a nudge sent
+that way would be invisible to exactly the runaway turn it was written for. `steer` is polled every
+round, right after the tool results that triggered it. The test asserts the mode, because nothing at
+runtime would say.
+
+The wording matters as much as the timing. It names the count and the command, because a model
+mid-loop has no sense of either, and it offers *two* ways out — change something, or say plainly
+what you observed, including that it is still failing. "Stop" alone reads as "abandon the task", and
+a model will pick the suite over abandoning every time.
+
+There is no settings block. Both constants live in `streak.ts`, and "should the agent be told it is
+looping" is not a preference anyone holds.
+
+| File | Role |
+| --- | --- |
+| `streak.ts` | What counts as a suite run, what clears a streak, and the counter (pure) |
+| `reminder.ts` | The reminder text and the UI notice (pure) |
+| `index.ts` | The `tool_call` and `agent_start` hooks, and the steer |
+| `test-streak.test.ts` | 38 checks, delivery mode included |
+
 **`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
 
 When a provider finishes a response having produced no content and reports `stopReason: "stop"`, pi
