@@ -751,7 +751,7 @@ session rather than writing a file that would be quietly ignored.
 | `add-dir.test.ts` / `add-dir.e2e.ts` | Unit and end-to-end coverage |
 
 **`agent/extensions/scratchpad/`** — a session-scoped temp directory the agent is told to use, and
-is never asked for permission to write to. Shaped after Claude Code's. `/scratchpad` shows it:
+is never asked for permission to write to. Shaped after Claude Code's. The `scratchpad` tool returns it:
 
 ```
 /tmp/pi-501/-Users-me-app/019fd9d7-07a1-7a9c/scratchpad
@@ -828,7 +828,7 @@ told about it.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Creating it, announcing it, `/scratchpad` |
+| `index.ts` | Creating it, announcing it, the `scratchpad` tool |
 | `paths.ts` | The layout, and what each level is for (pure) |
 | `prompt.ts` | **What the model is told, and why it is worded that way** (pure) |
 | `config.ts` | Settings, the announcement channel, caps |
@@ -1009,42 +1009,53 @@ where your transcript is sent.
 | `config.ts` | Limits and constants |
 | `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
 
-**`agent/extensions/session-ref/`** — adds `/ref`: tag another session into this one, as a summary
-or its full transcript.
+**`agent/extensions/session-ref/`** — type `#` mid-prompt to tag another session into this one, as
+a summary or its full transcript. There is no command, because remembering another session is
+something you realise mid-sentence.
 
 ```
-/ref              # pick from this project's sessions (all projects on request)
-/ref dark mode    # filter by name, id, or anything said in the session
+fix it like #dark                          # the editor's own autocomplete lists matching sessions
+fix it like #[dark mode work·0a3f1c2b] did  # picking one leaves this marker where the cursor was
+check ##[dark mode work·0a3f1c2b]           # two hashes ask for the full transcript instead
 ```
 
-Pick a session, then pick HOW it comes in. **Summary** is a structured handoff (goal, done,
-decisions, state, open items) written by the cheap-role model — the same zero-config policy as
-recap: the `cheap` role when the role map defines it, the session model otherwise. **Full** is the
-flattened transcript (messages and tool-call lines; tool results are not replayed), and it is
+On submit the marker becomes the session's name in quotes and the session arrives ahead of your
+prompt, so the sentence you wrote still reads as one. **Summary** is a structured handoff (goal,
+done, decisions, state, open items) written by the cheap-role model — the same zero-config policy
+as recap: the `cheap` role when the role map defines it, the session model otherwise. **Full** is
+the flattened transcript (messages and tool-call lines; tool results are not replayed), and it is
 always behind a confirm that states the price in tokens against the context you actually have
 LEFT, not the window on paper — the injection becomes part of this session's context and re-costs
 on every future turn. When it cannot fit, the oldest messages drop first and the drop is said out
 loud.
 
+The two modes are deliberately asymmetric: a summary is a bounded model call, so `#` never asks
+anything; a full transcript re-costs forever, so `##` always does.
+
 Three details worth knowing. The injected block is a custom *message* entry — it enters LLM
 context, unlike a display entry — wrapped with provenance (name, id, date, the referenced
 session's cwd) and one guard line marking the transcript as record, not fresh instructions. A
 rewound session contributes only the branch it would itself resume with — pi's own
-compaction-aware walk from the file's last entry — never the abandoned forks. And every dialog
-step escapes cleanly; nothing is injected until the last one.
+compaction-aware walk from the file's last entry — never the abandoned forks. And the marker carries
+eight characters of the session id, not just a label: two sessions can share a display name, so a
+name alone could bind a marker to the wrong conversation. With the id in the text a marker resolves
+to the same session after a restart, from another project, or typed by hand — and one that resolves
+to nothing is left in the prompt exactly as typed rather than silently going missing.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | The `/ref` command, the dialogs, and the injected message's renderer |
+| `index.ts` | The `#` provider's wiring, the submit hook, and the injected message's renderer |
+| `autocomplete.ts` | The `#` completion provider, stacked on pi's own (pure rules) |
+| `marker.ts` | `#[Name·id]` in, quoted name out; the id is what makes a marker resolvable (pure) |
 | `sessions.ts` | Picker rules (pure) and loading the chosen branch |
 | `transcript.ts` | Branch → budgeted plain text (recap's flattening, adapted) |
 | `summarize.ts` | The handoff-summary call |
 | `model.ts` | Cheap-role model policy (recap's, copied) |
 | `prompts.ts` | Summariser prompt + the injected block |
 | `config.ts` | Budgets and thresholds |
-| `session-ref.test.ts` | Picker rules, branch loading, budgets, and the wiring end-to-end |
+| `session-ref.test.ts` | Picker rules, branch loading, budgets, marker and trigger rules, and `#`-to-submit end-to-end |
 
-**`agent/extensions/ultracode/`** — ultracode: a `workflow` tool that orchestrates fleets of
+**`agent/extensions/dynamic-workflow/`** — dynamic workflow: a `workflow` tool that orchestrates fleets of
 subagents from a script, and the triggers that opt the model into using it.
 
 ```
@@ -1088,7 +1099,7 @@ because the old phrasings are what the spend was made of.
 
 ### Nothing is capped
 
-There used to be an `ultracode.limits` block over most of this — a concurrency cap, an agent cap per
+There used to be an `dynamicWorkflow.limits` block over most of this — a concurrency cap, an agent cap per
 run, an item cap on `parallel()`/`pipeline()`, a per-agent wall-clock ceiling, and character budgets
 on forked context. All of it is gone, and the reasoning is worth keeping because it is the opposite
 of what a limits block is usually for.
@@ -1122,7 +1133,7 @@ Two internals survive, and neither is a budget: `retainRuns` (how many run direc
 the oldest are pruned — without it the store grows without bound) and `schemaRetries` (how many times
 to re-ask an agent whose JSON did not parse). Both are fixed constants in `config.ts`, not settings.
 
-A leftover `ultracode.limits` block in `agent/settings.json` is inert; nothing reads it.
+A leftover `dynamicWorkflow.limits` block in `agent/settings.json` is inert; nothing reads it.
 
 ### Why the output did not work
 
@@ -1384,7 +1395,7 @@ as conversation; roles you did not mention use the default subagent model, and a
 instruction holds for later workflows until you change it.
 
 **What an agent inherits, most specific first:** `agent(…, { model })` → the agentType's own model →
-`subagents.json`'s `defaults.model` → the run default (`ultracode.model`, else the **session's**
+`subagents.json`'s `defaults.model` → the run default (`dynamicWorkflow.model`, else the **session's**
 model). The same chain applies to the reasoning level.
 
 The `defaults` link was missing until it was measured. `agents.ts` has always parsed
@@ -1559,7 +1570,7 @@ Both kinds of block are excluded, on the same terms, or the one line would mean 
 depending on which prompt fired: `ask_user` questions via `ask-user:asking` (the same announcement
 the statusline and `cmux-notify` use), and permission prompts via `permissions:ask` plus the
 `permissions:answered` edge added for this — an opening announcement alone would stop the clock and
-never restart it. The `/ask-user test` demo is deliberately *not* excluded: its `blocking: false`
+never restart it. A non-blocking ask is deliberately *not* excluded: its `blocking: false`
 says the prompt is on screen but the agent never stopped, so pausing would subtract time the agent
 really did spend. The arithmetic lives in `waiting.ts` as a pure clock-injected accumulator, tested
 without sleeping.
@@ -1759,9 +1770,21 @@ model/reasoning for the ones that omit them. The `task` tool is offered only whe
 subagent is configured (active-tool sync, like the advisor), so an empty config adds nothing to the
 prompt, and its description lists the available subagents so the model knows what it can delegate to.
 
-**Configure inside pi, not by hand.** `/subagents add | edit | remove` walks through pi's dialogs —
-name, model (picked from your registry), reasoning, purpose, tools (all / read-only / custom), and an
-optional role prompt — and writes `agent/subagents.json`. That file is the source of truth and takes
+**Describe one, don't fill in seven dialogs.** `/subagents add a read-only reviewer on the frontier
+model that only greps and reads` hands the sentence to the cheap-role model, which drafts the whole
+definition — name, purpose, model, reasoning, tools, role prompt — and you get one confirm. The
+drafter is given the actual catalogue (the roles in your active profile, the models that resolve,
+the seven thinking levels, the tools a headless spawn accepts) and its answer is checked against
+that catalogue again, because a model asked for JSON will invent a model id that is not signed in.
+Name and purpose are required — without them there is no draft; an unusable model, level or tool is
+dropped to the inherited default and said out loud in the confirm, since a subagent with nothing
+pinned still works. It prefers a **role** over a model id: `fast` follows `/provider` to whatever the
+next profile calls fast, a literal id keeps billing the old one. Decline the confirm and the wizard
+opens pre-filled rather than throwing the draft away.
+
+**The wizard is still there.** `/subagents add` with no description, plus `edit` and `remove`, walk
+through pi's dialogs — name, model (picked from your registry), reasoning, purpose, tools (all /
+read-only / custom), and an optional role prompt. Both paths write `agent/subagents.json`. That file is the source of truth and takes
 precedence over a `subagents` block in `settings.json`, which is kept only as a read fallback for
 manual or legacy config; the first interactive edit migrates such a block into the store. A bad entry
 is dropped with a reason (shown under `/subagents`), never fatal. The store ships seeded with the set
@@ -1784,6 +1807,7 @@ below — edit or clear it with `/subagents`:
 | File | Role |
 | --- | --- |
 | `index.ts` | Load, tool registration, active-tool sync, `/subagents add\|edit\|remove`, status chip |
+| `draft.ts` | One sentence → a validated definition: the catalogue, the prompt, and the check (pure parse) |
 | `manage.ts` | The interactive wizard over pi's dialogs (pure of pi imports; scriptable in tests) |
 | `tool.ts` | The `task` dispatch tool: validate, resolve the pinned model, spawn, return the report + usage |
 | `registry.ts` | Parse/validate the definitions, the file-first store (`subagents.json`), and its save (pure) |
@@ -1791,38 +1815,6 @@ below — edit or clear it with `/subagents`:
 | `models.ts` | Model reference resolution (pure) |
 | `spawn.ts` | The headless `pi` subagent subprocess (model, reasoning, tools, role prompt) |
 | `subagents.test.ts` | Unit and wiring coverage (`subagents.live.ts` spawns a real subagent) |
-
-**`agent/extensions/self-update/`** — keeps a machine current by pulling this repo in the background
-at session start, so once a device has cloned it stays up to date with no manual step.
-
-Because `~/.pi` **is** the git repo, "update" is a `git pull` in its root. On session start (interactive
-only — headless subagents load no extensions), throttled to `intervalHours` across launches via a
-gitignored timestamp, it runs `git pull --rebase --autostash` fire-and-forget and notifies **only when
-HEAD actually moved** (`pi config updated (N new commits) — restart pi or /reload to apply`). New code
-applies on the next launch or `/reload`.
-
-`--rebase --autostash` is what makes it safe on a machine that edits its own config: pi rewrites
-`settings.json` at runtime, so the tree is usually dirty; autostash tucks those changes aside, pulls,
-and reapplies them. If the pull fails (offline, or a real conflict) the rebase is aborted so the tree
-is left clean, and the run stays silent — a stale checkout beats a nagging banner or a half-rebased
-repo. It's disabled where it can't help (no `pi.exec`, non-interactive) and can be turned off entirely.
-
-```jsonc
-{
-  "selfUpdate": {
-    "enabled": true,       // optional; master switch
-    "intervalHours": 6     // optional; 0 = check every start
-  }
-}
-```
-
-| File | Role |
-| --- | --- |
-| `index.ts` | session_start gating (interactive, enabled, throttled) and the fire-and-forget run |
-| `update.ts` | resolve root → remember HEAD → pull → report only if HEAD moved; abort on failure (pure of pi) |
-| `state.ts` | the throttle timestamp and `isDue` (pure) |
-| `config.ts` | defaults and constants |
-| `self-update.test.ts` | Throttle, settings, the flow against scripted git, and session_start gating |
 
 **`agent/extensions/tool-batching/`** — six lines of prompt, because turns are what a task costs.
 
@@ -1960,7 +1952,7 @@ empty.
 
 A turn that keeps running `pnpm test` with nothing changed between the calls stopped verifying
 anything after the first one. Nothing else here catches it: every run is a legitimate tool call, the
-turn never stalls, `stalled-turn` sees content, `context-diet` sees a turn doing work. From inside
+turn never stalls, and `context-diet` sees a turn doing work. From inside
 the loop each round looks like the first. The failure is already recorded in this repo — the
 workflow agent that ran `pnpm check` twenty-five times and reported success without once starting
 the thing it built (see **Why the output did not work** above).
@@ -1998,66 +1990,8 @@ looping" is not a preference anyone holds.
 | `index.ts` | The `tool_call` and `agent_start` hooks, and the steer |
 | `test-streak.test.ts` | 38 checks, delivery mode included |
 
-**`agent/extensions/stalled-turn/`** — resumes a turn that ended because the provider sent nothing.
-
-When a provider finishes a response having produced no content and reports `stopReason: "stop"`, pi
-ends the turn — correctly, because "stop" means the assistant is done. But the assistant never said
-anything, so the work halts mid-task with no error, no explanation, and nothing distinguishing it
-from a genuine finish. That is the "it terminated halfway" failure.
-
-The known offender is **`pi-provider-qoder` 0.2.9**, whose stream finalisation ends with:
-
-```js
-if (toolCallsState.length > 0) output.stopReason = "toolUse";
-else output.stopReason = "stop";
-```
-
-run unconditionally, **overwriting the real `finish_reason`** captured forty lines earlier. Any
-stream ending without tool calls — a dropped connection, a truncated SSE, a `length` cap, a content
-filter — is reported as a clean finish. Every local qoder session ends with `content: []`,
-`stopReason: "stop"` after four to eight successful tool calls. The bug also destroys the evidence
-needed to diagnose it: the discarded `finish_reason` is the field that would say which of those it
-was. (Its other defect is unrelated but worth knowing: `usage` is initialised to zeros and never
-populated, so qoder spend is invisible to `/usage`. That does *not* break compaction — pi's
-`getAssistantUsage` rejects all-zero usage and falls back to a chars/4 estimate.)
-
-Nothing in the extension is qoder-specific, because nothing needs to be: an assistant message with
-no content at all is never a legitimate reply, whoever produced it. Thinking blocks don't count as
-content — reasoning with no reply is still no reply, and it's a shape qoder produces. `aborted` and
-`error` are excluded: the first is the user pressing escape, and resuming would fight them; the
-second is already reported, and resuming would loop on a real fault.
-
-**Recovery has to re-enter the loop.** No hook can make pi continue — `message_end` can replace a
-message but the loop only continues on tool calls, and forcing `stopReason` to `error` would just
-end the turn with an error instead. So the extension sends one message saying the reply was lost and
-to carry on from the existing tool results, phrased as a transport fact rather than a reprimand (the
-model didn't choose to stop; telling it to "continue as instructed" invites it to apologise and
-re-plan).
-
-**The cap is the load-bearing part.** A provider stuck returning empty completions would otherwise
-loop forever, spending real money producing nothing and looking like a hang. Two resumes per *human*
-turn — counted per human turn, not per loop iteration, because the resume itself triggers a turn and
-a turn-based reset would refill the budget every time and make the cap meaningless. Only an
-interactive prompt refills it. When the cap is spent the extension says so; giving up silently would
-reproduce the exact symptom it exists to remove.
-
-```jsonc
-{
-  "stalledTurn": {
-    "enabled": true,    // optional
-    "maxResumes": 2     // optional; 0 detects and reports without ever resuming
-  }
-}
-```
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Settings, the `message_end` hook, the per-human-turn budget |
-| `detect.ts` | What counts as a stall, and the provider bug behind it (pure) |
-| `config.ts` | Settings and the resume prompt |
-| `stalled-turn.test.ts` | Detection, settings, the cap, and the reset guard |
-
-**`agent/extensions/memory/`** — gives pi memory by reading another agent's store on this machine.
+**`agent/extensions/memory/`** — gives pi memory: it starts from another agent's store on this
+machine, and forks its own copy the first time it writes.
 
 That store lives at `~/.claude/projects/<slug>/memory/`: a `MEMORY.md` index loaded into context
 each session, plus per-fact markdown files with YAML frontmatter (`name` / `description` / `type`,
@@ -2069,30 +2003,46 @@ cached, not resent as a message). A global `~/.claude/CLAUDE.md` is folded in wh
 already loads project `CLAUDE.md`/`AGENTS.md` as context files, so those aren't touched — this adds
 the dedicated memory store on top.
 
+The **`memory` tool** is the write path: `write` replaces a whole fact file, `delete` removes one,
+`read` returns one (the injected block is budgeted and may have dropped it), `list` names them all.
+The model maintains `MEMORY.md` through the same `write` action, as the format expects.
+
+**The first write forks.** pi's own store is `<XDG_CONFIG_HOME or ~/.config>/pi/memory/<slug>/` —
+outside this repo, for the same reasons as skill-loading's store. Before that first write there is
+nothing there and the other agent's directory is read in place, untouched. On the first write every
+`*.md` is cloned across, atomically (staged in a temp sibling and renamed, so a crashed clone can
+never leave a half-copied directory that wins precedence and hides the rest), and `.origin.json`
+records what was forked and when. From then on pi reads only its own copy: **a fork, not a sync** —
+nothing is written back, and facts the other agent adds later are not read here. `/memory` says
+which store it is reading and, when forked, from where and when.
+
+A write refreshes the assembled block, so the next request carries it — and pays a prompt-cache
+miss for the change. That is the cost of memory that is actually current.
+
 `/memory` shows what's loaded and from where; `/memory show` prints the block; `/memory reload`
 re-reads. Verified against a real store (an 8-fact project loaded cleanly at 10.5 KB).
-
-Reading that store is the "for a start" scope; writing pi's own memory can layer on later over the
-same format and location.
 
 ```jsonc
 {
   "memory": {
-    "enabled": true,        // optional; master switch
-    "includeFacts": true,   // optional; full fact bodies, not just the MEMORY.md index
-    "maxChars": 24000,      // optional; budget for the injected block (oldest facts dropped past it)
-    "claudeHome": "~/.claude" // optional; where the store lives
+    "enabled": true,           // optional; master switch
+    "includeFacts": true,      // optional; full fact bodies, not just the MEMORY.md index
+    "maxChars": 24000,         // optional; budget for the injected block (oldest facts dropped past it)
+    "claudeHome": "~/.claude", // optional; the store read until the first write forks it
+    "piHome": "~/.config/pi",  // optional; where pi's own store lives
+    "writable": true           // optional; false keeps the old read-only behaviour, tool and all
   }
 }
 ```
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Load on session start, append to the system prompt, `/memory`, status chip |
+| `index.ts` | Load on session start, append to the system prompt, the `memory` tool, `/memory` |
+| `store.ts` | pi's own store: where it lives, the atomic fork, guarded writes (pure path rules) |
 | `locate.ts` | `cwd → slug` and finding the matching memory directory (pure) |
 | `load.ts` | Read MEMORY.md + fact files, parse frontmatter, budgeted assembly (pure) |
 | `config.ts` | Settings and the injected-block header |
-| `memory.test.ts` | Locating, parsing, assembly, settings, and wiring coverage |
+| `memory.test.ts` | Locating, parsing, assembly, settings, the fork, and wiring coverage |
 
 **`agent/extensions/ask-user/`** — a structured question tool. Gives the main agent an `ask_user`
 tool to pause and put a decision back to *you* — when it's genuinely blocked on a call
@@ -2157,7 +2107,7 @@ Both of those follow from one announcement: `ask-user:asking` carries the questi
 decide what to do with it. Three listen today — the statusline stands down, `cmux-notify` raises the
 pane so a question waiting in a tab you are not watching rings the same bell a permission prompt
 does, and `elapsed` stops the turn clock. The payload's `blocking` flag separates a question the
-agent is stuck behind from the `/ask-user test` demo, which puts the same prompt on screen while the
+agent is stuck behind from a non-blocking ask, which puts the same prompt on screen while the
 agent carries on working: the two subscribers that act on "the agent has stopped" honour it, and the
 statusline does not, because the demo owns the bottom of the screen either way.
 
@@ -2177,15 +2127,12 @@ expressible that way. The component (`prompt.ts`) is a thin renderer over a pure
 this one is not, deliberately. An agent that asks when the decision is genuinely yours is not a
 preference to be tuned, it is how the agent is meant to behave — and a knob for it is only ever a
 route back to a tool that exists and never gets used. A stray `askUser` block left in
-`settings.json` is inert, and `/ask-user off` does nothing.
+`settings.json` is inert: there is no way to turn it off, and no command that could grow one.
 
 The one condition is that somebody is there to answer, which is a fact about the session rather than
 a choice about it: in a headless run (`-p`, an `--mode json` subagent) `ctx.hasUI` is false, the tool
 is not offered by active-tool sync, and the opening nudge below stays quiet. If the model somehow
 calls it headless anyway it gets a graceful "no user available, proceed" result instead of hanging.
-`/ask-user` reports that state and `/ask-user test` runs two sample questions — one of them
-recommended — so you can try the arrows, the badge, Tab notes and review live.
-
 ### Getting it used at all
 
 Offering the tool turned out not to be the same as getting it used, and the gap is **timing, not
@@ -2222,7 +2169,7 @@ waiting on no one. Like the tool itself, neither of those is a setting — the c
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Tool registration, active-tool sync, the nudge hooks, `/ask-user [status\|test]` |
+| `index.ts` | Tool registration, active-tool sync, the nudge hooks |
 | `tool.ts` | The `ask_user` tool: normalize questions/options, run the prompt, graceful headless path |
 | `interaction.ts` | The interaction as a pure state machine — selection, free text, notes, review |
 | `prompt.ts` | The focused TUI component that stands in for the editor: layout, scrolling, key handling |
@@ -2503,8 +2450,7 @@ machine without untracking the file.
 
 Extensions and themes are picked up automatically by filename — no registration step.
 
-**Staying in sync.** The `self-update` extension pulls this repo in the background at startup, so a
-cloned machine keeps itself current (see its section above). To update by hand, or on demand:
+**Staying in sync.** Nothing pulls this repo for you — do it when you want the latest:
 
 ```sh
 git -C ~/.pi pull --rebase --autostash    # then restart pi or /reload

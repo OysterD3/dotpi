@@ -109,10 +109,6 @@
     "dropOldReasoning": false,
     "keepRecentReasoning": 10
   },
-  "stalledTurn": {
-    "enabled": true,
-    "maxResumes": 2
-  },
   "visualReference": {
     "enabled": true,
     "readAdvice": true,
