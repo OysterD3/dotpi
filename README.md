@@ -1594,6 +1594,80 @@ without sleeping.
 | `config.ts` | Tick period and constants |
 | `elapsed.test.ts` | Unit and wiring coverage |
 
+**`agent/extensions/transcript/`** — draws the transcript column the way Claude Code draws it.
+
+pi's transcript is a stack of filled panels. A user turn is a bar of background colour, an assistant
+turn is unmarked prose indented one column, and every tool call is a full-width box tinted green,
+red or grey by its outcome. On a turn that reads four files and runs three commands, the boxes are
+most of the screen — and the tint is carrying one bit, *succeeded*, that the output inside it
+already told you.
+
+Claude Code's transcript is the same information with the panels taken away: one mark opens each
+block and the text hangs off it. That is the whole change.
+
+```
+                                        ▸ Review my chat with Glendon
+ Review my chat with Glendon
+                                        ● Done. 405 tests pass, ruff clean. The log
+ Done. 405 tests pass, ruff clean. The     line above is a real send — method, path,
+ log line above is a real send — met…      params, and nothing else.
+
+┌────────────────────────────────┐        ∟ $ pnpm test
+│ $ pnpm test                    │          405 passed
+│ 405 passed                     │
+└────────────────────────────────┘        ∟ $ pnpm lint          ← red mark, failed
+                                            1 error
+       before                                        after
+```
+
+**Only the frame changes.** Each patch narrows the render width by exactly the width of the mark it
+is about to add, then puts the mark beside the first line that *shows* something — pi opens most
+blocks with a spacer — and pads the rest into a hanging indent, so a wrapped paragraph stays aligned
+under its own first word. Content is never re-coloured or re-flowed: pi's markdown, its diffs, its
+highlighted source and its command output arrive exactly as their own renderers drew them. A tool
+call is de-boxed by rendering the box's children directly rather than by restyling the box, which
+drops the tint and the box's vertical padding in the same move.
+
+**The mark carries the failure now.** Dropping the box drops the red tint, which was pi's only sign
+that a command failed, so a failed call's `∟` is painted in the theme's error colour instead. Losing
+that was the one regression the before/after harness caught, and a failed `pnpm lint` that reads
+exactly like a passing one is worse than any box.
+
+**The mechanism, and what it costs.** pi exposes no hook for its own transcript:
+`registerMessageRenderer` and `registerEntryRenderer` are both keyed by a *custom* type and only
+ever draw entries an extension invented. So this replaces the `render` method on the three
+component classes pi exports publicly. That is sound rather than lucky — pi's extension loader
+aliases `@earendil-works/pi-coding-agent` to the running `dist/index.js`, so the class an extension
+imports is the same object `interactive-mode.js` constructs from, which was confirmed by identity
+(`a.AssistantMessageComponent === AssistantMessageComponent`) before any of this was written, and
+`instanceof` keeps working where interactive-mode walks its children.
+
+But it is a reach into internals that carry no compatibility promise, and the limit follows:
+**a pi upgrade can silently revert the transcript to stock.** Every patch falls back to the original
+renderer on any throw, so the failure mode is losing the marks and never losing the session — and
+nothing will tell you it happened. Verified against pi 0.84.1.
+
+Three kinds of tool call keep pi's own framing, because restyling them would be worse than leaving
+them alone: any tool an **extension** registered a renderer for, and any tool that draws its own
+frame — `dynamic-workflow`'s panel and `advisor`'s progress rows both depend on that, and this would
+otherwise fight their authors — plus any result carrying images, which pi composes with spacers
+below the box.
+
+There is no settings block: the extension either draws the transcript or it does not, and deleting
+the folder is the off switch. Two things it does **not** do, both of which the Claude Code
+transcript has: consecutive tool calls are not merged into one summary line (*"Read 2 files, ran 1
+shell command"*), and call lines keep pi's own wording (`$ pnpm test`) rather than being rephrased
+(*"Ran pnpm test"*). Merging needs cross-component state that has to survive streaming, reload and
+rewind; it is a separate piece of work, not a coat of paint.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Applies the patches; resolves pi's live theme so a `/theme` switch repaints the marks |
+| `patch.ts` | The three replaced `render` methods, and the reach into pi's internals, in one place |
+| `render.ts` | Gutter insertion, ANSI-safe (pure) |
+| `config.ts` | The marks and their colour roles |
+| `transcript.test.ts` | The pure helpers, plus all three components rendered and read back |
+
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
 blocked waiting on *you*, so a pane you are not looking at raises the session's "needs input" chip
 and a banner instead of waiting silently. Two things qualify: a permission prompt, and an `ask_user`
