@@ -562,8 +562,8 @@ console.log("\n--- collect: the announced shape is the one a real producer sends
 // any missing specifier anywhere in ultracode's import graph, so a broken
 // dependency of spawn.ts would silently retire the one guard against the
 // flat-vs-nested `cost` bug and the suite would still be green.
-const ultracodeSpawn = new URL("../ultracode/spawn.ts", import.meta.url);
-const ultracode = existsSync(ultracodeSpawn) ? await import("../ultracode/spawn.ts") : undefined;
+const ultracodeSpawn = new URL("../dynamic-workflow/spawn.ts", import.meta.url);
+const ultracode = existsSync(ultracodeSpawn) ? await import("../dynamic-workflow/spawn.ts") : undefined;
 if (!ultracode) {
 	console.log("SKIP  ultracode is not installed beside this extension");
 } else {
@@ -582,7 +582,7 @@ if (!ultracode) {
 	// row turns entirely on this string matching ultracode's tool name — rename
 	// it back to "workflows" and the two-rows-in-two-sections confusion returns
 	// silently, with every other test still green.
-	const config = await import("../ultracode/config.ts");
+	const config = await import("../dynamic-workflow/config.ts");
 	const source = config.SPEND_SOURCE;
 
 	const log = new AnnouncedSpendLog();

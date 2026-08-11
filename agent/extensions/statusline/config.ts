@@ -12,7 +12,7 @@ import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 export type ColorSpec = ThemeColor | `#${string}`;
 
 /**
- * pi.events channel the ultracode extension announces its active workflow runs
+ * pi.events channel the dynamic-workflow extension announces its active workflow runs
  * on. Declared here rather than imported from that extension: each extension
  * stays self-contained, the same way cmux-notify re-declares the env names
  * cmux's own bridge uses. Payload: `{ lines: string[] | undefined }`.
@@ -32,7 +32,7 @@ export const WORKFLOW_CHANNEL = "ultracode:panel";
 export const ASK_CHANNEL = "ask-user:asking";
 
 /**
- * pi.events channel the ultracode extension announces its /workflows control
+ * pi.events channel the dynamic-workflow extension announces its /workflows control
  * panel on. Payload: `{ active: boolean }`.
  *
  * The panel takes the editor's place the way a question does, so this footer —

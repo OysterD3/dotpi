@@ -21,7 +21,19 @@
 
 export const ENTRY_TYPE = "ultracode";
 
-export const SETTINGS_KEY = "ultracode";
+export const SETTINGS_KEY = "dynamicWorkflow";
+
+/**
+ * The pre-rename settings block, still read.
+ *
+ * The extension is presented as "dynamic workflow" now, but the keyword that
+ * opts a turn in is still `ultracode` and a settings file written before the
+ * rename is still on disk. Reading both — new key winning per-field — is what
+ * stops a rename from silently reverting someone's `keywordTrigger: false` to
+ * the default, which is the failure mode a settings rename has: nothing errors,
+ * the old block is simply never looked at again.
+ */
+export const LEGACY_SETTINGS_KEY = "ultracode";
 
 /** Saved workflow scripts, addressable by `name`. */
 export const WORKFLOW_DIR = "workflows";

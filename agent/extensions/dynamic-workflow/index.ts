@@ -1,5 +1,13 @@
 /**
- * ultracode — the workflow orchestration trigger.
+ * dynamic-workflow — the workflow orchestration trigger.
+ *
+ * Presented as "dynamic workflow"; the keyword that opts a turn in is still
+ * `ultracode`, and `/ultracode` still works as an alias for the command. The
+ * reminder texts in reminders.ts deliberately still say "Ultracode is on/off":
+ * they are model-facing, they name the word the user actually types, and
+ * restoreFromBranch reads them back out of persisted sessions by substring —
+ * rewording them would silently lose the mode on every session resumed from
+ * before this rename.
  *
  * Two halves:
  *
@@ -20,7 +28,8 @@
  *      - the "ultracode" KEYWORD in a typed prompt opts in that single turn
  *        (detector and reminder text verbatim from the binary; the keyword
  *        changes nothing else — no effort bump, prompt not rewritten);
- *      - `/ultracode` turns the mode on for the session: thinking is raised to
+ *      - `/dynamic-workflow` (alias `/ultracode`) turns the mode on for the
+ *        session: thinking is raised to
  *        xhigh ("xhigh + dynamic workflow orchestration, this session only")
  *        and standing reminders follow a fixed cadence — full on entry, "still
  *        on" every 10th user turn, exit notice once when it goes off. Changing
@@ -53,17 +62,16 @@
  * interactive input only.
  *
  * Settings (agent settings.json):
- *   ultracode.keywordTrigger  boolean, default true
- *   ultracode.model           "provider/model-id" for workflow subagents;
- *                             defaults to the session model
- *   ultracode.limits          overrides for concurrency, caps, timeouts,
- *                             retention and context budgets (config.ts)
+ *   dynamicWorkflow.keywordTrigger  boolean, default true
+ *   dynamicWorkflow.model           "provider/model-id" for workflow subagents;
+ *                                   defaults to the session model
+ *   The pre-rename `ultracode.*` block is still read, per field, as a fallback.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
+import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, LEGACY_SETTINGS_KEY, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
@@ -75,7 +83,7 @@ import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir, u
 import { registerWorkflowTool, RESULT_MESSAGE, usableModels, WORKFLOW_TOOL_NAME } from "./tool.ts";
 import { showWorkflows } from "./tui.ts";
 
-const BADGE = "✦ ultracode";
+const BADGE = "✦ dynamic workflow";
 
 interface ToggleEntry {
 	action: "on" | "off";
@@ -86,10 +94,19 @@ interface ToggleEntry {
 export function loadSettings(agentDir: string): UltracodeSettings {
 	try {
 		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
+		// Per-field, not whole-block: a settings.json that was half-migrated by
+		// hand — the new key present but carrying only `model` — must still get
+		// its old `keywordTrigger` honoured rather than silently defaulted.
+		const legacy = raw?.[LEGACY_SETTINGS_KEY] as Record<string, unknown> | undefined;
+		const current = raw?.[SETTINGS_KEY] as Record<string, unknown> | undefined;
+		const read = <T>(field: string, ok: (value: unknown) => boolean): T | undefined => {
+			if (current && ok(current[field])) return current[field] as T;
+			if (legacy && ok(legacy[field])) return legacy[field] as T;
+			return undefined;
+		};
 		return {
-			keywordTrigger: typeof block?.keywordTrigger === "boolean" ? block.keywordTrigger : DEFAULT_SETTINGS.keywordTrigger,
-			model: typeof block?.model === "string" ? block.model : undefined,
+			keywordTrigger: read<boolean>("keywordTrigger", (v) => typeof v === "boolean") ?? DEFAULT_SETTINGS.keywordTrigger,
+			model: read<string>("model", (v) => typeof v === "string"),
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };
@@ -311,7 +328,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerEntryRenderer<ToggleEntry>(ENTRY_TYPE, (entry, _options, theme) =>
-		entry.data ? new Text(theme.fg("accent", `✦ ultracode ${entry.data.action}`), 0, 0) : undefined,
+		entry.data ? new Text(theme.fg("accent", `✦ dynamic workflow ${entry.data.action}`), 0, 0) : undefined,
 	);
 
 	const setBadge = (ctx: { ui: { setStatus: (key: string, text: string | undefined) => void }; hasUI: boolean }) => {
@@ -484,7 +501,7 @@ export default function (pi: ExtensionAPI) {
 		appliedLevel = undefined;
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "off" });
 		setBadge(ctx);
-		if (ctx.hasUI) ctx.ui.notify(`Ultracode off — thinking level changed to ${event.level}`, "info");
+		if (ctx.hasUI) ctx.ui.notify(`Dynamic workflow off — thinking level changed to ${event.level}`, "info");
 	});
 
 	const setLevel = (level: string) => {
@@ -498,12 +515,12 @@ export default function (pi: ExtensionAPI) {
 
 	const enable = (ctx: ExtensionContext) => {
 		if (mode.isOn()) {
-			ctx.ui.notify("Current effort level: ultracode (xhigh + dynamic workflow orchestration; this session only)", "info");
+			ctx.ui.notify("Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)", "info");
 			return;
 		}
 		const model = ctx.model;
 		if (!model) {
-			ctx.ui.notify("Ultracode needs a model selected.", "error");
+			ctx.ui.notify("Dynamic workflow needs a model selected.", "error");
 			return;
 		}
 		// pi clamps the requested level to the model's supported set (upward
@@ -515,7 +532,7 @@ export default function (pi: ExtensionAPI) {
 		const applied = pi.getThinkingLevel();
 		if (applied !== "xhigh" && applied !== "max") {
 			setLevel(before);
-			ctx.ui.notify(`Ultracode runs at xhigh thinking, which ${model.id} doesn't support — switch to an xhigh-capable model.`, "error");
+			ctx.ui.notify(`Dynamic workflow runs at xhigh thinking, which ${model.id} doesn't support — switch to an xhigh-capable model.`, "error");
 			return;
 		}
 		previousLevel = before;
@@ -523,12 +540,12 @@ export default function (pi: ExtensionAPI) {
 		mode.enable();
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "on", previousLevel });
 		setBadge(ctx);
-		ctx.ui.notify(`Set effort level to ultracode (this session only): ${applied} + dynamic workflow orchestration`, "info");
+		ctx.ui.notify(`Set effort level to dynamic workflow (this session only): ${applied} + workflow orchestration`, "info");
 	};
 
 	const disable = (ctx: ExtensionContext) => {
 		if (!mode.isOn()) {
-			ctx.ui.notify("Ultracode is not on.", "info");
+			ctx.ui.notify("Dynamic workflow is not on.", "info");
 			return;
 		}
 		mode.disable();
@@ -541,9 +558,9 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "off" });
 		if (previousLevel && previousLevel !== appliedLevel) {
 			setLevel(previousLevel);
-			ctx.ui.notify(`Ultracode off — thinking level restored to ${previousLevel}`, "info");
+			ctx.ui.notify(`Dynamic workflow off — thinking level restored to ${previousLevel}`, "info");
 		} else {
-			ctx.ui.notify("Ultracode off", "info");
+			ctx.ui.notify("Dynamic workflow off", "info");
 		}
 		previousLevel = undefined;
 		appliedLevel = undefined;
@@ -688,8 +705,12 @@ export default function (pi: ExtensionAPI) {
 		handler: (ctx) => openPanel(ctx),
 	});
 
-	pi.registerCommand("ultracode", {
-		description: "Toggle ultracode: xhigh thinking + standing workflow orchestration",
+	// "dynamic-workflow" is the name; "ultracode" stays because it is the keyword
+	// people already type, and a rename that retires the word they know is a
+	// rename that just breaks muscle memory.
+	for (const commandName of ["dynamic-workflow", "ultracode"])
+	pi.registerCommand(commandName, {
+		description: "Toggle dynamic workflow: xhigh thinking + standing workflow orchestration",
 		getArgumentCompletions: (prefix: string) =>
 			["on", "off", "status"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args: string, ctx) => {
@@ -704,8 +725,8 @@ export default function (pi: ExtensionAPI) {
 			if (argument === "status") {
 				ctx.ui.notify(
 					mode.isOn()
-						? "Current effort level: ultracode (xhigh + dynamic workflow orchestration; this session only)"
-						: "Ultracode is off. /ultracode to turn it on.",
+						? "Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)"
+						: "Dynamic workflow is off. /dynamic-workflow to turn it on.",
 					"info",
 				);
 				return;

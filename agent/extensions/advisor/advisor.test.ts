@@ -104,7 +104,7 @@ checkTrue("the main-agent guidance carries its load-bearing lines", ADVISOR_TOOL
 
 // The reviewer runs --no-tools and sees only the transcript, but it is asked to
 // be specific and to produce prioritised next steps — so it invents concrete
-// detail. Observed: "Read ~/.pi/agent/skills/ultracode/SKILL.md", a file that
+// detail. Observed: "Read ~/.pi/agent/skills/dynamic-workflow/SKILL.md", a file that
 // does not exist, as step 1 of a numbered plan the agent is told to weight.
 checkTrue("the reviewer is confined to what it has seen", REVIEWER_PROMPT.includes("STAY INSIDE WHAT YOU HAVE SEEN"));
 checkTrue(

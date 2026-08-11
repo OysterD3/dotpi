@@ -1,12 +1,13 @@
 /**
- * Offline tests for the ultracode extension's pure pieces: the keyword scanner
+ * Offline tests for the dynamic-workflow extension's pure pieces: the keyword
+ * scanner
  * and the workflow script engine
  * (run against a fake spawner — no processes, no network).
  *
  * Run with jiti from any directory where pi's packages resolve (they are not
  * dependencies of this repo — e.g. a scratch dir with @earendil-works/pi-coding-agent
  * installed, or pi's own package dir):
- *     jiti agent/extensions/ultracode/ultracode.test.ts
+ *     jiti agent/extensions/dynamic-workflow/dynamic-workflow.test.ts
  */
 import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, 
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
+import { loadSettings } from "./index.ts";
 import { SUBAGENT_PREAMBLE } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
@@ -3599,6 +3601,33 @@ console.log("\n--- store: countToolCalls caps a large foreign file's first tally
 		} finally {
 			rmSync(storeDir, { recursive: true, force: true });
 		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// ------------------------------------------------------- settings, after the rename
+
+console.log("--- settings: dynamicWorkflow.* wins, ultracode.* still read ---");
+{
+	// The rename's one silent-failure mode: a settings.json written before it
+	// still says `ultracode`, and a loader that only looks at the new key
+	// reverts the user's choice to the default without erroring.
+	const dir = mkdtempSync(join(tmpdir(), "dw-settings-"));
+	try {
+		const write = (o: unknown) => writeFileSync(join(dir, "settings.json"), JSON.stringify(o));
+
+		write({ ultracode: { keywordTrigger: false, model: "old/model" } });
+		check("legacy block is still honoured", loadSettings(dir), { keywordTrigger: false, model: "old/model" });
+
+		write({ dynamicWorkflow: { keywordTrigger: false, model: "new/model" } });
+		check("new block works", loadSettings(dir), { keywordTrigger: false, model: "new/model" });
+
+		write({ ultracode: { keywordTrigger: false, model: "old/model" }, dynamicWorkflow: { model: "new/model" } });
+		check("new key wins per FIELD, legacy fills the rest", loadSettings(dir), { keywordTrigger: false, model: "new/model" });
+
+		write({});
+		check("neither block falls back to defaults", loadSettings(dir), { ...DEFAULT_SETTINGS, model: undefined });
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

@@ -120,7 +120,7 @@ export function resurfaceReminder(adviceHead: string): string {
 /**
  * Wrap a reminder the way pi's own hidden-message reminders are wrapped.
  *
- * A duplicate of the identical helper in ultracode/reminders.ts and
+ * A duplicate of the identical helper in dynamic-workflow/reminders.ts and
  * ask-user/nudge.ts, and deliberately so: every extension here installs
  * independently, so none imports another's helpers. See progress.ts's
  * formatElapsed for the same tradeoff made the same way.

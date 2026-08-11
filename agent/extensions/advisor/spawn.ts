@@ -9,7 +9,7 @@
  * update/catalog fetches; model inference still happens). stdin is ignored — an
  * inherited stdin makes headless pi block reading it to EOF.
  *
- * This follows the same subagent recipe as the ultracode extension and pi's own
+ * This follows the same subagent recipe as the dynamic-workflow extension and pi's own
  * examples/extensions/subagent; it is duplicated here rather than shared so the
  * advisor extension is independently installable.
  *

@@ -16,7 +16,7 @@
  *   - pause: /workflows pause parks new agents without killing in-flight ones;
  *   - debugging: each agent has its own pi session file under agents/.
  *
- * Subagent models: agent()'s model option and the ultracode.model setting are
+ * Subagent models: agent()'s model option and the dynamicWorkflow.model setting are
  * REFERENCES ("sonnet", "fable", "provider/id"), resolved against the model
  * registry with pi's --model rules (models.ts) before spawning. Routing is
  * said in the request that triggers the workflow, so the names arriving here
@@ -1126,7 +1126,7 @@ function addedUsage(current: SpawnUsage | undefined, part: SpawnUsage): SpawnUsa
  * What a workflow agent inherits, most specific first:
  *
  *   agent(…, { model })  →  the agentType's own model  →  subagents.json
- *   `defaults.model`  →  the run default (ultracode.model, else the SESSION's
+ *   `defaults.model`  →  the run default (dynamicWorkflow.model, else the SESSION's
  *   model)
  *
  * The `defaults` link was missing: agents.ts has always parsed
