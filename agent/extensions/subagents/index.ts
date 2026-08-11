@@ -23,12 +23,19 @@
  *   agents    [ { name, purpose, model?, reasoning?, tools?, prompt? } ]
  */
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type SubagentsSettings, TOOL_NAME } from "./config.ts";
-import { pickName, runWizard, type WizardCtx } from "./manage.ts";
+import { CONFIG, type SubagentsSettings, TOOL_NAME } from "./config.ts";
+import { buildCatalog, draftSubagent } from "./draft.ts";
+import { pickName, runWizard, summary, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
 import { resolveRole, resolveSuffixedReference } from "./models.ts";
 import { effective, findAgent, loadSubagents, type ParseResult, saveSubagents, storePath } from "./registry.ts";
 import { registerTaskTool } from "./tool.ts";
+
+/**
+ * pi.events channel for announcing model spend — the shared string contract, so
+ * the draft call shows up in /usage instead of being spend nothing can see.
+ */
+const SPEND_CHANNEL = "usage:spend";
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
@@ -106,8 +113,37 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	/**
+	 * Draft from a description, then one confirm.
+	 *
+	 * Declining does not throw the draft away: the wizard opens with every
+	 * field pre-seeded, so a draft that got one thing wrong costs an edit
+	 * rather than a retype. Returns undefined when the user backed out or the
+	 * draft failed — the caller has already been told why.
+	 */
+	const draftFrom = async (ctx: ExtensionContext, description: string, taken: string[]) => {
+		ctx.ui.notify(`Drafting a subagent from "${description}"…`, "info");
+		const catalog = buildCatalog(agentDir, ctx.modelRegistry.getAll(), taken);
+		const outcome = await draftSubagent(ctx as never, description, catalog, agentDir, CONFIG.draftTimeoutMs, (spend) =>
+			pi.events.emit(SPEND_CHANNEL, { source: "subagents", usage: spend, calls: 1 }),
+		);
+		if (!outcome.ok) {
+			ctx.ui.notify(`Could not draft that: ${outcome.error}. Run /subagents add with no description for the wizard.`, "warning");
+			return undefined;
+		}
+		const detail = [summary(outcome.def), outcome.why ? `\n${outcome.why}` : "", ...outcome.notes.map((note) => `\n⚠ ${note}`)]
+			.filter(Boolean)
+			.join("");
+		if (await ctx.ui.confirm(`Save "${outcome.def.name}"?`, detail)) return outcome.def;
+		if (await ctx.ui.confirm("Adjust it instead?", "Opens the wizard with this draft pre-filled.")) {
+			return await runWizard(ctx as unknown as WizardCtx, outcome.def, new Set());
+		}
+		ctx.ui.notify("Cancelled.", "info");
+		return undefined;
+	};
+
 	pi.registerCommand("subagents", {
-		description: "Show or configure subagents (/subagents [list|add|edit|remove])",
+		description: "Show or configure subagents (/subagents add <describe it> | list | edit | remove)",
 		getArgumentCompletions: (prefix: string) => {
 			const names = settings.agents.map((agent) => agent.name);
 			const options = [
@@ -137,7 +173,13 @@ export default function (pi: ExtensionAPI) {
 
 			if (sub === "add") {
 				reload(ctx);
-				const def = await runWizard(wctx, undefined, new Set(settings.agents.map((agent) => agent.name)));
+				const taken = new Set(settings.agents.map((agent) => agent.name));
+
+				// A description turns the seven-dialog wizard into one confirm. With
+				// no description there is nothing to draft from, so the wizard runs.
+				let def = arg ? await draftFrom(ctx, arg, [...taken]) : undefined;
+				if (arg && !def) return;
+				if (!def) def = await runWizard(wctx, undefined, taken);
 				if (!def) return void ctx.ui.notify("Cancelled.", "info");
 				persist(ctx, { ...settings, agents: [...settings.agents, def] }, `Added "${def.name}"`);
 				return;

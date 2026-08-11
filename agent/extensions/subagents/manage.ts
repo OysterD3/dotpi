@@ -68,7 +68,8 @@ async function askPrompt(ctx: WizardCtx, current?: string): Promise<Step<string 
 	return { ok: true, value: trimmed || undefined };
 }
 
-function summary(def: SubagentDef): string {
+/** The one-glance description used by the wizard's confirm and the draft's. */
+export function summary(def: SubagentDef): string {
 	const model = def.model ?? "session model";
 	const reasoning = def.reasoning ?? "session reasoning";
 	const tools = def.tools ? def.tools.join(", ") : "all tools";

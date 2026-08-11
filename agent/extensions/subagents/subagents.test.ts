@@ -430,6 +430,7 @@ function makePi() {
 		registerCommand: (name: string, def: any) => commands.set(name, def),
 		getActiveTools: () => active,
 		setActiveTools: (names: string[]) => (active = names),
+		events: { emit: () => {} },
 	};
 	return { pi, tools, commands, getActive: () => active };
 }
@@ -507,6 +508,117 @@ console.log("\n--- wiring: the panel shows what a spawn would use ---");
 	const table = notices.find(([, m]) => m.includes("Subagent"))?.[1] ?? "";
 	checkTrue("the model cell is the bare id", table.includes("gpt-5.6-luna") && !table.includes(":high"));
 	checkTrue("the reasoning cell is the carried level, not the default", table.includes("High") && !table.includes("Medium"));
+	rmStore();
+}
+
+// ------------------------------------------------- drafting from a sentence
+
+console.log("\n--- parseDraft: the catalogue is the law ---");
+{
+	const { parseDraft, buildCatalog, profileRoles } = await import("./draft.ts");
+	const catalog = buildCatalog(AGENT, MODELS, ["reviewer"]);
+	const draft = (body: string) => parseDraft(body, catalog, MODELS, AGENT);
+	const json = (over: Record<string, unknown> = {}) =>
+		JSON.stringify({ name: "migrator", purpose: "Runs schema migrations", model: null, reasoning: null, tools: null, prompt: null, ...over });
+
+	checkTrue("a bare object parses", draft(json()).ok);
+	checkTrue("a fenced object parses", draft("```json\n" + json() + "\n```").ok);
+	checkTrue("prose around the object is tolerated", draft("Sure!\n" + json() + "\nHope that helps.").ok);
+	check("no JSON at all fails", draft("I could not do that").ok, false);
+	check("broken JSON fails", draft("{ name: }").ok, false);
+
+	check("a missing name fails", draft(json({ name: null })).ok, false);
+	check("a name that is not kebab-case fails", draft(json({ name: "Migrator Two" })).ok, false);
+	check("a taken name fails", draft(json({ name: "reviewer" })).ok, false);
+	check("a missing purpose fails", draft(json({ purpose: null })).ok, false);
+
+	{
+		const out = draft(json({ model: "not-a-real-model" })) as any;
+		checkTrue("an unknown model does not fail the draft", out.ok);
+		check("but it is dropped", out.def.model, undefined);
+		checkTrue("and said out loud", out.notes.some((n: string) => n.includes("not-a-real-model")));
+	}
+	{
+		const out = draft(json({ model: "gpt-5.6-sol" })) as any;
+		check("a model that resolves is kept", out.def.model, "gpt-5.6-sol");
+	}
+	{
+		const out = draft(json({ reasoning: "extreme" })) as any;
+		check("a bogus thinking level is dropped", out.def.reasoning, undefined);
+		checkTrue("with a note", out.notes.some((n: string) => n.includes("extreme")));
+		check("a real one is kept", (draft(json({ reasoning: "high" })) as any).def.reasoning, "high");
+	}
+	{
+		const out = draft(json({ tools: ["read", "grep", "browser", "workflow"] })) as any;
+		check("unknown tools are dropped", out.def.tools, ["read", "grep"]);
+		checkTrue("and named", out.notes.some((n: string) => n.includes("browser") && n.includes("workflow")));
+	}
+	{
+		// Leaving tools undefined would mean ALL tools to spawn.ts, so a draft
+		// that asked for a restricted set and named only unknown ones must not
+		// quietly become the unrestricted one.
+		const out = draft(json({ tools: ["workflow", "browser"] })) as any;
+		check("an all-unknown allowlist fails the draft", out.ok, false);
+		checkTrue("and names both what it asked for and what exists", out.error.includes("workflow") && out.error.includes("read"));
+		check("while naming no tools at all still means all of them", (draft(json({ tools: null })) as any).def.tools, undefined);
+	}
+	{
+		const out = draft(json({ prompt: "  Review only. Never edit.  " })) as any;
+		check("a role prompt is trimmed and kept", out.def.prompt, "Review only. Never edit.");
+	}
+
+	// Roles come from the active profile and beat literal ids, so they resolve
+	// even though they are not model names.
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ models: { active: "p", providers: { p: { fast: "openai-codex/gpt-5.6-luna", frontier: "openai-codex/gpt-5.6-sol" } } } }));
+	check("profile roles are listed", profileRoles(AGENT), ["fast", "frontier"]);
+	{
+		const withRoles = buildCatalog(AGENT, MODELS, []);
+		checkTrue("the catalogue offers them", withRoles.roles.includes("frontier"));
+		const out = parseDraft(json({ model: "frontier" }), withRoles, MODELS, AGENT) as any;
+		check("and a role name survives validation", out.def.model, "frontier");
+	}
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+}
+
+console.log("\n--- wiring: /subagents add <description> ---");
+{
+	rmStore();
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+	const h = makePi();
+	extension(h.pi as never);
+
+	const notices: Array<[string, string]> = [];
+	let wizardRan = false;
+	const ctx: any = {
+		hasUI: true,
+		cwd: ROOT,
+		// No model anywhere, so the draft fails at the first seam rather than
+		// reaching a real provider from a test.
+		model: undefined,
+		modelRegistry: { getAll: () => [] },
+		ui: {
+			input: async () => {
+				wizardRan = true;
+				return undefined;
+			},
+			select: async () => undefined,
+			confirm: async () => false,
+			editor: async () => undefined,
+			notify: (m: string, l: string) => notices.push([l, m]),
+			setStatus: () => {},
+		},
+	};
+	h.commands.get("on:session_start")!({}, ctx);
+
+	await h.commands.get("subagents")!.handler("add a read-only reviewer on the frontier model", ctx);
+	checkTrue("the draft is announced before the wait", notices.some(([, m]) => m.includes("Drafting")));
+	checkTrue("a failed draft says why", notices.some(([l, m]) => l === "warning" && m.includes("Could not draft")));
+	checkTrue("and does not silently fall into the wizard", !wizardRan);
+	check("nothing was stored", existsSync(storePath(AGENT)), false);
+
+	// No description is still the wizard.
+	await h.commands.get("subagents")!.handler("add", ctx);
+	checkTrue("a bare add runs the wizard", wizardRan);
 	rmStore();
 }
 

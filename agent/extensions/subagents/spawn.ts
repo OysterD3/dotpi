@@ -1,7 +1,7 @@
 /**
  * Running a configured subagent as a headless pi subprocess.
  *
- * Same recipe as the ultracode/advisor extensions and pi's own
+ * Same recipe as the dynamic-workflow/advisor extensions and pi's own
  * examples/extensions/subagent (`pi --mode json -p --no-session` with stdin
  * ignored, JSONL message_end parsing, SIGTERM-then-SIGKILL on abort), with the
  * extra flags a standing subagent needs: `--thinking` for its reasoning level,

@@ -28,9 +28,21 @@ export const TOOL_NAME = "task";
 /** pi thinking levels, the values a subagent's `reasoning` may take. */
 export const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/**
+ * The tools a spawned subagent can actually be given.
+ *
+ * Not `pi.getAllTools()`: a subagent spawns with `--no-extensions`, so every
+ * extension tool in this session (workflow, memory, ask_user) is absent from
+ * the process that would have to run it. Offering those to the drafter would
+ * produce an allowlist that fails on the first spawn, days later.
+ */
+export const SPAWNABLE_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
+
 export const CONFIG = {
 	/** Wall-clock ceiling for one subagent, so a hung spawn cannot wedge a turn. */
 	subagentTimeoutMs: 15 * 60_000,
+	/** Wall-clock ceiling for the draft call behind `/subagents add <description>`. */
+	draftTimeoutMs: 45_000,
 } as const;
 
 /** A single configured subagent. */
