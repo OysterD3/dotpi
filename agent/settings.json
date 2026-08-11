@@ -65,7 +65,7 @@
     "npm:@ff-labs/pi-fff@0.10.1"
   ],
   "models": {
-    "active": "openai",
+    "active": "mixed",
     "providers": {
       "openai": {
         "session": "openai-codex/gpt-5.6-sol",
