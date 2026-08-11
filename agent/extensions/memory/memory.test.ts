@@ -8,13 +8,14 @@
  *
  * Run: jiti agent/extensions/memory/memory.test.ts
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = mkdtempSync(join(tmpdir(), "memory-test-"));
 const AGENT = join(ROOT, "agent");
 const CLAUDE = join(ROOT, "claude");
+const PIHOME = join(ROOT, "pihome");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
 
@@ -25,7 +26,8 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { projectSlugs, memoryDirFor, globalClaudeMd } = await import("./locate.ts");
 const { parseFrontmatter, readMemory, assemble } = await import("./load.ts");
-const { loadSettings, loadMemoryFor } = await import("./index.ts");
+const { loadSettings, loadMemoryFor, resolveSource } = await import("./index.ts");
+const { defaultPiHome, piMemoryDir, piSlug, safeFileName, ensureStore, readOrigin, listFiles } = await import("./store.ts");
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -103,16 +105,18 @@ checkTrue("the header always survives", tight.text.startsWith("# Memory"));
 // ------------------------------------------------------------------- settings
 
 console.log("\n--- settings ---");
-const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ memory: block }));
+const writeSettings = (block: Record<string, unknown>) =>
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ memory: { piHome: PIHOME, ...block } }));
 writeSettings({});
 {
 	const s = loadSettings(AGENT);
-	check("defaults", [s.enabled, s.includeFacts, s.maxChars], [true, true, 24_000]);
+	check("defaults", [s.enabled, s.includeFacts, s.maxChars, s.writable], [true, true, 24_000, true]);
+	checkTrue("piHome defaults under a config dir", defaultPiHome({ XDG_CONFIG_HOME: "/x" }) === "/x/pi");
 }
-writeSettings({ enabled: false, includeFacts: false, maxChars: 5000, claudeHome: "/custom" });
+writeSettings({ enabled: false, includeFacts: false, maxChars: 5000, claudeHome: "/custom", writable: false });
 {
 	const s = loadSettings(AGENT);
-	check("overrides", [s.enabled, s.includeFacts, s.maxChars, s.claudeHome], [false, false, 5000, "/custom"]);
+	check("overrides", [s.enabled, s.includeFacts, s.maxChars, s.claudeHome, s.writable], [false, false, 5000, "/custom", false]);
 }
 writeSettings({ maxChars: -3 });
 check("bad maxChars falls back", loadSettings(AGENT).maxChars, 24_000);
@@ -120,7 +124,7 @@ check("bad maxChars falls back", loadSettings(AGENT).maxChars, 24_000);
 // ------------------------------------------------------------ loadMemoryFor
 
 console.log("\n--- loadMemoryFor ---");
-const settingsA = { enabled: true, includeFacts: true, maxChars: 24_000, claudeHome: CLAUDE };
+const settingsA = { enabled: true, includeFacts: true, maxChars: 24_000, claudeHome: CLAUDE, piHome: PIHOME, writable: true };
 const memA = loadMemoryFor("/work/alpha", settingsA);
 checkTrue("loads memory for a known project", Boolean(memA?.text.includes("Never merge PRs")));
 check("records the source dir", memA?.source, dirA);
@@ -136,13 +140,16 @@ const extension = (await import("./index.ts")).default;
 function makePi() {
 	const handlers = new Map<string, Function>();
 	const commands = new Map<string, any>();
+	const tools = new Map<string, any>();
 	return {
 		pi: {
 			on: (event: string, h: Function) => handlers.set(event, h),
 			registerCommand: (name: string, def: any) => commands.set(name, def),
+			registerTool: (def: any) => tools.set(def.name, def),
 		},
 		handlers,
 		commands,
+		tools,
 	};
 }
 
@@ -181,6 +188,148 @@ function makePi() {
 	const ctx = { cwd: "/work/alpha", hasUI: false, ui: { setStatus: () => {}, notify: () => {} } };
 	h.handlers.get("session_start")!({}, ctx);
 	check("disabled injects nothing", h.handlers.get("before_agent_start")!({ systemPrompt: "BASE" }), undefined);
+}
+
+// ------------------------------------------------------- pi's own store
+
+console.log("\n--- the store and its guards ---");
+{
+	check("a plain fact file is allowed", safeFileName("prefers-tabs.md"), "prefers-tabs.md");
+	check("MEMORY.md is allowed", safeFileName("MEMORY.md"), "MEMORY.md");
+	check("a path is refused", safeFileName("a/b.md"), undefined);
+	check("climbing out is refused", safeFileName("../../.ssh/config.md"), undefined);
+	check("a dotfile is refused", safeFileName(".origin.json"), undefined);
+	check("a non-markdown file is refused", safeFileName("notes.txt"), undefined);
+	check("an empty name is refused", safeFileName("   "), undefined);
+	check("pi's dir is the primary slug, no probing", piMemoryDir("/work/alpha", PIHOME), join(PIHOME, "memory", piSlug("/work/alpha")));
+}
+
+// --------------------------------------------------- the fork, end to end
+
+console.log("\n--- clone on first write ---");
+{
+	writeSettings({ claudeHome: CLAUDE });
+	const h = makePi();
+	extension(h.pi as never);
+	checkTrue("the memory tool is registered", h.tools.has("memory"));
+
+	const cwd = "/work/alpha";
+	const mine = piMemoryDir(cwd, PIHOME);
+	const ctx = { cwd, hasUI: false, ui: { setStatus: () => {}, notify: () => {} } };
+	h.handlers.get("session_start")!({}, ctx);
+
+	check("before any write, memory is the inherited store", resolveSource(cwd, loadSettings(AGENT)).own, false);
+
+	const tool = h.tools.get("memory")!;
+	const text = (r: any) => r.content[0].text as string;
+
+	// read comes from wherever memory currently is
+	const before = await tool.execute("1", { action: "read", file: "feedback_pr.md" }, undefined, undefined, ctx);
+	checkTrue("read reaches the inherited file", text(before).includes("Never merge PRs"));
+
+	const written = await tool.execute("2", { action: "write", file: "prefers-tabs.md", content: "---\nname: prefers-tabs\n---\nTabs, always." }, undefined, undefined, ctx);
+	checkTrue("the write says it forked", text(written).includes("Forked"));
+	checkTrue("pi's store now exists", existsSync(mine));
+	checkTrue("the inherited facts came across", existsSync(join(mine, "feedback_pr.md")));
+	checkTrue("and the new one is there too", existsSync(join(mine, "prefers-tabs.md")));
+	checkTrue("the fork is recorded", readOrigin(mine)?.clonedFrom?.includes("claude") === true);
+	check("the other agent's store is untouched", existsSync(join(CLAUDE, "projects", piSlug(cwd), "memory", "prefers-tabs.md")), false);
+
+	check("reads now come from pi's own store", resolveSource(cwd, loadSettings(AGENT)).own, true);
+	const injected = h.handlers.get("before_agent_start")!({ systemPrompt: "BASE" });
+	checkTrue("the new fact is in the next request", injected.systemPrompt.includes("Tabs, always."));
+	checkTrue("and so is the inherited one", injected.systemPrompt.includes("Never merge PRs"));
+
+	// A second write must not re-fork or lose anything.
+	const again = await tool.execute("3", { action: "write", file: "MEMORY.md", content: "# Memory\n\n- [Tabs](prefers-tabs.md) — indentation" }, undefined, undefined, ctx);
+	check("the fork happens once", text(again).includes("Forked"), false);
+	checkTrue("the index is written", listFiles(mine).includes("MEMORY.md"));
+
+	const deleted = await tool.execute("4", { action: "delete", file: "prefers-tabs.md" }, undefined, undefined, ctx);
+	checkTrue("delete reports what it did", text(deleted).includes("Deleted"));
+	check("and the file is gone", existsSync(join(mine, "prefers-tabs.md")), false);
+	const missing = await tool.execute("5", { action: "delete", file: "never-existed.md" }, undefined, undefined, ctx);
+	checkTrue("deleting nothing is not an error", missing.isError !== true && text(missing).includes("No never-existed.md"));
+
+	const refused = await tool.execute("6", { action: "write", file: "../escape.md", content: "x" }, undefined, undefined, ctx);
+	checkTrue("a path escape is refused", refused.isError === true);
+	check("and nothing was created", existsSync(join(PIHOME, "memory", "escape.md")), false);
+
+	const listed = await tool.execute("7", { action: "list" }, undefined, undefined, ctx);
+	checkTrue("list names pi's files", text(listed).includes("MEMORY.md") && text(listed).includes("feedback_pr.md"));
+}
+
+{
+	// A project the other agent never knew: the store is created empty, not skipped.
+	writeSettings({ claudeHome: CLAUDE });
+	const h = makePi();
+	extension(h.pi as never);
+	const cwd = "/work/brand-new";
+	const ctx = { cwd, hasUI: false, ui: { setStatus: () => {}, notify: () => {} } };
+	h.handlers.get("session_start")!({}, ctx);
+	const out = await h.tools.get("memory")!.execute("1", { action: "write", file: "first.md", content: "---\nname: first\n---\nSomething true." }, undefined, undefined, ctx);
+	check("nothing to fork, so no fork is claimed", (out.content[0].text as string).includes("Forked"), false);
+	checkTrue("but the fact is stored", existsSync(join(piMemoryDir(cwd, PIHOME), "first.md")));
+	checkTrue("and loads on the next request", h.handlers.get("before_agent_start")!({ systemPrompt: "B" }).systemPrompt.includes("Something true."));
+}
+
+{
+	// writable:false is the way to keep the old read-only behaviour.
+	writeSettings({ claudeHome: CLAUDE, writable: false });
+	const h = makePi();
+	extension(h.pi as never);
+	check("no tool when memory is read-only", h.tools.has("memory"), false);
+}
+
+console.log("\n--- what the review found ---");
+{
+	// A disabled extension must not write, and must not fork.
+	writeSettings({ claudeHome: CLAUDE, enabled: false });
+	const h = makePi();
+	extension(h.pi as never);
+	check("no tool at all when memory is off", h.tools.has("memory"), false);
+}
+{
+	// Turned off after registration (settings reload every session_start).
+	// A project no earlier block forked, so "nothing was created" means it.
+	writeSettings({ claudeHome: CLAUDE });
+	const h = makePi();
+	extension(h.pi as never);
+	const cwd = "/work/switched-off";
+	const ctx = { cwd, hasUI: false, ui: { setStatus: () => {}, notify: () => {} } };
+	h.handlers.get("session_start")!({}, ctx);
+	writeSettings({ claudeHome: CLAUDE, enabled: false });
+	h.handlers.get("session_start")!({}, ctx);
+	const out = await h.tools.get("memory")!.execute("1", { action: "write", file: "nope.md", content: "x" }, undefined, undefined, ctx);
+	checkTrue("a write while off is refused", out.isError === true);
+	check("and forks nothing", existsSync(piMemoryDir(cwd, PIHOME)), false);
+}
+{
+	// The status chip must follow what was actually written.
+	writeSettings({ claudeHome: CLAUDE });
+	const h = makePi();
+	extension(h.pi as never);
+	const cwd = "/work/alpha";
+	const chips: Array<string | undefined> = [];
+	const ctx = { cwd, hasUI: true, ui: { setStatus: (_k: string, t: string | undefined) => chips.push(t), notify: () => {} } };
+	h.handlers.get("session_start")!({}, ctx);
+	const before = chips.at(-1);
+	await h.tools.get("memory")!.execute("1", { action: "write", file: "extra-fact.md", content: "---\nname: extra\n---\nA new fact." }, undefined, undefined, ctx);
+	checkTrue("the chip is updated after a write", chips.at(-1) !== before);
+	checkTrue("and counts the new fact", String(chips.at(-1)).includes(String((h.handlers.get("before_agent_start")!({ systemPrompt: "" }).systemPrompt.match(/^### /gm) ?? []).length)));
+}
+{
+	// Global-only memory has no source directory to name.
+	writeFileSync(join(CLAUDE, "CLAUDE.md"), "Global rule: be concise.");
+	writeSettings({ claudeHome: CLAUDE });
+	const h = makePi();
+	extension(h.pi as never);
+	const notices: string[] = [];
+	const ctx = { cwd: "/nowhere/at/all", hasUI: true, ui: { setStatus: () => {}, notify: (m: string) => notices.push(m) } };
+	h.handlers.get("session_start")!({}, ctx);
+	await h.commands.get("memory")!.handler("status", ctx);
+	checkTrue("no memory directory is not printed as undefined", !notices.at(-1)!.includes("undefined"));
+	checkTrue("and the global file is named instead", notices.at(-1)!.includes("CLAUDE.md"));
 }
 
 rmSync(ROOT, { recursive: true, force: true });
