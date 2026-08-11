@@ -74,8 +74,6 @@ agent/qoder-cn-models-cache.json
 agent/qoder-machine-id
 agent/state/
 
-# self-update extension's throttle timestamp — local bookkeeping, not config
-agent/.self-update.json
 
 # pi's own memory store (personal notes/feedback, may hold project details) — never
 # publish. The `memory` extension reads a store under ~/.claude (outside this repo);
