@@ -26,7 +26,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CONFIG } from "./config.ts";
-import { trimBlank, withGutter } from "./render.ts";
+import { dropBlank, trimBlank, withGutter } from "./render.ts";
 
 type Render = (width: number) => string[];
 
@@ -40,8 +40,18 @@ interface ToolInternals {
 	contentBox: { children: Component[] };
 	imageComponents: Component[];
 	result?: { isError: boolean };
+	expanded: boolean;
 	hasRendererDefinition(): boolean;
 	getRenderShell(): string;
+}
+
+/**
+ * The dot is now the only thing that says how a call turned out — the tint it
+ * replaced said it with a whole box of colour.
+ */
+function dotColor(self: ToolInternals): string {
+	if (self.result === undefined) return CONFIG.callPendingColor;
+	return self.result.isError ? CONFIG.callErrorColor : CONFIG.callOkColor;
 }
 
 /** Painted by the live theme once it loads; plain until then. */
@@ -92,13 +102,21 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
 }
 
 /**
- * Strips a tool call's tinted box and re-frames it as a nested, marked block.
+ * Strips a tool call's tinted box and re-frames it as a call and its result.
  *
- * pi draws a tool call as a full-width `Box` in a success/error/pending tint.
- * The box is not restyled, it is stepped around: the box's children are
- * rendered directly, which drops the tint and the box's own vertical padding
- * in one move and leaves the tool's real content — a diff, highlighted source,
- * command output — exactly as its renderer drew it.
+ * pi draws a tool call as a full-width `Box` in a success/error/pending tint,
+ * holding two children: whatever `renderCall` drew, then whatever
+ * `renderResult` drew. The box is not restyled, it is stepped around — the two
+ * children are rendered directly, which drops the tint and the box's own
+ * vertical padding in one move and leaves the tool's real content (a diff,
+ * highlighted source, command output) exactly as its renderer drew it.
+ *
+ * The two children are marked separately rather than as one block, because
+ * they are two things: the call opens at column 0 under a dot coloured by its
+ * outcome, and the result hangs under a corner at column 2. Rendering them
+ * apart is also what removes the blank line pi puts between them — each is
+ * trimmed at its own edges, so a blank line that is really *in* a command's
+ * output survives while the seam between call and result does not.
  *
  * What is left alone is a tool that already draws its own frame —
  * `renderShell: "self"`, which pi renders outside the box entirely. That is
@@ -127,11 +145,17 @@ function unboxTools(): void {
 			if (!self.hasRendererDefinition() || self.getRenderShell() !== "default") return original.call(this, width);
 			if (self.imageComponents.length > 0) return original.call(this, width);
 
-			const inner = width - visibleWidth(CONFIG.toolMark);
-			const body = trimBlank(self.contentBox.children.flatMap((child) => child.render(inner)));
-			if (body.length === 0) return [];
-			const color = self.result?.isError === true ? CONFIG.toolErrorColor : CONFIG.toolColor;
-			return ["", ...withGutter(body, paint(color, CONFIG.toolMark))];
+			const [call, ...rest] = self.contentBox.children;
+			const callLines = call === undefined ? [] : trimBlank(call.render(width - visibleWidth(CONFIG.callMark)));
+			const raw = rest.flatMap((child) => child.render(width - visibleWidth(CONFIG.resultMark)));
+			const resultLines = self.expanded ? trimBlank(raw) : dropBlank(raw);
+			if (callLines.length === 0 && resultLines.length === 0) return [];
+
+			return [
+				"",
+				...withGutter(callLines, paint(dotColor(self), CONFIG.callMark)),
+				...withGutter(resultLines, paint(CONFIG.resultColor, CONFIG.resultMark)),
+			];
 		} catch {
 			return original.call(this, width);
 		}

@@ -60,6 +60,16 @@ export function withGutter(lines: string[], mark: string): string[] {
 	});
 }
 
+/**
+ * Drops every blank line, closing a result up to the tight block Claude Code
+ * draws. Used only while a tool call is collapsed: pi separates a command's
+ * output from its timing footer with a blank line, and trimming edges alone
+ * cannot reach it. `ctrl+r` expands the call and puts the spacing back.
+ */
+export function dropBlank(lines: string[]): string[] {
+	return lines.filter((line) => !isBlank(line));
+}
+
 /** Drops the blank lines a block's own padding leaves at its edges. */
 export function trimBlank(lines: string[]): string[] {
 	let start = 0;

@@ -1606,32 +1606,46 @@ Claude Code's transcript is the same information with the panels taken away: one
 block and the text hangs off it. That is the whole change.
 
 ```
-                                        ▸ Review my chat with Glendon
+                                        > Review my chat with Glendon
  Review my chat with Glendon
                                         ● Done. 405 tests pass, ruff clean. The log
  Done. 405 tests pass, ruff clean. The     line above is a real send — method, path,
  log line above is a real send — met…      params, and nothing else.
 
-┌────────────────────────────────┐        ∟ $ pnpm test
-│ $ pnpm test                    │          405 passed
+┌────────────────────────────────┐      ● $ pnpm test              ← green dot
+│ $ pnpm test                    │        ⎿  405 passed
+│                                │           ruff clean
 │ 405 passed                     │
-└────────────────────────────────┘        ∟ $ pnpm lint          ← red mark, failed
-                                            1 error
+│ ruff clean                     │      ● $ pnpm lint              ← red dot
+│                                │        ⎿  1 error
+│ Took 0.4s                      │
+└────────────────────────────────┘
        before                                        after
 ```
 
-**Only the frame changes.** Each patch narrows the render width by exactly the width of the mark it
-is about to add, then puts the mark beside the first line that *shows* something — pi opens most
-blocks with a spacer — and pads the rest into a hanging indent, so a wrapped paragraph stays aligned
-under its own first word. Content is never re-coloured or re-flowed: pi's markdown, its diffs, its
-highlighted source and its command output arrive exactly as their own renderers drew them. A tool
-call is de-boxed by rendering the box's children directly rather than by restyling the box, which
-drops the tint and the box's vertical padding in the same move.
+**A call and its result are two blocks, not one.** That is the shape worth copying, and the one this
+got wrong first time round: the call opens at column 0 under a dot, and its result hangs below at
+column 2 under a corner, text at column 5. Marking them together — one `∟` for the pair — reads as a
+detail line with no owner, which is exactly what it looked like.
 
-**The mark carries the failure now.** Dropping the box drops the red tint, which was pi's only sign
-that a command failed, so a failed call's `∟` is painted in the theme's error colour instead. Losing
-that was the one regression the before/after harness caught, and a failed `pnpm lint` that reads
-exactly like a passing one is worse than any box.
+**The dot carries the outcome.** Dropping the box drops the tint, which was pi's only sign of how a
+call went, so the dot is painted green when it succeeded, red when it failed, and muted while it is
+still running. Losing that was the one regression the before/after harness caught: a failed
+`pnpm lint` that reads exactly like a passing one is worse than any box.
+
+**Only the frame changes, with one stated exception.** Each patch narrows the render width by
+exactly the width of the mark it is about to add, then puts the mark beside the first line that
+*shows* something — pi opens most blocks with a spacer — and pads the rest into a hanging indent, so
+a wrapped paragraph stays aligned under its own first word. Content is never re-coloured or
+re-flowed: pi's markdown, its diffs, its highlighted source and its command output arrive exactly as
+their own renderers drew them, which is why an `edit` diff keeps its green and red.
+
+The exception is vertical space. pi separates a command's output from its `Took 0.4s` footer with a
+blank line, and that blank is *inside* the result's own text, so rendering the call and the result
+apart removes the seam between them but cannot reach it. While a call is **collapsed**, blank lines
+inside its result are dropped; `ctrl+r` expands it and puts pi's spacing back. This is the one place
+the extension changes what a block looks like rather than only where it sits, and it is reversible
+on one keystroke.
 
 **The mechanism, and what it costs.** pi exposes no hook for its own transcript:
 `registerMessageRenderer` and `registerEntryRenderer` are both keyed by a *custom* type and only
@@ -1670,8 +1684,8 @@ rewind; it is a separate piece of work, not a coat of paint.
 | --- | --- |
 | `index.ts` | Applies the patches; resolves pi's live theme so a `/theme` switch repaints the marks |
 | `patch.ts` | The three replaced `render` methods, and the reach into pi's internals, in one place |
-| `render.ts` | Gutter insertion, ANSI-safe (pure) |
-| `config.ts` | The marks and their colour roles |
+| `render.ts` | Gutter insertion and blank-line trimming, ANSI-safe (pure) |
+| `config.ts` | The marks, their columns, and their colour roles |
 | `transcript.test.ts` | The pure helpers, plus all three components rendered and read back |
 
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is

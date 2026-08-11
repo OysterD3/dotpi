@@ -141,33 +141,50 @@ function toolCall(name: string, args: unknown, output: string) {
 	return component;
 }
 
-const bash = toolCall("bash", { command: "pnpm test" }, "405 passed");
+// A call and its result are two marked blocks, not one: the dot opens the call
+// at column 0, the corner opens the result at column 2 with text at column 5.
+const bash = toolCall("bash", { command: "pnpm test" }, "405 passed\nruff clean");
 const bashLines = bash.render(WIDTH);
 const bashShown = bashLines.filter((line) => !isBlank(line));
 
 check("opens with a blank line, keeping pi's rhythm", isBlank(bashLines[0] ?? ""), true);
-check("the mark nests the call under the assistant line", trimmedRight(bashShown[0] ?? ""), `  ∟ $ pnpm test`);
-check("output hangs under the mark, not beside it", trimmedRight(bashShown[1] ?? ""), "    405 passed");
+check("the dot opens the call at column 0", trimmedRight(bashShown[0] ?? ""), "● $ pnpm test");
+check("the corner opens the result at column 2", trimmedRight(bashShown[1] ?? ""), "  ⎿  405 passed");
+check("further result lines align under it, unmarked", trimmedRight(bashShown[2] ?? ""), "     ruff clean");
 check("no line carries a background tint", bashLines.some((line) => line.includes(`${ESC}[48;`)), false);
 check("no line is wider than the width asked for", bashLines.every((line) => seen(line).length <= WIDTH), true);
 
 /* -------------------------------------------------------------------------- */
-console.log("\n--- a failed call still reads as failed ---");
+console.log("\n--- a collapsed result closes up; ctrl+r puts the spacing back ---");
 
-// Dropping the box drops the red tint pi used to signal a failure, so the mark
+// pi separates a command's output from its timing footer with a blank line,
+// which is inside the result's own text and so survives edge-trimming.
+const spaced = toolCall("bash", { command: "echo hi" }, "hi\n\nsecond paragraph");
+check("collapsed, no blank line survives the result", spaced.render(WIDTH).slice(1).some(isBlank), false);
+spaced.setExpanded(true);
+check("expanded, pi's own spacing is back", spaced.render(WIDTH).slice(1).some(isBlank), true);
+spaced.setExpanded(false);
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- the dot is the only thing left that says how a call went ---");
+
+// Dropping the box drops the tint pi used to signal the outcome, so the dot
 // has to carry it. Naming the colour rather than painting it keeps the check
 // on the decision instead of on a theme's hex values.
 setPaint((color, text) => `<${color}>${text}`);
 const failed = new ToolExecutionComponent("bash", "id-failed", { command: "pnpm lint" }, {}, undefined, ui as never, ROOT);
 failed.setArgsComplete();
 failed.markExecutionStarted();
-failed.updateResult({ content: [{ type: "text", text: "1 error" }], details: {}, isError: true }, false);
 
-const okMark = bash.render(WIDTH).find((line) => line.includes(CONFIG.toolMark));
-const failedMark = failed.render(WIDTH).find((line) => line.includes(CONFIG.toolMark));
-check("a call that worked is dim", okMark?.includes(`<${CONFIG.toolColor}>`), true);
-check("a call that failed is not", failedMark?.includes(`<${CONFIG.toolColor}>`), false);
-check("it carries the error colour", failedMark?.includes(`<${CONFIG.toolErrorColor}>`), true);
+const dotOf = (component: { render(w: number): string[] }) =>
+	component.render(WIDTH).find((line) => line.includes(CONFIG.callMark.trim()));
+check("a call still running is muted", dotOf(failed)?.includes(`<${CONFIG.callPendingColor}>`), true);
+
+failed.updateResult({ content: [{ type: "text", text: "1 error" }], details: {}, isError: true }, false);
+check("a call that worked is green", dotOf(bash)?.includes(`<${CONFIG.callOkColor}>`), true);
+check("a call that failed is not", dotOf(failed)?.includes(`<${CONFIG.callOkColor}>`), false);
+check("it carries the error colour", dotOf(failed)?.includes(`<${CONFIG.callErrorColor}>`), true);
+check("the result corner stays dim either way", dotOf(failed) !== undefined && failed.render(WIDTH).some((l) => l.includes(`<${CONFIG.resultColor}>`)), true);
 setPaint((_color, text) => text);
 
 /* -------------------------------------------------------------------------- */
@@ -189,7 +206,7 @@ const selfDrawn = new ToolExecutionComponent(
 	ROOT,
 );
 check("a self-framing tool is left alone", selfDrawn.render(WIDTH).some((line) => seen(line).includes("drawn by its author")), true);
-check("and gets no mark", selfDrawn.render(WIDTH).some((line) => seen(line).includes(CONFIG.toolMark.trim())), false);
+check("and gets no mark", selfDrawn.render(WIDTH).some((line) => seen(line).includes(CONFIG.resultMark.trim())), false);
 
 // The regression this test exists for: background-shell replaces `bash` with a
 // tool whose renderer delegates to pi's built-in donor. Bailing on "came from
@@ -204,7 +221,7 @@ const replaced = new ToolExecutionComponent(
 	ROOT,
 );
 const replacedLines = replaced.render(WIDTH);
-check("an extension tool drawn in pi's box is de-boxed like any other", trimmedRight(replacedLines.find((l) => !isBlank(l)) ?? ""), "  ∟ $ echo hi");
+check("an extension tool drawn in pi's box is de-boxed like any other", trimmedRight(replacedLines.find((l) => !isBlank(l)) ?? ""), "● $ echo hi");
 check("and keeps no tint", replacedLines.some((line) => line.includes(`${ESC}[48;`)), false);
 
 /* -------------------------------------------------------------------------- */
