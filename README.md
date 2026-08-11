@@ -1647,11 +1647,17 @@ But it is a reach into internals that carry no compatibility promise, and the li
 renderer on any throw, so the failure mode is losing the marks and never losing the session — and
 nothing will tell you it happened. Verified against pi 0.84.1.
 
-Three kinds of tool call keep pi's own framing, because restyling them would be worse than leaving
-them alone: any tool an **extension** registered a renderer for, and any tool that draws its own
-frame — `dynamic-workflow`'s panel and `advisor`'s progress rows both depend on that, and this would
-otherwise fight their authors — plus any result carrying images, which pi composes with spacers
-below the box.
+**What is left alone is a tool that draws its own frame** — `renderShell: "self"`, which pi already
+renders outside the box. That is the only flag meaning "this author chose the framing", so it is the
+only one worth deferring to. Two more cases keep pi's rendering for mechanical reasons: a tool with
+no renderer at all, whose fallback text carries the tint on the text component rather than on a box,
+and a result carrying images, which pi composes with spacers below the box.
+
+It is deliberately **not** enough that a tool came from an extension. The first cut bailed on any
+`toolDefinition.renderCall`, which read as respectful and was in fact nearly total: `background-shell`
+replaces `bash`, and its renderer delegates straight back to pi's built-in donor for every
+foreground command. So the most common call in any session — every `$ …` — kept its box while
+everything around it lost one. The rule now turns on framing, not provenance.
 
 There is no settings block: the extension either draws the transcript or it does not, and deleting
 the folder is the off switch. Two things it does **not** do, both of which the Claude Code

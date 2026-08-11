@@ -171,19 +171,41 @@ check("it carries the error colour", failedMark?.includes(`<${CONFIG.toolErrorCo
 setPaint((_color, text) => text);
 
 /* -------------------------------------------------------------------------- */
-console.log("\n--- a tool an extension drew itself is left alone ---");
+console.log("\n--- who keeps pi's own framing ---");
 
-const owned = new ToolExecutionComponent(
-	"custom_thing",
-	"id-owned",
+// Only `renderShell: "self"` means "this author chose the framing". pi renders
+// those outside the box already, so they are the one thing to defer to.
+const selfDrawn = new ToolExecutionComponent(
+	"self_drawn",
+	"id-self",
 	{},
 	{},
-	{ name: "custom_thing", renderCall: () => ({ render: () => ["drawn by its author"] }) } as never,
+	{
+		name: "self_drawn",
+		renderShell: "self",
+		renderCall: () => ({ render: () => ["drawn by its author"] }),
+	} as never,
 	ui as never,
 	ROOT,
 );
-check("its own renderer still runs", owned.render(WIDTH).some((line) => seen(line).includes("drawn by its author")), true);
-check("and it keeps its frame", owned.render(WIDTH).some((line) => line.includes(`${ESC}[48;`)), true);
+check("a self-framing tool is left alone", selfDrawn.render(WIDTH).some((line) => seen(line).includes("drawn by its author")), true);
+check("and gets no mark", selfDrawn.render(WIDTH).some((line) => seen(line).includes(CONFIG.toolMark.trim())), false);
+
+// The regression this test exists for: background-shell replaces `bash` with a
+// tool whose renderer delegates to pi's built-in donor. Bailing on "came from
+// an extension" boxed almost every call in a real session.
+const replaced = new ToolExecutionComponent(
+	"bash",
+	"id-replaced",
+	{ command: "echo hi" },
+	{},
+	{ name: "bash", renderCall: () => ({ render: () => ["$ echo hi"] }) } as never,
+	ui as never,
+	ROOT,
+);
+const replacedLines = replaced.render(WIDTH);
+check("an extension tool drawn in pi's box is de-boxed like any other", trimmedRight(replacedLines.find((l) => !isBlank(l)) ?? ""), "  ∟ $ echo hi");
+check("and keeps no tint", replacedLines.some((line) => line.includes(`${ESC}[48;`)), false);
 
 /* -------------------------------------------------------------------------- */
 console.log("\n--- applying twice cannot double-mark ---");

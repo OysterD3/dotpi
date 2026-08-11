@@ -40,7 +40,6 @@ interface ToolInternals {
 	contentBox: { children: Component[] };
 	imageComponents: Component[];
 	result?: { isError: boolean };
-	toolDefinition?: { renderCall?: unknown };
 	hasRendererDefinition(): boolean;
 	getRenderShell(): string;
 }
@@ -101,10 +100,19 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
  * in one move and leaves the tool's real content — a diff, highlighted source,
  * command output — exactly as its renderer drew it.
  *
- * Three cases keep the original renderer instead:
- *   - a tool an extension registered a `renderCall` for, and any tool that
- *     draws its own frame (`renderShell: "self"`), because that author already
- *     decided how it looks and this would fight them;
+ * What is left alone is a tool that already draws its own frame —
+ * `renderShell: "self"`, which pi renders outside the box entirely. That is
+ * the only flag meaning "this author chose the framing", so it is the only
+ * thing worth deferring to.
+ *
+ * It is deliberately *not* enough that a tool came from an extension. The
+ * first cut bailed on any `toolDefinition.renderCall`, which quietly excluded
+ * almost every call in a real session: `background-shell` replaces `bash`, and
+ * its renderer delegates straight back to pi's built-in donor for every
+ * foreground command. Its output is the built-in's output, so boxing it while
+ * de-boxing everything else was inconsistent, not respectful.
+ *
+ * Two cases still keep the original renderer:
  *   - a tool with no renderer at all, whose fallback text carries the tint on
  *     the text component rather than on a box;
  *   - a result with images, which the original render composes with spacers
@@ -116,7 +124,6 @@ function unboxTools(): void {
 		const self = this as unknown as ToolInternals;
 		try {
 			if (self.hideComponent) return [];
-			if (self.toolDefinition?.renderCall !== undefined) return original.call(this, width);
 			if (!self.hasRendererDefinition() || self.getRenderShell() !== "default") return original.call(this, width);
 			if (self.imageComponents.length > 0) return original.call(this, width);
 
