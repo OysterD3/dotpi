@@ -2,7 +2,7 @@
  * Resolving the summariser model, using pi's own `--model` rules reproduced
  * against the ModelRegistry list (pi's resolver is not exported to
  * extensions). The same transcription the recap, goal, permissions, advisor,
- * subagents, and ultracode extensions carry; duplicated here so this
+ * subagents, and dynamic-workflow extensions carry; duplicated here so this
  * extension is independently installable.
  *
  * A reference may end in `:level` — pi's `--model` syntax, which a role value

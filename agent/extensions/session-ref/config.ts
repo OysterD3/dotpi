@@ -1,5 +1,5 @@
 /**
- * Limits and constants for `/ref`.
+ * Limits and constants for session-ref.
  *
  * The numbers that matter are the context ones. A referenced session becomes a
  * custom MESSAGE entry — it enters LLM context and re-costs on every later
@@ -17,6 +17,17 @@ export const CONFIG = {
 
 	/** Picker rows shown before the rest collapse into the search hint. */
 	maxPickerRows: 15,
+
+	/**
+	 * How long a session listing is reused, in ms.
+	 *
+	 * `SessionManager.list` parses every session file and concatenates every
+	 * message into one searchable string. The `#` provider is on the typing
+	 * hot path, so without this it pays that per keystroke. Typing is bursty:
+	 * a few seconds covers a whole query, and a session started mid-burst is
+	 * not one you are about to reference.
+	 */
+	listCacheMs: 4_000,
 
 	/**
 	 * Share of the REMAINING context a full injection may fill. Not 1.0,

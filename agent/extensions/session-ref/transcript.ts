@@ -4,7 +4,7 @@
  * Adapted from the recap extension's transcript.ts (same flattening rules, so
  * a session reads the same whether it is being recapped or referenced), with
  * one difference: the budget arrives in CHARACTERS decided by the caller,
- * because `/ref` budgets against the context actually left in the CURRENT
+ * because session-ref budgets against the context actually left in the CURRENT
  * session, not against the reading model's window. When the budget is tight
  * the OLDEST messages drop first — the end of a session is where it landed.
  *
