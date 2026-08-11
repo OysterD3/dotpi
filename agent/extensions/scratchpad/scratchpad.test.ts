@@ -26,7 +26,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { CONFIG } = await import("./config.ts");
 const { expandRoot, projectSlug, sessionSegment, scratchpadPath, scratchpadUnder, userRoot } = await import("./paths.ts");
-const { buildPromptBlock } = await import("./prompt.ts");
+const { buildPromptBlock, buildToolGuidance } = await import("./prompt.ts");
 const { loadSettings, prepare, prepareRoot, list, describeContents } = await import("./index.ts");
 
 let failures = 0;
@@ -190,21 +190,38 @@ check("a long listing is capped and says how much it dropped", many.includes("�
 eq("the cap counts the shown entries, not the header", many.split("\n").length, CONFIG.listLimit + 1);
 
 // ---------------------------------------------------------------------------
-console.log("buildPromptBlock — the claims the rest of the feature has to make true");
+console.log("buildPromptBlock — what every request pays for, and must therefore earn");
 
 const block = buildPromptBlock("/tmp/pi-501/-a/s/scratchpad");
 
 check("names the actual directory, not a placeholder", block.includes("/tmp/pi-501/-a/s/scratchpad"));
 check("states it as a directive, not an offer", block.includes("IMPORTANT: Always use"));
-// Each of these is a property the implementation provides, and a model that is
-// not told about it behaves as though it were absent.
+// These three are the claims a model acts on WITHOUT having asked for anything,
+// so they are the ones worth carrying on every request. The rest moved to the
+// tool, where they are paid for only when fetched.
 check("says the directory already exists, saving an mkdir", block.toLowerCase().includes("already exists"));
 check("says writes there do not prompt — the half that changes behaviour", block.includes("pre-approved"));
-check("says it is session-specific", block.includes("specific to this session"));
-check("says it keeps the user's project clean", block.includes("diff"));
 check("steers files away from /tmp", block.includes("instead of `/tmp`"));
-check("leaves an explicit escape hatch for /tmp", block.includes("Only put temporary files in `/tmp`"));
+check("points at the tool for everything it no longer carries", block.includes("`scratchpad` tool"));
 check("is appended, so it starts by separating itself from what precedes it", block.startsWith("\n\n"));
+
+// The whole point of the split. A block that drifts back to the old length is
+// paying the old per-request cost again, and nothing else would notice.
+check("stays short — it is on every request of the session", block.length < 380);
+check("is much shorter than the guidance it replaced", block.length * 2 < buildToolGuidance("/x").length + block.length);
+
+// ---------------------------------------------------------------------------
+console.log("buildToolGuidance — the claims that moved, which must survive the move");
+
+const guidance = buildToolGuidance("/tmp/pi-501/-a/s/scratchpad");
+
+check("repeats the path, so the result stands alone in the transcript", guidance.includes("/tmp/pi-501/-a/s/scratchpad"));
+check("says the directory already exists, saving an mkdir", guidance.toLowerCase().includes("already exists"));
+check("says writes there do not prompt", guidance.includes("pre-approved"));
+check("says it is session-specific", guidance.includes("specific to this session"));
+check("says it keeps the user's project clean", guidance.includes("diff"));
+check("leaves an explicit escape hatch for /tmp", guidance.includes("Only put temporary files in `/tmp`"));
+check("lists the concrete cases, which is what made the long version work", guidance.includes("- Storing intermediate results"));
 
 // ---------------------------------------------------------------------------
 console.log("wiring against a fake pi — create, announce, inject");
@@ -215,14 +232,17 @@ function makePi() {
 	const handlers = new Map<string, Function>();
 	const commands = new Map<string, any>();
 	const announced: Array<[string, unknown]> = [];
+	const tools = new Map<string, any>();
 	return {
 		pi: {
 			on: (event: string, h: Function) => handlers.set(event, h),
 			registerCommand: (name: string, def: any) => commands.set(name, def),
+			registerTool: (def: any) => tools.set(def.name, def),
 			events: { emit: (channel: string, data: unknown) => announced.push([channel, data]) },
 		},
 		handlers,
 		commands,
+		tools,
 		announced,
 	};
 }
@@ -247,7 +267,9 @@ mkdirSync(TMP, { recursive: true });
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: TMP } }));
 	const h = makePi();
 	extension(h.pi as never);
-	check("registers /scratchpad", h.commands.has("scratchpad"));
+	// The path reaches the model through the system prompt and the tool; there is
+	// no slash command, so nothing here is driven by hand.
+	eq("registers no slash command", h.commands.size, 0);
 
 	const { ctx, notices } = makeCtx("/work/alpha", "sess-1");
 	h.handlers.get("session_start")!({}, ctx);
@@ -265,6 +287,29 @@ mkdirSync(TMP, { recursive: true });
 	const out = h.handlers.get("before_agent_start")!({ systemPrompt: "BASE PROMPT" });
 	check("the block is appended to the system prompt", out?.systemPrompt.startsWith("BASE PROMPT\n\n# Scratchpad Directory"));
 	check("naming the directory it just made", out?.systemPrompt.includes(expected));
+
+	// The tool half: the request carries the path, this carries the rest.
+	check("registers the scratchpad tool", h.tools.has("scratchpad"));
+	const tool = h.tools.get("scratchpad")!;
+
+	const path = await tool.execute("call-1", {});
+	check("defaults to the guidance", path.content[0].text.includes("Use this directory for ALL temporary file needs"));
+	check("naming the real directory", path.content[0].text.includes(expected));
+
+	writeFileSync(join(expected, "notes.md"), "x");
+	const listed = await tool.execute("call-2", { action: "list" });
+	check("list reports what is actually in it", listed.content[0].text.includes("notes.md"));
+	eq("and counts it", listed.details.count, 1);
+	check("list does not re-send the guidance", !listed.content[0].text.includes("Use this directory for ALL"));
+
+	// dir is read at call time, not captured: a /new that removes the scratchpad
+	// must not leave the tool handing out the old path.
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { enabled: false, root: TMP } }));
+	h.handlers.get("session_start")!({}, makeCtx("/work/alpha", "sess-1b").ctx);
+	const gone = await tool.execute("call-3", {});
+	check("after a session turns it off, the tool says so instead of naming a dead path", gone.content[0].text.startsWith("No scratchpad"));
+	eq("and reports no directory", gone.details.dir, null);
+	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ scratchpad: { root: TMP } }));
 }
 
 {

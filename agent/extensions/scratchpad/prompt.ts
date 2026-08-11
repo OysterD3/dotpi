@@ -29,11 +29,32 @@
  *
  * ## Why it is worded the way it is
  *
- * The block is imperative and lists concrete cases, because "you may use this
- * directory" gets read as an offer and declined. The path is stated absolutely
- * and once. "The directory already exists" is there to save an `mkdir -p` round
- * trip. The `/tmp` escape hatch is explicit so a user who genuinely wants a file
- * in `/tmp` can still ask for one and get it.
+ * Both blocks are imperative and state the path absolutely, because "you may use
+ * this directory" gets read as an offer and declined. "The directory already
+ * exists" is there to save an `mkdir -p` round trip. The `/tmp` escape hatch is
+ * explicit so a user who genuinely wants a file in `/tmp` can still ask for one
+ * and get it.
+ *
+ * ## Why this is split in two
+ *
+ * The long version used to be the system-prompt block, which meant paying for
+ * every line of it on every request of the session — used or not, and a session
+ * that never writes a scratch file pays exactly as much as one that writes
+ * twenty. That is the standing cost `skill-loading` exists to argue about, and
+ * the same argument applies here.
+ *
+ * So the request carries the SHORT block and the `scratchpad` tool returns the
+ * long one on demand. What stays inline is only what changes behaviour when the
+ * model has not asked: the path, that the directory already exists, and that
+ * writes are pre-approved — a model that expects a permission prompt for every
+ * scratch file writes fewer of them, and that is true whether or not it ever
+ * calls the tool. Everything else is detail the model can fetch when it is
+ * actually about to write something.
+ *
+ * Removing the block entirely was the other option and is worse: nothing would
+ * tell the model a scratchpad exists, so it would fall back to `/tmp` or the
+ * user's project without ever discovering the tool — the exact failure this
+ * extension was built to stop.
  *
  * Appended in `before_agent_start`, after pi's own system prompt, the way
  * add-dir appends its directory list — so it is cached across the turn rather
@@ -41,17 +62,36 @@
  * path is fixed for the whole session (including across a resume, since the
  * session id is what names it).
  *
- * Pure: a string transform, so the exact bytes that reach the model are directly
+ * Pure: string transforms, so the exact bytes that reach the model are directly
  * testable.
  */
 
-/** The text appended to pi's system prompt. */
+/**
+ * The short block appended to pi's system prompt on every request.
+ *
+ * Every claim in here is one the model acts on without being asked. Anything
+ * that only matters once it has already decided to write a file belongs in
+ * `buildToolGuidance` instead, where it is paid for only when fetched.
+ */
 export function buildPromptBlock(dir: string): string {
 	return `
 
 # Scratchpad Directory
 
-IMPORTANT: Always use this scratchpad directory for temporary files instead of \`/tmp\`, other system temp directories, or the working directory:
+IMPORTANT: Always use this directory for temporary files, instead of \`/tmp\` or the user's project:
+\`${dir}\`
+
+It already exists (no \`mkdir\`) and writes to it are pre-approved (no permission prompt). Call the \`scratchpad\` tool for the full rules and current contents.`;
+}
+
+/**
+ * The long version, returned by the `scratchpad` tool rather than carried in
+ * every request. Repeats the path so the result stands on its own in the
+ * transcript: the model may be reading this many turns after the block above
+ * scrolled out of its attention.
+ */
+export function buildToolGuidance(dir: string): string {
+	return `Scratchpad directory for this session:
 \`${dir}\`
 
 Use this directory for ALL temporary file needs:

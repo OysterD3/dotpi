@@ -53,12 +53,10 @@
  * to models that do not respond to the judgment-call framing OPENING_NUDGE
  * relies on.
  *
- * `/ask-user` reports that state and `/ask-user test` demonstrates the prompt.
  * Neither can turn anything off.
  */
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CONFIG, FOLLOWUP_ENTRY_TYPE, NUDGE_ENTRY_TYPE, TOOL_NAME } from "./config.ts";
-import { type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
 import {
 	CONTRACT_NUDGE,
 	contractFollowUpReminder,
@@ -68,7 +66,6 @@ import {
 	opensWork,
 	systemReminder,
 } from "./nudge.ts";
-import { showAsk } from "./prompt.ts";
 import { loadSettings } from "./settings.ts";
 import { askStyle, type AskStyle } from "./style.ts";
 import { registerAskUserTool } from "./tool.ts";
@@ -343,59 +340,5 @@ export default function (pi: ExtensionAPI) {
 		// tracking depend on which block a fence's opening and closing delimiter
 		// happen to land in, an assumption this makes unnecessary.
 		if (textBlocks.some((text) => hasAssumptionsBlock(text))) markCompliant();
-	});
-
-	const describeStatus = (ctx: ExtensionContext): string =>
-		ctx.hasUI
-			? `ask_user is on, and there is no way to turn it off: asking when a decision is genuinely yours is how the agent is meant to behave. A request that opens new work is reminded to settle its open decisions first, at most once every ${CONFIG.nudgeCooldownTurns} turns. Press Tab on any answer to annotate it.`
-			: "ask_user is unavailable: this session has no interactive user to answer.";
-
-	pi.registerCommand("ask-user", {
-		description: "Show what ask_user is doing, or try the prompt (/ask-user [status | test])",
-		getArgumentCompletions: (prefix: string) =>
-			["status", "test"].filter((option) => option.startsWith(prefix)).map((value) => ({ value, label: value })),
-		handler: async (args: string, ctx) => {
-			const arg = args.trim().toLowerCase();
-
-			if (arg === "test") {
-				if (!ctx.hasUI) return void ctx.ui.notify("The test needs the interactive TUI.", "error");
-				// Two questions on purpose: the test should exercise ← / → and the
-				// review step, not just a single selector. The first carries a
-				// recommendation, so the badge and the pre-focused row are visible too.
-				const questions: AskQuestion[] = [
-					{
-						question: "This is a test of ask_user. How does it look?",
-						header: "Test",
-						options: [
-							{
-								label: "Looks good",
-								description: "Selection, the free-text row, and notes all behave",
-								recommended: true,
-							},
-							{ label: "Needs tweaks", description: "Something feels off — press Tab here and say what" },
-						],
-						multiSelect: false,
-					},
-					{
-						question: "Which parts did you try?",
-						header: "Coverage",
-						options: [
-							{ label: "Arrow navigation", description: "← / → between questions" },
-							{ label: "Tab note", description: "Annotating an answer in place" },
-							{ label: "Free-text row", description: "Typing an answer of your own" },
-						],
-						multiSelect: true,
-					},
-				];
-				const session = new AskSession(questions);
-				// Not blocking: the user opened this themselves and the agent is not
-				// waiting on it, so the turn clock and the cmux bell stay out of it.
-				ctx.ui.notify(renderOutcomeText(await showAsk(pi, ctx, session, false)), "info");
-				return;
-			}
-
-			// "" or "status" or anything else: report status.
-			ctx.ui.notify(describeStatus(ctx), "info");
-		},
 	});
 }

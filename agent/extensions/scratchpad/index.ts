@@ -6,7 +6,8 @@
  * (paths.ts), announces the path on `scratchpad:dir` so the permissions
  * extension can stop prompting for writes that land inside it, and appends a
  * block to the system prompt telling the model what the directory is for
- * (prompt.ts). `/scratchpad` shows the path and what is in it.
+ * (prompt.ts). The `scratchpad` tool returns the path, the full rules and
+ * the current contents on demand.
  *
  *   config.ts   settings, the announcement channel, tunables
  *   paths.ts    the layout and why each level of it exists (pure)
@@ -45,9 +46,10 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, type Stats
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { ANNOUNCE, CONFIG, defaultSettings, SETTINGS_KEY, type ScratchpadSettings } from "./config.ts";
 import { expandRoot, scratchpadUnder, userRoot } from "./paths.ts";
-import { buildPromptBlock } from "./prompt.ts";
+import { buildPromptBlock, buildToolGuidance } from "./prompt.ts";
 
 export function loadSettings(agentDir: string): ScratchpadSettings {
 	const base = defaultSettings();
@@ -186,7 +188,7 @@ export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
 	// Not read from disk here: `session_start` reloads before anything can read
 	// it, and nothing else runs in between — `before_agent_start` looks only at
-	// `dir`, and `/scratchpad` needs a human, who arrives later still.
+	// `dir`, and the tool cannot be called before the model has a turn.
 	let settings = defaultSettings();
 	let dir: string | undefined;
 
@@ -244,32 +246,65 @@ export default function (pi: ExtensionAPI) {
 		return { systemPrompt: event.systemPrompt + buildPromptBlock(dir) };
 	});
 
-	pi.registerCommand("scratchpad", {
-		description: "Show this session's scratchpad directory and what is in it",
-		handler: async (_args, ctx) => {
+	// The long guidance lives here rather than in every request. `dir` is read at
+	// call time, not captured: a `/new` can replace or remove it mid-session, and
+	// a tool closed over the old value would hand out a path nothing announced.
+	pi.registerTool({
+		name: "scratchpad",
+		label: "Scratchpad",
+		description:
+			"Return this session's scratchpad directory: where to put temporary files, the rules for using it, " +
+			"and what is currently in it. The path is already in your system prompt — call this when you want the " +
+			"full rules, or to see what you have written there so far.",
+		promptSnippet: "Get the session scratchpad path, its rules, and its current contents",
+		promptGuidelines: [
+			"Write temporary files into the scratchpad directory named in your system prompt rather than /tmp or the user's project.",
+			"Call scratchpad with action \"list\" to see what you already wrote there, instead of re-deriving it.",
+		],
+		parameters: Type.Object({
+			action: Type.Optional(
+				Type.Union([Type.Literal("path"), Type.Literal("list")], {
+					description:
+						'"path" (default) returns the directory and the full rules for using it; ' +
+						'"list" returns the directory and what is currently in it.',
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params) {
+			// Not an error: a session without a scratchpad is a supported state
+			// (disabled, or the directory could not be created and the user was
+			// warned at startup). Saying so plainly is what stops the model
+			// retrying, or writing to a path that does not exist.
 			if (!settings.enabled) {
-				ctx.ui.notify("Scratchpad is off (scratchpad.enabled is false).", "info");
-				return;
+				return {
+					content: [{ type: "text", text: "No scratchpad: it is turned off (scratchpad.enabled is false). Use /tmp for temporary files." }],
+					details: { action: params.action ?? "path", dir: null },
+				};
 			}
 			if (!dir) {
-				ctx.ui.notify("No scratchpad this session — it could not be created. See the warning at startup.", "info");
-				return;
+				return {
+					content: [{ type: "text", text: "No scratchpad this session — it could not be created; the user was warned at startup. Use /tmp for temporary files." }],
+					details: { action: params.action ?? "path", dir: null },
+				};
 			}
-			ctx.ui.notify(
-				[
-					dir,
-					"",
-					describeContents(list(dir)),
-					"",
-					"Session-scoped and outside the project. Writes here are pre-approved and never prompt.",
-				].join("\n"),
-				"info",
-			);
+
+			const action = params.action ?? "path";
+			const entries = action === "list" ? list(dir) : undefined;
+			const text =
+				action === "list"
+					? `Scratchpad directory for this session:\n\`${dir}\`\n\nContents:\n${describeContents(entries!)}`
+					: buildToolGuidance(dir);
+
+			return {
+				content: [{ type: "text", text }],
+				details: { action, dir, count: entries?.length },
+			};
 		},
 	});
 }
 
-/** The indented listing `/scratchpad` prints, capped at CONFIG.listLimit. */
+/** The indented listing the `scratchpad` tool returns, capped at CONFIG.listLimit. */
 export function describeContents(entries: string[]): string {
 	if (entries.length === 0) return "  (empty)";
 	const shown = entries.slice(0, CONFIG.listLimit).map((entry) => `  ${entry}`);

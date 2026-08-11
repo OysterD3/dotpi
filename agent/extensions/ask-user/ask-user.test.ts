@@ -582,7 +582,7 @@ const sessionStartCtx = { cwd: ROOT, isProjectTrusted: () => true };
 	const h = makePi();
 	extension(h.pi as never);
 	checkTrue("registers the ask_user tool", h.tools.has("ask_user"));
-	checkTrue("registers /ask-user", h.commands.has("ask-user"));
+	checkTrue("registers no slash command", h.commands.size === 0);
 
 	const tool = h.tools.get("ask_user");
 	check("tool runs sequentially", tool.executionMode, "sequential");
@@ -608,19 +608,15 @@ const sessionStartCtx = { cwd: ROOT, isProjectTrusted: () => true };
 	checkTrue("inactive in a headless session", !h.active().includes("ask_user"));
 }
 {
-	// There is no off switch, so the command must not grow one back by accident:
-	// every argument it does not recognise falls through to reporting status.
+	// There is no off switch, and now no command either — so the surface that
+	// could have grown one back does not exist. Asking when a decision is
+	// genuinely the user's is how the agent is meant to behave.
 	const h = makePi();
 	extension(h.pi as never);
 	const ctx = { hasUI: true, ui: uiStub, ...sessionStartCtx };
 	h.handlers.get("session_start")!({}, ctx);
-	const cmd = h.commands.get("ask-user");
-	await cmd.handler("off", ctx);
-	checkTrue("/ask-user off cannot deactivate it", h.active().includes("ask_user"));
-	await cmd.handler("disable", ctx);
-	checkTrue("nor can any other argument", h.active().includes("ask_user"));
-	const completions = cmd.getArgumentCompletions("");
-	check("and off/on are not even offered", completions.map((c: any) => c.value), ["status", "test"]);
+	check("registers no slash command", h.commands.size, 0);
+	checkTrue("and the tool is active regardless", h.active().includes("ask_user"));
 }
 
 // ---------------------------------------------------------------- tool.execute
