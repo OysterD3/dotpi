@@ -535,6 +535,58 @@ command that says "you will be asked again" must not leave it in place. The scra
 plain `/permissions` too, not just `/permissions auto` — it suppresses prompts in `askMutating` and
 `askAll`, the modes people pick *because* they want to be asked, so that had to be visible.
 
+**Where a thing lives stopped being a finding on its own.** Two of the classifier's rules were
+written as location tests, and both were wrong in the same way — they answered "is this path in the
+project" for calls where the path was not the question.
+
+*Running a program.* Nearly every tool an agent uses is outside the working directories: `git` in
+`/usr/bin`, `node` under a version manager in the home directory, a project's own helper in `~/bin`
+or `/opt`. The old rule flagged "touches anything outside the workspace", so `~/bin/deploy.sh` and
+`bash /opt/tools/lint.sh src/` read as reaching out of the project when they are the ordinary way to
+run a script. The rule now covers *reading or changing data* out there — home directory, shell
+profiles, system paths, another project's files — and says explicitly that invoking a program is not
+that. A command is judged by its arguments, what it reads, and where its output lands, never by
+where its executable sits.
+
+*Code written inline.* The old rule made "code whose content is computed rather than written out"
+unsafe, which on its face covers every `python -c`, `node -e`, `bash -c` and heredoc — the one-line
+calculations an agent reaches for constantly. A snippet written out in the command is exactly as
+readable as a file would be and the classifier is looking straight at it, so it is now judged on
+what it does, like anything else.
+
+Worth stating precisely, because it was measured: removing that clause changed **no verdict** in the
+corpus. Run A/B against the configured classifier, all four inline cases came back safe under the
+old wording too — it was a licence to flag that this model was not exercising, not an observed
+block. It is gone because it was wrong, not because it was firing. The two script cases below are
+the ones that actually moved.
+
+What replaced both is the distinction that was actually doing the work: **code the agent did not
+write out, and that you therefore cannot read** — piped from a download, decoded from an encoded
+blob, taken from a network response — is still unsafe. So is an inline snippet that fetches its real
+program (`python -c 'exec(urlopen(…).read())'`) or writes a shell profile, which is the point of the
+corpus cases added beside the new safe ones: the carve-outs say location stops mattering, not that
+`-c` is a password. The deterministic table is untouched and still stops `curl | sh`, piping a
+download into an interpreter, `eval` of fetched text, and inline interpreter code that deletes files,
+before the classifier is consulted at all.
+
+Measured on the live corpus with `opencode-go/deepseek-v4-flash`, the configured classifier:
+**75/75** — 42 safe, 30 unsafe, 3 injection — with the ten new cases in it. A/B against the previous
+prompt moved exactly two verdicts, both the ones intended: `~/bin/format-project.sh` and
+`bash /opt/company/tools/lint.sh src/`, each unsafe before and safe after. Every unsafe case held.
+
+The honest cost: `bash /some/outside/script.sh` no longer prompts on location, and the classifier
+cannot see what is in that script. If the script is one the agent just wrote, that is the same
+visibility it had before; if something else put it there, this is a real loosening, and `deny` rules
+are the answer for paths that should never execute.
+
+**A different rule also says "computed", and it is untouched.** `destructive.ts` has
+`dynamic-argument` — *"targets are computed at runtime, so what it affects cannot be checked in
+advance"* — which fires on any destructive-capable command containing `$(…)`, a backtick or `$VAR`,
+in **every** mode, before the classifier is reached. That is what stops `kill $(lsof -t -i:3000)`,
+`docker rm $(docker ps -aq)`, `git checkout $(git rev-parse HEAD~1)` and `rm -rf $BUILD_DIR`. It is
+a far broader net than the classifier clause above and is deliberately left alone here: relaxing it
+would let `rm $(cat list)` through unreviewed in every mode, which is the case it was written for.
+
 Residually this is still a guardrail rather than a sandbox: a check outside the syscall can be raced,
 so the gap is a TOCTOU window rather than a standing invitation.
 
