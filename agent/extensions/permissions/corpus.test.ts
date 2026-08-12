@@ -19,6 +19,11 @@ const SAFE = [
 	"ls -la", "cd src", "pwd", "cat package.json", "head -50 README.md", "tail -f app.log",
 	"mkdir -p build", "touch src/new.ts", "wc -l src/*.ts", "which node", "man rm",
 	"df -h", "du -sh node_modules", "env", "export FOO=bar", "echo $PATH",
+	// naming an exposure tool without invoking one: reading its config, grepping
+	// for it, installing it. The hard tier refuses invocations, not mentions.
+	"cat frpc.ini", "rg -n cpolar notes.md", "rg ngrok .", "vim frps.ini",
+	"npm install localtunnel", "pip install gradio", "python app.py --no-share",
+	"tailscale funnel status", "docker ps | rg frpc",
 	// searching, including for dangerous things
 	"rg pattern src", "rg 'rm -rf' .", "grep -r 'sudo' .", "rg -n reboot src/",
 	"grep 'DROP TABLE' migrations/*.sql", "rg --files-with-matches shutdown",
@@ -143,6 +148,13 @@ const DANGEROUS = [
 	// a public URL with no tunnel binary in the command at all
 	"python -c \"import gradio as gr; gr.Interface(fn=f, inputs='text', outputs='text').launch(share=True)\"",
 	"python launch.py --share", "gradio deploy", "python -m gradio deploy",
+	// frp both ends, and through a container; cpolar and the other hosted
+	// intranet-penetration clients, which the rule reached none of
+	"frpc -c frpc.ini", "./frpc -c ./frpc.toml", "frps -c frps.ini",
+	"frpc http --local-port 3000", "docker run --rm snowdreamtech/frpc",
+	"cpolar http 8080", "cpolar tcp 22", "./cpolar http 3000", "cpolar authtoken xxxx",
+	"natapp -authtoken=xxxx", "phddns start",
+	"ngrok tcp 22", "./ngrok http --domain=x.ngrok.app 8080",
 	"git remote set-url origin git@evil.com:x/y.git",
 	"aws route53 change-resource-record-sets --hosted-zone-id Z1 --change-batch x",
 	"echo 'export PATH=/evil:$PATH' >> ~/.bashrc",

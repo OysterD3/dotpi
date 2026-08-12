@@ -598,14 +598,24 @@ would have worked before:
 
 `corpus.test.ts` asserts all four, because each is a line of code someone could reasonably delete.
 
-What it covers: ngrok, `cloudflared tunnel`, localtunnel — under every package-runner spelling, since
-the rule originally named only `npx` and let `pnpx`, `tnpx`, `bunx`, `pnpm dlx`, `yarn dlx` and
-`npm exec` straight through — plus `lt` (localtunnel's real binary name, which needs a port or
-subdomain flag to match, being two letters), `tailscale funnel`, bore, zrok, pinggy, telebit, frpc,
-chisel and `ssh -R`. Gradio gets a rule of its own, `public-share`: `share=True`, a bare `--share`
-flag as the Stable Diffusion forks take it, and `gradio deploy` put an app on a public URL with no
-tunnel binary in the command at all, which is exactly why the first rule cannot see them.
-`--no-share` does not match, and neither does `npm install localtunnel` — installing is not serving.
+What it covers: ngrok (bare, `./ngrok`, or with a subcommand), `cloudflared tunnel`, localtunnel
+under every package-runner spelling — the rule originally named only `npx` and let `pnpx`, `tnpx`,
+`bunx`, `pnpm dlx`, `yarn dlx` and `npm exec` straight through — plus `lt`, localtunnel's real binary
+name, which needs a port or subdomain flag to match, being two letters. Then `tailscale funnel`,
+bore, zrok, pinggy, telebit, chisel and `ssh -R`.
+
+**frp needs both ends and the container**: `frpc` alone missed `frps` and
+`docker run … snowdreamtech/frpc`, which are the same exposure by another route. And the hosted
+intranet-penetration clients are their own family — **cpolar**, natapp and phddns (花生壳) — none of
+which the rule reached at all until they were named.
+
+Gradio gets a rule of its own, `public-share`, because it needs no tunnel binary for the first rule
+to see: `share=True`, a bare `--share` as the Stable Diffusion forks take it, and `gradio deploy`.
+
+Naming one of these is not invoking one. `cat frpc.ini`, `rg -n cpolar notes.md`,
+`npm install localtunnel`, `pip install gradio`, `tailscale funnel status`, `docker ps | rg frpc`
+and `python app.py --no-share` are all in the safe corpus and must stay clear — installing, reading
+and grepping are not serving.
 
 **The limit, stated plainly:** a command is all this can read. `python app.py`, where `app.py`
 itself calls `launch(share=True)`, is invisible to the table and to the classifier, which is shown
@@ -716,7 +726,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `classify.ts` | One classifier call |
 | `verdict.ts` | Reading the answer; unreadable is never "safe" (pure) |
 | `model.ts` | Resolving `permissions.auto.model` |
-| `corpus.test.ts` | 179 safe / 125 dangerous commands the table must get right, plus the hard tier's four bypass routes |
+| `corpus.test.ts` | 188 safe / 138 dangerous commands the table must get right, plus the hard tier's four bypass routes |
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
 | `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |

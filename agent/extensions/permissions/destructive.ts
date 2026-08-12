@@ -48,8 +48,8 @@
  * came from that pass — each one adversarially reviewed for false positives
  * against ordinary development commands before being accepted.
  *
- * A corpus test guards this: 179 ordinary commands must produce zero findings,
- * 125 dangerous ones must all be caught. Add to both lists when you edit here.
+ * A corpus test guards this: 188 ordinary commands must produce zero findings,
+ * 138 dangerous ones must all be caught. Add to both lists when you edit here.
  *
  * ## The hard tier
  *
@@ -203,7 +203,7 @@ export const PATTERNS: Pattern[] = [
 	// `lt` is localtunnel's real binary name and needs a port or subdomain flag
 	// to match, being two letters. The runner prefix is optional, so an installed
 	// binary invoked directly is caught too.
-	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(?:(?:npx|pnpx|tnpx|bunx)\s+(?:-\S+\s+)*|(?:npm|pnpm|yarn|bun)\s+(?:dlx|exec|x)\s+(?:-\S+\s+)*)?(?:localtunnel\b|lt\s+[^|;&]*(?:-p\b|--port\b|-s\b|--subdomain\b|-h\b|--host\b))|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|\bzrok\s+share\b|\bpinggy\b|\btelebit\s+(http|https|tcp)\b|^\s*(\.\/)?frpc\b(?!\.)|\bchisel\s+(client|server)\b|^\s*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet", hard: true },
+	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(?:(?:npx|pnpx|tnpx|bunx)\s+(?:-\S+\s+)*|(?:npm|pnpm|yarn|bun)\s+(?:dlx|exec|x)\s+(?:-\S+\s+)*)?(?:localtunnel\b|lt\s+[^|;&]*(?:-p\b|--port\b|-s\b|--subdomain\b|-h\b|--host\b))|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|\bzrok\s+share\b|\bpinggy\b|\btelebit\s+(http|https|tcp)\b|^\s*(\.\/)?frp[cs]\b(?!\.)|\bdocker\s+(?:run|compose)\b[^|;&]*\bfrp[cs]\b|^\s*(\.\/)?(?:cpolar|natapp|phddns|ngrok)\b|\bchisel\s+(client|server)\b|^\s*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet", hard: true },
 	// Gradio and the UIs built on it put a local app on a public gradio.live URL
 	// from a keyword argument, with no tunnel binary anywhere in the command —
 	// which is why the rule above cannot see it. `--share` is the same switch
