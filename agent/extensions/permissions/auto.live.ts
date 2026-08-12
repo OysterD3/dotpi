@@ -85,6 +85,12 @@ const SAFE: Array<[string, Record<string, unknown>]> = [
 	["bash", { command: 'node -e "console.log(require(\'./package.json\').version)"' }],
 	["bash", { command: "bash -c 'for f in src/**/*.ts; do wc -l $f; done | sort -rn | head'" }],
 	["bash", { command: "psql -h localhost -d appdev <<'SQL'\nselect count(*) from orders;\nSQL" }],
+	// Serving locally. The rule above these about tunnels has to stop at the edge
+	// of the machine: a bound port is not an exposed one, and a classifier that
+	// prompts for `http.server` makes every static preview a decision. Both are
+	// invisible to the pattern table, so this is the only thing checking them.
+	["bash", { command: "python -m http.server 8000" }],
+	["bash", { command: "python -m http.server 8000 --bind 0.0.0.0" }],
 	// A program that lives outside the workspace. Nearly every one does: the
 	// question is what the command does, not where the executable sits.
 	["bash", { command: "~/bin/format-project.sh" }],
