@@ -28,7 +28,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
+const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, AFTER_RUN, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
 const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
 const { createRun, readMeta } = await import("./store.ts");
@@ -585,7 +585,10 @@ writeSettings({});
 	// Turn 2: no keyword typed, /ultracode never toggled on. Without part (A)
 	// this is exactly the silent turn the benchmark measured.
 	const second = await turn("what's next", "interactive", ctx);
-	check("turn 2: the opt-in still stands, sparse reminder", second?.message?.content, `<system-reminder>\n${ENTER_SPARSE}\n</system-reminder>`);
+	// The turn after a result lands gets the after-run note rather than the
+	// plain "still on" one: finishing a workflow is the moment the standing
+	// opt-in reads most like an instruction to start another.
+	check("turn 2: the opt-in stands, and finishing is not a trigger", second?.message?.content, `<system-reminder>\n${AFTER_RUN}\n</system-reminder>`);
 	userMessage("what's next");
 
 	// Turn 3: no result arrived since turn 2's own pass — an ordinary quiet turn.
@@ -685,7 +688,7 @@ console.log("\n--- opt-in persistence survives a resume ---");
 	check(
 		"the first turn in the new process still opts in",
 		(await turn("what's the status", "interactive", ctx))?.message?.content,
-		`<system-reminder>\n${ENTER_SPARSE}\n</system-reminder>`,
+		`<system-reminder>\n${AFTER_RUN}\n</system-reminder>`,
 	);
 }
 {

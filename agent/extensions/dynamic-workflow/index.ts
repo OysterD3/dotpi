@@ -75,7 +75,7 @@ import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, LEGACY_SETTINGS_
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
-import { editStreakReminder, ENTER_SPARSE, KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
+import { AFTER_RUN, editStreakReminder, ENTER_SPARSE, KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
 import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
@@ -445,9 +445,15 @@ export default function (pi: ExtensionAPI) {
 		// finding its result in the branch already proves it, so checking for
 		// the result IS the check (workflowRanThisSession is still tracked, for
 		// streak.ts's independent need in the tool_call handler below).
-		if (!triggered && !mode.isOn() && keywordFiredThisSession) {
+		// A run that has just landed is its own case, and it applies whether the
+		// opt-in came from the keyword or from /ultracode: finishing a workflow
+		// is the moment "you may run one" reads most like "run another". So the
+		// after-run note goes out on that turn regardless of how the opt-in
+		// arrived, and it replaces ENTER_SPARSE rather than joining it — that
+		// one says the mode is still on, which this already implies.
+		if (triggered || mode.isOn() || keywordFiredThisSession) {
 			const currentBranch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
-			if (hasMessageSinceLastUserTurn(currentBranch, RESULT_MESSAGE)) parts.push(ENTER_SPARSE);
+			if (hasMessageSinceLastUserTurn(currentBranch, RESULT_MESSAGE)) parts.push(AFTER_RUN);
 		}
 		if (parts.length === 0) return;
 		return {
