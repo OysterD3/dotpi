@@ -203,13 +203,18 @@ export const PATTERNS: Pattern[] = [
 	// `lt` is localtunnel's real binary name and needs a port or subdomain flag
 	// to match, being two letters. The runner prefix is optional, so an installed
 	// binary invoked directly is caught too.
-	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(?:(?:npx|pnpx|tnpx|bunx)\s+(?:-\S+\s+)*|(?:npm|pnpm|yarn|bun)\s+(?:dlx|exec|x)\s+(?:-\S+\s+)*)?(?:localtunnel\b|lt\s+[^|;&]*(?:-p\b|--port\b|-s\b|--subdomain\b|-h\b|--host\b))|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|\bzrok\s+share\b|\bpinggy\b|\btelebit\s+(http|https|tcp)\b|^\s*(\.\/)?frp[cs]\b(?!\.)|\bdocker\s+(?:run|compose)\b[^|;&]*\bfrp[cs]\b|^\s*(\.\/)?(?:cpolar|natapp|phddns|ngrok)\b|\bchisel\s+(client|server)\b|^\s*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet", hard: true },
+	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(?:(?:sudo|doas|env|nohup|time|command|exec|setsid|stdbuf|xargs)\s+(?:-\S+\s+)*|\w+=\S+\s+)*(?:(?:npx|pnpx|tnpx|bunx)\s+(?:-\S+\s+)*|(?:npm|pnpm|yarn|bun)\s+(?:dlx|exec|x)\s+(?:-\S+\s+)*)?(?:localtunnel\b|lt\s+[^|;&]*(?:-p\b|--port\b|-s\b|--subdomain\b|-h\b|--host\b))|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|\bzrok\s+share\b|^\s*(?:(?:sudo|doas|env|nohup|time|command|exec|setsid|stdbuf|xargs)\s+(?:-\S+\s+)*|\w+=\S+\s+)*(\.\/)?pinggy\b|\btelebit\s+(http|https|tcp)\b|^\s*(?:(?:sudo|doas|env|nohup|time|command|exec|setsid|stdbuf|xargs)\s+(?:-\S+\s+)*|\w+=\S+\s+)*(\.\/)?frp[cs]\b(?!\.)|\bdocker\s+(?:run|create)\b[^|;&]*\bfrp[cs]\b|\bdocker\s+compose\s+up\b[^|;&]*\bfrp[cs]\b|^\s*(?:(?:sudo|doas|env|nohup|time|command|exec|setsid|stdbuf|xargs)\s+(?:-\S+\s+)*|\w+=\S+\s+)*(\.\/)?(?:cpolar|natapp|phddns)\b|\bchisel\s+(client|server)\b|^\s*(?:(?:sudo|doas|env|nohup|time|command|exec|setsid|stdbuf|xargs)\s+(?:-\S+\s+)*|\w+=\S+\s+)*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet", hard: true },
 	// Gradio and the UIs built on it put a local app on a public gradio.live URL
 	// from a keyword argument, with no tunnel binary anywhere in the command —
 	// which is why the rule above cannot see it. `--share` is the same switch
 	// spelled as a flag, as stable-diffusion-webui and its forks take it.
 	// `--no-share` does not match: the literal needs a boundary before it.
-	{ id: "public-share", test: /\bshare\s*=\s*True\b|(?:^|\s)--share(?:=(?:1|true|True))?(?=\s|$)|\bgradio\s+deploy\b/, reason: "publishes a local app on a public URL", hard: true },
+	{ id: "public-share", test: /\bshare\s*=\s*True\b|\bgradio\s+deploy\b/, reason: "publishes a local app on a public URL", hard: true },
+	// A bare `--share` is the same switch on the Stable Diffusion forks, but it
+	// is also just a common flag name — `npm run build -- --share` is somebody
+	// else's CLI. It prompts rather than refusing, because a refusal here has no
+	// override and would leave that project with no way to run its own build.
+	{ id: "share-flag", test: /(?:^|\s)--share(?:=(?:1|true|True))?(?=\s|$)/, reason: "may publish a local app on a public URL" },
 	{ id: "git-remote-repoint", test: /\bgit\s+(?:-[cC]\s+\S+\s+|-\S+\s+)*remote\s+set-url\b|\bgit\s+config\s+(?:--(?!get)\S+\s+)*(?:set\s+)?remote\.[\w.-]+\.(?:url|pushurl)\s+[^\s|&><]/, reason: "changes where git pushes go" },
 	{ id: "dns-cert-change", test: /\b(aws\s+route53\s+(change-resource-record-sets|delete-hosted-zone)|aws\s+route53domains\s+(update-domain-nameservers|transfer-domain|disable-domain-transfer-lock)|gcloud\s+dns\s+(record-sets|managed-zones)\s+(update|delete)\b|gcloud\s+dns\s+record-sets\s+transaction\s+execute\b|az\s+network\s+dns\s+(record-set\s+\S+|zone)\s+(update|delete|remove-record)\b|aws\s+acm\s+delete-certificate\b|certbot\s+(?!.*--dry-run)(certonly|run|delete|revoke|renew|--nginx|--apache|--standalone|-d\s)|acme\.sh\s+(?!.*--staging)(--issue|--renew|--deploy|--install-cert|--revoke|--remove)\b)/, reason: "changes DNS records or TLS certificates" },
 
@@ -474,22 +479,57 @@ export function deletesOnlyScratch(segment: string): boolean {
  * The list is deliberately about *execution*, not about text: a `.md` that
  * quotes `ngrok http 3000` is documentation — this repo's own README does
  * exactly that — while a `.sh` containing the same line is the command with one
- * extra step in front of it. An extensionless path counts, because that is what
- * a shell script in `bin/` looks like.
+ * extra step in front of it.
+ *
+ * Two kinds, because they have to be read differently:
+ *
+ *   "script" — the file IS a sequence of commands, so a hard pattern counts
+ *     only when it starts a line. That distinction is what keeps source code
+ *     writable: `const D = ["ngrok http 3000"]` in a test corpus and
+ *     `// pass --share` in a comment are not commands, and refusing them would
+ *     have made this repo's own corpus.test.ts uneditable.
+ *   "config" — the file is not commands, but names some: package.json's
+ *     `scripts`, a CI workflow's `run:`. The command sits mid-line by
+ *     construction, so anchoring cannot be required and the value is read
+ *     wherever it appears.
+ *
+ * An extensionless file is only a script when it says so with a shebang.
+ * `CHANGELOG` and `LICENSE` have no extension either.
  */
-const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|fish|ksh|command|ps1|bat|cmd|py|rb|pl|php|js|mjs|cjs|ts|mts|cts)$/i;
+const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|fish|ksh|command|ps1|bat|cmd|py|rb|pl|php|js|mjs|cjs|ts|mts|cts|tsx|jsx)$/i;
 
-export function isExecutableTarget(path: string): boolean {
+/** Files that are not commands but hand commands to something that runs them. */
+const CONFIG_TARGET = /(?:^|\/)(?:package\.json|Makefile|Dockerfile|docker-compose\.ya?ml|Procfile)$|(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$|(?:^|\/)\.(?:gitlab-ci|travis|circleci\/config)\.ya?ml$/i;
+
+export type TargetKind = "script" | "config" | undefined;
+
+export function executableKind(path: string, text = ""): TargetKind {
+	if (CONFIG_TARGET.test(path)) return "config";
 	const name = path.split("/").pop() ?? path;
-	if (SCRIPT_EXTENSION.test(name)) return true;
-	// No dot at all after the first character — `bin/deploy`, `Makefile`. A
-	// leading dot is a dotfile (`.zshrc`), which also runs.
-	return !name.slice(1).includes(".");
+	if (SCRIPT_EXTENSION.test(name)) return "script";
+	// `bin/deploy` is a script; `CHANGELOG` is not. A shebang is the only thing
+	// that tells them apart, and it is what the kernel uses too.
+	if (!name.slice(1).includes(".") && /^#!/.test(text.trimStart())) return "script";
+	return undefined;
 }
 
-/** Where a segment redirects its output, when that is a file it would create. */
+export function isExecutableTarget(path: string, text = ""): boolean {
+	return executableKind(path, text) !== undefined;
+}
+
+/**
+ * Where a segment sends its output, when that is a file it would create.
+ *
+ * Covers the spellings a redirect actually takes: a bare `>`/`>>`, an explicit
+ * descriptor (`1>`), the noclobber override (`>|`), and a pipe into `tee`,
+ * which is a redirect wearing a different hat. Missing any of them is missing
+ * the content scan entirely, since `echo` blanks its own quoted argument on
+ * the normal path.
+ */
 export function redirectTarget(segment: string): string | undefined {
-	const match = /(?:^|[^0-9<>&|])>>?\s*(?!&)(['"]?)([^\s'"|;&<>]+)\1/.exec(segment);
+	const tee = /\|\s*(?:sudo\s+)?tee\s+(?:-\S+\s+)*(['"]?)([^\s'"|;&<>]+)\1/.exec(segment);
+	if (tee) return tee[2];
+	const match = /(?:^|[^<>&|])\d?>[>|]?\s*(?!&)(['"]?)([^\s'"|;&<>]+)\1/.exec(segment);
 	return match?.[2];
 }
 
@@ -503,31 +543,60 @@ export function redirectTarget(segment: string): string | undefined {
  * a script full of `rm -rf build` is a build script.
  */
 export function findHardInContent(path: string, text: string): Finding[] {
-	return isExecutableTarget(path) ? hardInLines(text) : [];
+	const kind = executableKind(path, text);
+	if (kind === undefined) return [];
+	return hardInLines(text, kind);
 }
 
 /**
- * Hard patterns over text treated as script source: one command per line, each
- * line still split on `&&` and friends.
+ * Hard patterns over text that will be run rather than read.
+ *
+ * A line is judged as the command it is about to become, so backslash
+ * continuations are joined first — the shell joins them before running them,
+ * and a payload broken across `ng\` / `rok http 3000` is one command with a
+ * line break in the middle of it, not two.
+ *
+ * In a script the match must start the line: that is what separates a command
+ * from a string literal or a comment that happens to quote one. In a config
+ * file the command is a value sitting mid-line by construction, so it is read
+ * wherever it appears.
  *
  * Deliberately does not call findDestructive: several hard patterns anchor with
- * `^`, so they only fire when the invocation starts the string, and going
- * through the full finder would also re-enter the redirect handling below.
+ * `^`, and going through the full finder would re-enter the redirect handling.
  */
-function hardInLines(text: string): Finding[] {
+function hardInLines(text: string, kind: Exclude<TargetKind, undefined>): Finding[] {
 	const findings: Finding[] = [];
 	const seen = new Set<string>();
-	for (const line of text.split(/\r?\n/)) {
+	const joined = text.replace(/\\\r?\n/g, "");
+	for (const line of joined.split(/\r?\n/)) {
 		for (const segment of splitSegments(line)) {
+			// In a script, only what the shell would treat as the command word
+			// counts. In a config, the whole value does.
+			const subject = kind === "script" ? segment.trimStart() : segment;
 			for (const pattern of PATTERNS) {
 				if (pattern.hard !== true || seen.has(pattern.id)) continue;
-				if (!pattern.test.test(segment)) continue;
+				if (!matchesAsCommand(pattern, subject, kind)) continue;
 				seen.add(pattern.id);
-				findings.push({ id: pattern.id, reason: pattern.reason, segment: segment.trim(), hard: true });
+				findings.push({ id: pattern.id, reason: pattern.reason, segment: subject.trim(), hard: true });
 			}
 		}
 	}
 	return findings;
+}
+
+/**
+ * Whether a pattern fires on a line that is about to be executed.
+ *
+ * The unanchored alternatives inside a hard pattern (`\bngrok\s+http\b`) are
+ * what make a string literal in a `.ts` corpus look like an invocation, so in a
+ * script they only count when the match begins the line. `public-share` is
+ * exempt: `demo.launch(share=True)` is a real Gradio call and never starts one.
+ */
+function matchesAsCommand(pattern: Pattern, subject: string, kind: Exclude<TargetKind, undefined>): boolean {
+	if (!pattern.test.test(subject)) return false;
+	if (kind === "config" || pattern.id === "public-share") return true;
+	const at = pattern.test.exec(subject);
+	return at?.index === 0;
 }
 
 /**
@@ -539,9 +608,21 @@ function hardInLines(text: string): Finding[] {
  * how it will run.
  */
 export function redirectPayload(segment: string): string {
-	const withoutRedirect = segment.replace(/(?:^|[^0-9<>&|])>>?\s*(?!&)['"]?[^\s'"|;&<>]+['"]?/, "");
-	const withoutCommand = withoutRedirect.trim().replace(/^\S+\s*/, "");
-	return withoutCommand.replace(/['"]/g, "").trim();
+	const withoutRedirect = segment
+		.replace(/\|\s*(?:sudo\s+)?tee\s+(?:-\S+\s+)*['"]?[^\s'"|;&<>]+['"]?/, "")
+		.replace(/(?:^|[^<>&|])\d?>[>|]?\s*(?!&)['"]?[^\s'"|;&<>]+['"]?/, "");
+	// The writer, then anything standing between it and the text: `echo -e`,
+	// `echo -n`, and printf's format string, which is an argument rather than a
+	// flag. Stripping only the first token left the payload starting with `-e`,
+	// and every anchored pattern then failed to match the line it was about to
+	// become.
+	let rest = withoutRedirect.trim().replace(/^\S+\s*/, "");
+	for (;;) {
+		const next = rest.replace(/^(?:-{1,2}[A-Za-z][\w-]*(?:=\S+)?|(['"])%[^'"]*\1|%\S+)\s*/, "");
+		if (next === rest) break;
+		rest = next;
+	}
+	return rest.replace(/['"]/g, "").trim();
 }
 
 export function findDestructive(command: string, allow: ReadonlySet<string> = new Set()): Finding[] {
@@ -576,9 +657,29 @@ export function findDestructive(command: string, allow: ReadonlySet<string> = ne
 		// the quoted text a payload rather than a mention, so it is judged as
 		// the script line it is about to become. Only the hard tier: an ordinary
 		// destructive string written into a script is still just a script.
+		// An extensionless redirect target counts as a script here, where the
+		// same path would need a shebang coming from the `write` tool. The
+		// shebang rule exists because `write` is how CHANGELOG and LICENSE get
+		// created; `echo … > bin/start` is not how prose gets written, and the
+		// payload still has to match at the start of a line to count. Passing a
+		// shebang says exactly that, in the one argument that decides it.
 		const target = redirectTarget(raw);
-		if (target !== undefined && isExecutableTarget(target)) {
-			for (const finding of hardInLines(redirectPayload(raw))) {
+		if (target !== undefined && isExecutableTarget(target, "#!")) {
+			for (const finding of hardInLines(redirectPayload(raw), "script")) {
+				const key = `${finding.id}::${raw}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				findings.push({ ...finding, segment: raw });
+			}
+		}
+
+		// `bash -c 'cpolar http 8080'` is the same move without a file: the
+		// payload is a script, quoted, and the outer command is a shell. Segment
+		// splitting keeps quotes intact, so the inner text never reaches a
+		// pattern on its own and a one-word wrapper lifted the refusal.
+		const inlineScript = /^\s*(?:(?:sudo|doas|env|nohup|time|command|exec)\s+(?:-\S+\s+)*|\w+=\S+\s+)*(?:\S*\/)?(?:ba|z|k|da|fi)?sh\s+(?:-\S+\s+)*-\S*c\s+(['"])([\s\S]*)\1\s*$/.exec(raw);
+		if (inlineScript?.[2] !== undefined) {
+			for (const finding of hardInLines(inlineScript[2], "script")) {
 				const key = `${finding.id}::${raw}`;
 				if (seen.has(key)) continue;
 				seen.add(key);

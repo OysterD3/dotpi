@@ -298,6 +298,68 @@ for (const [label, tool, input, want] of writes) {
 	expect(label, decide(policy(), { tool, input, cwd: CWD }).behavior, want);
 }
 
+/* -------------------------------------------------------------------------- */
+/* What a code review found after the tier shipped                            */
+/*                                                                            */
+/* Every case below walked past the first version. They divide into two kinds  */
+/* that pull in opposite directions — a refusal that a one-word prefix lifts,  */
+/* and a refusal that fires on ordinary source — and the second kind is the    */
+/* worse one, since it cannot be approved, configured or granted away.         */
+/* -------------------------------------------------------------------------- */
+
+// A word in front of the binary is still the binary.
+for (const command of [
+	"sudo cpolar http 8080",
+	"env FOO=1 cpolar http 8080",
+	"nohup ./frpc -c frpc.ini",
+	"time ./frpc -c frpc.ini",
+	"command ngrok http 3000",
+	"bash -c 'cpolar http 8080'",
+	'sh -c "ssh -R 8080:localhost:8080 user@vps"',
+]) {
+	expect(`prefixed: ${command}`, behaviorOf(policy(), command), "deny");
+}
+
+// Naming a tool is not running it, and an unbypassable refusal on ordinary
+// work is worse than a miss.
+for (const command of ["rg pinggy .", "npm install pinggy", "docker compose logs frpc", "ngrok --version", "npm run build -- --share"]) {
+	expect(`mention stays usable: ${command}`, behaviorOf(policy(), command) === "deny", false);
+}
+
+// Redirect spellings, and anything standing between the writer and its text.
+for (const command of [
+	"echo 'ngrok http 3000' | tee run.sh",
+	"echo 'ngrok http 3000' 1> run.sh",
+	"echo 'ngrok http 3000' >| run.sh",
+	"echo -e 'cpolar http 8080' > run.sh",
+	"echo -n 'frpc -c frpc.ini' > run.sh",
+	"printf '%s\\n' 'cpolar http 8080' > run.sh",
+]) {
+	expect(`redirect: ${command}`, behaviorOf(policy(), command), "deny");
+}
+
+const writeCases: Array<[string, string, Record<string, unknown>, string]> = [
+	// Source that merely quotes the tools. This file is one of them.
+	["source quoting the tools", "write", { path: `${CWD}/corpus.test.ts`, content: 'const D = ["ngrok http 3000"];\n' }, "classify"],
+	["a --share comment", "write", { path: `${CWD}/src/opts.ts`, content: "// pass --share to publish\n" }, "classify"],
+	["prose with no shebang", "write", { path: `${CWD}/CHANGELOG`, content: "blocked ngrok http 3000\n" }, "classify"],
+	// Still refused where the text is a command.
+	["a shell script", "write", { path: `${CWD}/run.sh`, content: "#!/bin/sh\nngrok http 3000\n" }, "deny"],
+	["a gradio app", "write", { path: `${CWD}/app.py`, content: "import gradio as gr\ndemo.launch(share=True)\n" }, "deny"],
+	["an extensionless script with a shebang", "write", { path: `${CWD}/bin/deploy`, content: "#!/bin/sh\ncpolar http 8080\n" }, "deny"],
+	// Files that are not commands but name some.
+	["a package.json script", "write", { path: `${CWD}/package.json`, content: '{"scripts":{"start":"ngrok http 3000"}}' }, "deny"],
+	["a CI workflow", "write", { path: `${CWD}/.github/workflows/x.yml`, content: "steps:\n  - run: ngrok http 3000\n" }, "deny"],
+	["an ordinary package.json", "write", { path: `${CWD}/package.json`, content: '{"scripts":{"test":"vitest"}}' }, "classify"],
+	// Split payloads: the shell rejoins a continuation, one edit call rejoins
+	// its own fragments.
+	["a backslash continuation", "write", { path: `${CWD}/run.sh`, content: "#!/bin/sh\nng\\\nrok http 3000\n" }, "deny"],
+	["fragments in one edit", "edit", { path: `${CWD}/app.sh`, edits: [{ oldText: "a", newText: "ngrok ht" }, { oldText: "b", newText: "tp 3000" }] }, "deny"],
+];
+for (const [label, tool, input, want] of writeCases) {
+	expect(label, decide(policy(), { tool, input, cwd: CWD }).behavior, want);
+}
+
 const hardFailures = hardChecks.filter(([, got, want]) => JSON.stringify(got) !== JSON.stringify(want));
 failures += hardFailures.length;
 console.log(`hard tier: ${hardChecks.length - hardFailures.length}/${hardChecks.length}`);

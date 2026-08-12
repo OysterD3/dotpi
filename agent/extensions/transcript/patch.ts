@@ -207,7 +207,14 @@ function unboxTools(): void {
 			// One memo per component, so the split has to survive the compare —
 			// the marker keeps a call line from being mistaken for a result line
 			// of the same text.
-			const key = [String(callRaw.length), ...callRaw, ...resultRaw];
+			//
+			// The dot colour is in the key too, and has to be: pi's `write` tool
+			// renders NO result lines on success, so finishing changes the dot
+			// and nothing else. Keyed on the lines alone, every successful write
+			// stayed grey for the rest of the session — and since the box went,
+			// the dot is the only thing left saying how a call turned out.
+			const dot = dotColor(self);
+			const key = [dot, String(callRaw.length), ...callRaw, ...resultRaw];
 			const memo = memos.get(this as object);
 			if (unchanged(memo, width, key)) return memo.output;
 
@@ -218,7 +225,7 @@ function unboxTools(): void {
 					? []
 					: [
 							"",
-							...withGutter(callLines, paint(dotColor(self), CONFIG.callMark)),
+							...withGutter(callLines, paint(dot, CONFIG.callMark)),
 							...withGutter(resultLines, paint(CONFIG.resultColor, CONFIG.resultMark)),
 						];
 			memos.set(this as object, { width, paint: paintGeneration, input: key, output });

@@ -229,11 +229,18 @@ function hardInWrite(call: Call): Finding[] {
 	}
 
 	if (call.tool === "edit" && Array.isArray(call.input.edits)) {
-		const added = call.input.edits
+		const fragments = call.input.edits
 			.map((edit) => (edit as { newText?: unknown }).newText)
-			.filter((text): text is string => typeof text === "string")
-			.join("\n");
-		return findHardInContent(path, added);
+			.filter((text): text is string => typeof text === "string");
+		// Scanned joined by newline AND concatenated. The edits land at different
+		// places in the file, so a newline between them is the honest reading —
+		// but two fragments that abut, `python app.py --sh` and `are`, form the
+		// command only when read with no separator at all, and one edit call can
+		// carry both halves.
+		return [
+			...findHardInContent(path, fragments.join("\n")),
+			...findHardInContent(path, fragments.join("")),
+		];
 	}
 
 	return [];

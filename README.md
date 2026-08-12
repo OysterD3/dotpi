@@ -612,6 +612,16 @@ which the rule reached at all until they were named.
 Gradio gets a rule of its own, `public-share`, because it needs no tunnel binary for the first rule
 to see: `share=True`, a bare `--share` as the Stable Diffusion forks take it, and `gradio deploy`.
 
+A code review after this shipped found ten defects in it, and the two halves pulled opposite ways: a
+refusal a one-word prefix lifted (`sudo cpolar http 8080`, `bash -c '...'`), and a refusal that fired on
+ordinary source — writing any `.ts` or `.py` containing `--share` or `ngrok http` was denied, including
+this repo's own `corpus.test.ts`. The second kind is worse, because it cannot be approved, configured
+or granted away. Both are fixed and all ten cases are in the corpus. Three consequences worth
+reading off: a bare `--share` now **prompts** rather than refusing, since it is also just a common
+flag name; content is judged as a **command position** in scripts, so a quoted mention in source is
+not an invocation; and `package.json` scripts and CI workflow YAML are scanned too, being files that
+name commands without being commands.
+
 Naming one of these is not invoking one. `cat frpc.ini`, `rg -n cpolar notes.md`,
 `npm install localtunnel`, `pip install gradio`, `tailscale funnel status`, `docker ps | rg frpc`
 and `python app.py --no-share` are all in the safe corpus and must stay clear — installing, reading
