@@ -436,26 +436,30 @@ export default function (pi: ExtensionAPI) {
 			parts.push(interruptedNote);
 			interruptedNote = undefined;
 		}
-		const modeReminder = mode.reminderForTurn();
-		if (modeReminder) parts.push(modeReminder);
-		// Opt-in persistence across a workflow-result delivery. Skipped once
-		// `mode.isOn()` — the reminder above already covers that case on its own
-		// cadence, independent of workflow timing — so this path exists only for
-		// a keyword-only opt-in that /ultracode never turned into a standing
-		// mode. "A workflow has run this session" is not tracked separately here:
-		// finding its result in the branch already proves it, so checking for
-		// the result IS the check (workflowRanThisSession is still tracked, for
-		// streak.ts's independent need in the tool_call handler below).
 		// A run that has just landed is its own case, and it applies whether the
 		// opt-in came from the keyword or from /ultracode: finishing a workflow
-		// is the moment "you may run one" reads most like "run another". So the
-		// after-run note goes out on that turn regardless of how the opt-in
-		// arrived, and it replaces ENTER_SPARSE rather than joining it — that
-		// one says the mode is still on, which this already implies.
-		if (triggered || mode.isOn() || keywordFiredThisSession) {
-			const currentBranch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
-			if (hasMessageSinceLastUserTurn(currentBranch, RESULT_MESSAGE)) parts.push(AFTER_RUN);
-		}
+		// is the moment "you may run one" reads most like "run another".
+		//
+		// "A workflow has run this session" is not tracked separately here —
+		// finding its result in the branch already proves it, so checking for
+		// the result IS the check. (workflowRanThisSession is still tracked, for
+		// streak.ts's independent need in the tool_call handler below.)
+		const optedIn = triggered || mode.isOn() || keywordFiredThisSession;
+		const justFinished =
+			optedIn &&
+			hasMessageSinceLastUserTurn(ctx.sessionManager.getBranch() as Array<Record<string, any>>, RESULT_MESSAGE);
+
+		// reminderForTurn() is called on every turn and never conditionally: the
+		// cadence counter lives inside it, so skipping the call would postpone
+		// the next "still on" rather than drop this one. Only its text is
+		// dropped, only when it is the sparse one, and only when the after-run
+		// note is going out in its place — that one says the mode is still on,
+		// which this already implies. ENTER_FULL is never dropped: a mode that
+		// has only just been switched on has not introduced itself yet.
+		const modeReminder = mode.reminderForTurn();
+		if (modeReminder !== null && !(justFinished && modeReminder === ENTER_SPARSE)) parts.push(modeReminder);
+
+		if (justFinished) parts.push(AFTER_RUN);
 		if (parts.length === 0) return;
 		return {
 			message: {

@@ -616,8 +616,8 @@ writeSettings({});
 }
 {
 	// /ultracode's own cadence already reminds independent of workflow timing,
-	// so this path is gated off entirely while the mode is on — it must not
-	// fire a SECOND reminder alongside the one mode.reminderForTurn() gives.
+	// so a quiet turn must not fire a SECOND reminder alongside the one
+	// mode.reminderForTurn() gives.
 	const { ctx } = makeCtx({ model: MODEL });
 	events.get("session_start")!({}, ctx);
 	thinkingLevel = "medium";
@@ -625,6 +625,39 @@ writeSettings({});
 	await turn("start working", "interactive", ctx); // consumes the full enter reminder
 	for (let i = 0; i < 8; i++) await turn(`quiet ${i}`, "interactive", ctx); // land on a quiet cadence turn
 	check("mode on, quiet cadence turn: no extra reminder from part (A)", await turn("still quiet", "interactive", ctx), undefined);
+	await commands.get("ultracode")!.handler("off", ctx);
+	await turn("done", "interactive", ctx); // drain the exit reminder
+}
+{
+	// The collision the after-run note introduced: the mode is on, a result
+	// lands, and the SAME turn is the 10th-cadence one. Both reminders were
+	// then delivered together — "you may run a workflow without asking" beside
+	// "finishing is not a reason to start another" — while the comment claimed
+	// the second replaced the first. It does now: the sparse text is dropped
+	// when the after-run note takes its place, and only then.
+	const branch: Record<string, unknown>[] = [];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	thinkingLevel = "medium";
+	await commands.get("ultracode")!.handler("on", ctx);
+	const opening = await turn("start working", "interactive", ctx);
+	check("mode on: the full reminder still opens", opening?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "start working" }] } });
+	// Nine quiet turns, so the NEXT one is the eleventh — the turn the cadence
+	// speaks on. Off-by-one here makes the check vacuous: it passes with the
+	// guard removed, because the sparse reminder was never due in the first place.
+	for (let i = 0; i < 9; i++) {
+		await turn(`quiet ${i}`, "interactive", ctx);
+		branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text: `quiet ${i}` }] } });
+	}
+	// A result lands, and the next turn is the one the cadence would speak on.
+	branch.push({ type: "custom_message", customType: "workflow-result", content: "done", display: true });
+	const collision = await turn("what came back", "interactive", ctx);
+	check(
+		"cadence turn + fresh result: the after-run note alone",
+		collision?.message?.content,
+		`<system-reminder>\n${AFTER_RUN}\n</system-reminder>`,
+	);
 	await commands.get("ultracode")!.handler("off", ctx);
 	await turn("done", "interactive", ctx); // drain the exit reminder
 }
