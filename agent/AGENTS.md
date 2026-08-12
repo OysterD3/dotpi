@@ -65,7 +65,23 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5. Wording
+## 5. Test at the Level the Behaviour Lives
+
+**Prefer the highest level that can still fail for one reason.**
+
+- Drive the real entry point with real inputs. Reserve unit tests for logic that is genuinely hard
+  to reach from outside — a parser, a state machine, tricky arithmetic.
+- One table of real cases through one seam beats one test per function. When something slips
+  through, add the case to the table; the table is the regression suite.
+- Don't mock what you own. A mock encodes the behaviour you assumed, so the test passes for exactly
+  the reason the code is wrong.
+- If a test needs internals made public to work, that is the test asking to be written one level up.
+
+**The check:** would this test have caught the last bug that got through? Lines covered is not
+behaviour covered. A suite that is green while the feature is broken is worse than no suite, because
+it is also an argument against looking.
+
+## 6. Wording
 
 Always talk in ASD-STE100 Simplified Technical English.
 
