@@ -54,12 +54,60 @@ function dotColor(self: ToolInternals): string {
 	return self.result.isError ? CONFIG.callErrorColor : CONFIG.callOkColor;
 }
 
+/**
+ * Per-component memo of the last gutter transform.
+ *
+ * pi re-renders the whole transcript every frame — `Container.render` walks its
+ * children unconditionally — and it gets away with that because every leaf
+ * caches its own lines and hands back the same strings. The gutter work sat
+ * outside that: a regex strip and a width measure per line per frame, which at
+ * a thousand turns cost 100ms a frame against pi's 1.6ms, and read as exactly
+ * the lag it was.
+ *
+ * So the transform is cached against the lines it was computed from. The check
+ * is a pointer compare per line, not a content compare, precisely because the
+ * leaves return their cached strings — an unchanged block is identical by
+ * identity, and only the streaming tail misses. Keyed on the component with a
+ * WeakMap so a rewound or replaced component takes its memo with it.
+ *
+ * Deliberately not hooked to `invalidate()`, which would be the idiomatic
+ * route: `updateContent` can change a message without one, and a stale gutter
+ * is a wrong frame. Comparing the input validates itself.
+ */
+interface Memo {
+	width: number;
+	/**
+	 * Which paint function drew the mark. The marks are the one part of the
+	 * output that does NOT come from the input lines, so a `/theme` switch can
+	 * repaint everything a component renders and still leave a memo that looks
+	 * current. Counted rather than compared, since the function identity is the
+	 * only thing that changes.
+	 */
+	paint: number;
+	input: readonly string[];
+	output: string[];
+}
+
+const memos = new WeakMap<object, Memo>();
+
+function unchanged(memo: Memo | undefined, width: number, lines: readonly string[]): memo is Memo {
+	if (memo === undefined || memo.width !== width || memo.paint !== paintGeneration) return false;
+	if (memo.input.length !== lines.length) return false;
+	for (let i = 0; i < lines.length; i += 1) {
+		if (memo.input[i] !== lines[i]) return false;
+	}
+	return true;
+}
+
 /** Painted by the live theme once it loads; plain until then. */
 type Paint = (color: string, text: string) => string;
 let paint: Paint = (_color, text) => text;
+/** Bumped whenever the marks would be drawn differently — see Memo.paint. */
+let paintGeneration = 0;
 
 export function setPaint(next: Paint): void {
 	paint = next;
+	paintGeneration += 1;
 }
 
 /**
@@ -94,7 +142,12 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
 	cls.prototype.render = function patched(this: unknown, width: number): string[] {
 		try {
 			const lines = original.call(this, width - visibleWidth(mark));
-			return lines.length === 0 ? lines : withGutter(lines, paint(color, mark));
+			if (lines.length === 0) return lines;
+			const memo = memos.get(this as object);
+			if (unchanged(memo, width, lines)) return memo.output;
+			const output = withGutter(lines, paint(color, mark));
+			memos.set(this as object, { width, paint: paintGeneration, input: lines, output });
+			return output;
 		} catch {
 			return original.call(this, width);
 		}
@@ -146,16 +199,30 @@ function unboxTools(): void {
 			if (self.imageComponents.length > 0) return original.call(this, width);
 
 			const [call, ...rest] = self.contentBox.children;
-			const callLines = call === undefined ? [] : trimBlank(call.render(width - visibleWidth(CONFIG.callMark)));
-			const raw = rest.flatMap((child) => child.render(width - visibleWidth(CONFIG.resultMark)));
-			const resultLines = self.expanded ? trimBlank(raw) : dropBlank(raw);
-			if (callLines.length === 0 && resultLines.length === 0) return [];
+			// The children are pi's own cached components, so rendering them is
+			// cheap; what has to be kept off the hot path is the framing below.
+			const callRaw = call === undefined ? [] : call.render(width - visibleWidth(CONFIG.callMark));
+			const resultRaw = rest.flatMap((child) => child.render(width - visibleWidth(CONFIG.resultMark)));
 
-			return [
-				"",
-				...withGutter(callLines, paint(dotColor(self), CONFIG.callMark)),
-				...withGutter(resultLines, paint(CONFIG.resultColor, CONFIG.resultMark)),
-			];
+			// One memo per component, so the split has to survive the compare —
+			// the marker keeps a call line from being mistaken for a result line
+			// of the same text.
+			const key = [String(callRaw.length), ...callRaw, ...resultRaw];
+			const memo = memos.get(this as object);
+			if (unchanged(memo, width, key)) return memo.output;
+
+			const callLines = trimBlank(callRaw);
+			const resultLines = self.expanded ? trimBlank(resultRaw) : dropBlank(resultRaw);
+			const output =
+				callLines.length === 0 && resultLines.length === 0
+					? []
+					: [
+							"",
+							...withGutter(callLines, paint(dotColor(self), CONFIG.callMark)),
+							...withGutter(resultLines, paint(CONFIG.resultColor, CONFIG.resultMark)),
+						];
+			memos.set(this as object, { width, paint: paintGeneration, input: key, output });
+			return output;
 		} catch {
 			return original.call(this, width);
 		}

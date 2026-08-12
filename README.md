@@ -1782,6 +1782,25 @@ inside its result are dropped; `ctrl+r` expands it and puts pi's spacing back. T
 the extension changes what a block looks like rather than only where it sits, and it is reversible
 on one keystroke.
 
+**It has to be free per frame, and the first version was not.** pi re-renders the whole transcript
+every frame — `Container.render` walks its children unconditionally — and it gets away with that
+because every leaf caches its own lines and hands back the same strings. The gutter work sat outside
+that cache: a regex strip and a width measure per line, per frame. Measured against stock pi on a
+synthetic transcript, that was the difference between a usable session and a slideshow:
+
+| turns | lines | stock | first version | now |
+| --- | --- | --- | --- | --- |
+| 200 | 2,200 | 0.27 ms | 20.0 ms | 0.35 ms |
+| 1,000 | 11,000 | 1.6 ms | 101.8 ms | 1.43 ms |
+
+A hundred milliseconds a frame is ten frames a second, which is exactly what a long session felt
+like. The fix is a per-component memo of the transform, checked by **pointer** compare against the
+lines it was built from — the leaves return their cached strings, so an unchanged block is identical
+by identity and only the streaming tail misses. Three things defeat it, and all three are tested:
+new content, a width change, and a `/theme` switch. That last one is the subtle one — the marks are
+the only part of the output that does not come from the input lines, so a repaint can leave a memo
+that looks current, and the paint function is versioned for exactly that reason.
+
 **The mechanism, and what it costs.** pi exposes no hook for its own transcript:
 `registerMessageRenderer` and `registerEntryRenderer` are both keyed by a *custom* type and only
 ever draw entries an extension invented. So this replaces the `render` method on the three

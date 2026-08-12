@@ -225,6 +225,39 @@ check("an extension tool drawn in pi's box is de-boxed like any other", trimmedR
 check("and keeps no tint", replacedLines.some((line) => line.includes(`${ESC}[48;`)), false);
 
 /* -------------------------------------------------------------------------- */
+console.log("\n--- the render memo cannot go stale ---");
+
+// The gutter transform is cached against the lines it was computed from,
+// because pi re-renders every component every frame and doing regex work per
+// line cost ~100ms a frame on a thousand-turn session. Everything that can
+// change the output has to defeat the cache, so each is tried after a first
+// render has already populated it.
+const streaming = new AssistantMessageComponent(
+	{ role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" } as never,
+	true,
+	getMarkdownTheme(),
+	"Thinking...",
+	1,
+);
+const firstPaint = streaming.render(WIDTH).map(trimmedRight);
+check("the first render marks it", firstPaint.some((l) => l === `${CONFIG.assistantMark} first`), true);
+check("rendering again is identical", streaming.render(WIDTH).map(trimmedRight), firstPaint);
+
+streaming.updateContent({ role: "assistant", content: [{ type: "text", text: "second" }], stopReason: "stop" } as never);
+const second = streaming.render(WIDTH).map(trimmedRight);
+check("new content is not served from the memo", second.some((l) => l === `${CONFIG.assistantMark} second`), true);
+check("and the old content is gone", second.some((l) => l.includes("first")), false);
+
+const narrow = streaming.render(40).map((l) => seen(l).length).filter((n) => n > 0);
+check("a width change is not served from the memo", [...new Set(narrow)], [40]);
+
+// A /theme switch repaints the marks without necessarily changing a single
+// input line, which is the one thing the line compare cannot see.
+setPaint((color, text) => `<${color}>${text}`);
+check("a repaint is not served from the memo", streaming.render(40).some((l) => l.includes(`<${CONFIG.assistantColor}>`)), true);
+setPaint((_color, text) => text);
+
+/* -------------------------------------------------------------------------- */
 console.log("\n--- applying twice cannot double-mark ---");
 
 applyPatches();
