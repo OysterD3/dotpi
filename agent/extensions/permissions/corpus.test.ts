@@ -260,6 +260,44 @@ expect("nor with destructiveOverridesAllow off", behaviorOf(policy({ destructive
 expect("the finding carries hard", findDestructive(EXPOSE).find((f) => f.id === "tunnel-expose")?.hard, true);
 expect("an ordinary finding does not", findDestructive("rm -rf dist").find((f) => f.id === "rm-recursive")?.hard, undefined);
 
+/* -------------------------------------------------------------------------- */
+/* Write-then-execute                                                         */
+/*                                                                            */
+/* Blocking a command and then allowing it to be written into a script and run */
+/* from there is a speed bump, not a control: `bash run.sh` is opaque to every */
+/* pattern in this file. So the refusal moves to the moment the text is still  */
+/* visible. The last two rows are the boundary — documentation that MENTIONS   */
+/* these tools must stay writable, which this repo's own README depends on.    */
+/* -------------------------------------------------------------------------- */
+
+// Into a script, through the shell.
+for (const command of [
+	"echo 'ngrok http 3000' > run.sh",
+	'echo "ngrok http 3000" > run.sh',
+	"printf 'ngrok http 3000\\n' > run.sh",
+	"cat > run.sh <<'EOF'\nngrok http 3000\nEOF",
+	"echo 'cpolar http 8080' >> setup.sh",
+	"echo 'ngrok http 3000' > run.sh && bash run.sh",
+	"echo 'frpc -c frpc.ini' > bin/start",
+]) {
+	expect(`written by shell: ${command.split("\n")[0]}`, behaviorOf(policy(), command), "deny");
+}
+
+// Into a script, through the tools.
+const writes: Array<[string, string, Record<string, unknown>, string]> = [
+	["write a shell script", "write", { path: `${CWD}/run.sh`, content: "#!/bin/sh\nngrok http 3000\n" }, "deny"],
+	["write a gradio app", "write", { path: `${CWD}/app.py`, content: "import gradio as gr\ngr.Interface(f).launch(share=True)\n" }, "deny"],
+	["write into temp", "write", { path: "/tmp/x.sh", content: "cpolar http 8080\n" }, "deny"],
+	["append to a script", "edit", { path: `${CWD}/start.sh`, edits: [{ oldText: "x", newText: "frpc -c frpc.ini" }] }, "deny"],
+	// The boundary: prose naming the tools is not an invocation of them.
+	["document it in markdown", "write", { path: `${CWD}/README.md`, content: "Blocked: ngrok http 3000, cpolar http 8080" }, "classify"],
+	["edit markdown", "edit", { path: `${CWD}/notes.md`, edits: [{ oldText: "x", newText: "run: ngrok http 3000" }] }, "classify"],
+	["an ordinary script is untouched", "write", { path: `${CWD}/build.sh`, content: "#!/bin/sh\nrm -rf dist\npnpm build\n" }, "classify"],
+];
+for (const [label, tool, input, want] of writes) {
+	expect(label, decide(policy(), { tool, input, cwd: CWD }).behavior, want);
+}
+
 const hardFailures = hardChecks.filter(([, got, want]) => JSON.stringify(got) !== JSON.stringify(want));
 failures += hardFailures.length;
 console.log(`hard tier: ${hardChecks.length - hardFailures.length}/${hardChecks.length}`);

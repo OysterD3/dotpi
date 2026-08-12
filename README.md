@@ -617,10 +617,30 @@ Naming one of these is not invoking one. `cat frpc.ini`, `rg -n cpolar notes.md`
 and `python app.py --no-share` are all in the safe corpus and must stay clear — installing, reading
 and grepping are not serving.
 
-**The limit, stated plainly:** a command is all this can read. `python app.py`, where `app.py`
-itself calls `launch(share=True)`, is invisible to the table and to the classifier, which is shown
-the command and not the file. Nothing here closes that; only reading the file would, and that is a
-different control.
+**Writing it into a file is not a way around it.** Blocking `ngrok http 3000` and then allowing it
+to be written into `run.sh` and run from there is a speed bump, not a control — the second step,
+`bash run.sh`, is opaque to every pattern in the table. So the refusal also fires at the moment the
+text is still visible: when it is written.
+
+Both routes are covered. Through the shell, a redirect into a file that gets *executed*
+(`echo 'ngrok http 3000' > run.sh`, `printf … >> setup.sh`, a heredoc into `bin/start`) is judged on
+its payload rather than on `echo` — inert commands are normally read with their quoted parts blanked,
+which is what keeps `git commit -m 'fix rm -rf handling'` quiet, but a redirect into a script makes
+that text a payload rather than a mention. Through the tools, `write` content and the `newText` of
+every `edit` are scanned the same way.
+
+This is the one place a write is judged on its **content** instead of its destination, and it is
+kept as narrow as that exception deserves: only the hard patterns, and only for files that are
+executed rather than read — `.sh`, `.py`, `.js`, a dotfile, anything with no extension. Prose is
+untouched. Writing `README.md` that says *"Blocked: ngrok http 3000"* is fine, which is what lets
+this very section exist, and `build.sh` full of `rm -rf dist` is still an ordinary build script,
+because soft findings are not part of this at all.
+
+**The limit, stated plainly:** a command is all this can read at execution time. `bash run.sh` and
+`python app.py` are still judged as themselves. What changed is that the agent can no longer *create*
+the file they would run — the write is refused first. A script that was already on disk before the
+session is a different threat, and closing that means reading the file at exec time, which is a
+different control with a TOCTOU window of its own.
 
 Exposing a local service is *also* stopped before the classifier is reached, which is why the
 paragraphs below about the classifier are defence in depth rather than the guarantee.

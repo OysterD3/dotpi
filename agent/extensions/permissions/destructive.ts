@@ -468,6 +468,82 @@ export function deletesOnlyScratch(segment: string): boolean {
  * `allow` lists pattern ids to ignore, so a user who genuinely does not want to
  * be asked about, say, `git-amend` can silence exactly that one.
  */
+/**
+ * Files whose contents get executed rather than read.
+ *
+ * The list is deliberately about *execution*, not about text: a `.md` that
+ * quotes `ngrok http 3000` is documentation — this repo's own README does
+ * exactly that — while a `.sh` containing the same line is the command with one
+ * extra step in front of it. An extensionless path counts, because that is what
+ * a shell script in `bin/` looks like.
+ */
+const SCRIPT_EXTENSION = /\.(?:sh|bash|zsh|fish|ksh|command|ps1|bat|cmd|py|rb|pl|php|js|mjs|cjs|ts|mts|cts)$/i;
+
+export function isExecutableTarget(path: string): boolean {
+	const name = path.split("/").pop() ?? path;
+	if (SCRIPT_EXTENSION.test(name)) return true;
+	// No dot at all after the first character — `bin/deploy`, `Makefile`. A
+	// leading dot is a dotfile (`.zshrc`), which also runs.
+	return !name.slice(1).includes(".");
+}
+
+/** Where a segment redirects its output, when that is a file it would create. */
+export function redirectTarget(segment: string): string | undefined {
+	const match = /(?:^|[^0-9<>&|])>>?\s*(?!&)(['"]?)([^\s'"|;&<>]+)\1/.exec(segment);
+	return match?.[2];
+}
+
+/**
+ * Hard findings in text that is about to become an executable file.
+ *
+ * Scanned line by line, because each line of a script is its own command and
+ * several hard patterns anchor at the start of one. Only the hard tier is
+ * reported: an ordinary destructive line inside a file the agent is writing is
+ * not a finding, since a write is judged on where it lands (see prompt.ts) and
+ * a script full of `rm -rf build` is a build script.
+ */
+export function findHardInContent(path: string, text: string): Finding[] {
+	return isExecutableTarget(path) ? hardInLines(text) : [];
+}
+
+/**
+ * Hard patterns over text treated as script source: one command per line, each
+ * line still split on `&&` and friends.
+ *
+ * Deliberately does not call findDestructive: several hard patterns anchor with
+ * `^`, so they only fire when the invocation starts the string, and going
+ * through the full finder would also re-enter the redirect handling below.
+ */
+function hardInLines(text: string): Finding[] {
+	const findings: Finding[] = [];
+	const seen = new Set<string>();
+	for (const line of text.split(/\r?\n/)) {
+		for (const segment of splitSegments(line)) {
+			for (const pattern of PATTERNS) {
+				if (pattern.hard !== true || seen.has(pattern.id)) continue;
+				if (!pattern.test.test(segment)) continue;
+				seen.add(pattern.id);
+				findings.push({ id: pattern.id, reason: pattern.reason, segment: segment.trim(), hard: true });
+			}
+		}
+	}
+	return findings;
+}
+
+/**
+ * What a redirecting command would put in the file: the segment with the
+ * writing command, its redirect, and the quoting all taken off.
+ *
+ * `echo 'cpolar http 8080' >> setup.sh` becomes `cpolar http 8080`, which is
+ * what has to be judged — as a line of a script, from its start, since that is
+ * how it will run.
+ */
+export function redirectPayload(segment: string): string {
+	const withoutRedirect = segment.replace(/(?:^|[^0-9<>&|])>>?\s*(?!&)['"]?[^\s'"|;&<>]+['"]?/, "");
+	const withoutCommand = withoutRedirect.trim().replace(/^\S+\s*/, "");
+	return withoutCommand.replace(/['"]/g, "").trim();
+}
+
 export function findDestructive(command: string, allow: ReadonlySet<string> = new Set()): Finding[] {
 	const findings: Finding[] = [];
 	const seen = new Set<string>();
@@ -490,6 +566,24 @@ export function findDestructive(command: string, allow: ReadonlySet<string> = ne
 			if (seen.has(key)) continue;
 			seen.add(key);
 			findings.push({ id: pattern.id, reason: pattern.reason, segment: raw, ...(pattern.hard ? { hard: true as const } : {}) });
+		}
+
+		// `echo 'ngrok http 3000' > run.sh` is the blocked command with one step
+		// in front of it, and the step that follows — `bash run.sh` — is opaque
+		// to every pattern here. Inert commands are normally judged on their
+		// unquoted parts, which is what keeps `git commit -m 'fix rm -rf
+		// handling'` quiet; but a redirect into a file that gets EXECUTED makes
+		// the quoted text a payload rather than a mention, so it is judged as
+		// the script line it is about to become. Only the hard tier: an ordinary
+		// destructive string written into a script is still just a script.
+		const target = redirectTarget(raw);
+		if (target !== undefined && isExecutableTarget(target)) {
+			for (const finding of hardInLines(redirectPayload(raw))) {
+				const key = `${finding.id}::${raw}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				findings.push({ ...finding, segment: raw });
+			}
 		}
 
 		// A destructive-capable command whose targets are computed cannot be

@@ -41,7 +41,7 @@
  * already run — and it is excluded from `denyAll`. See scratch.ts.
  */
 
-import { findDestructive, type Finding } from "./destructive.ts";
+import { findDestructive, findHardInContent, type Finding } from "./destructive.ts";
 import { firstMatch, type Rule } from "./rules.ts";
 import { targetsScratchpad } from "./scratch.ts";
 import type { PermissionSettings } from "./settings.ts";
@@ -126,7 +126,7 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	// soft findings are still filtered out for allowAll immediately after, which
 	// keeps that mode's promise — it asks about nothing.
 	const all = command !== undefined ? findDestructive(command, policy.allowDestructive) : [];
-	const hard = all.filter((finding) => finding.hard === true);
+	const hard = [...all.filter((finding) => finding.hard === true), ...hardInWrite(call)];
 	const findings = mode === "allowAll" ? [] : all;
 
 	// Not a prompt. Ahead of ask, allow and the mode entirely, so there is no
@@ -199,6 +199,44 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		case "denyAll":
 			return { behavior: "deny", reason: "denyAll mode: no allow rule matched" };
 	}
+}
+
+/**
+ * The hard tier, applied to what a `write` or `edit` would put in a file.
+ *
+ * Blocking `ngrok http 3000` at the command line and then allowing it to be
+ * written into `run.sh` and run from there is not a control, it is a speed
+ * bump — the second step, `bash run.sh`, is opaque to every pattern here. So
+ * the refusal moves to where the text is still visible: the moment it is
+ * written.
+ *
+ * This is the one place a write is judged on its CONTENT rather than its
+ * destination, which is a deliberate exception to the rule stated in prompt.ts
+ * and is kept as narrow as the exception deserves. It reads only the hard
+ * patterns, and only for files that are executed rather than read — so a `.md`
+ * documenting the very tools this blocks is unaffected, which this repo's own
+ * README depends on.
+ *
+ * `edit` is covered as well as `write`: appending one line to an existing
+ * script is the cheaper version of the same move.
+ */
+function hardInWrite(call: Call): Finding[] {
+	const path = typeof call.input.path === "string" ? call.input.path : undefined;
+	if (path === undefined) return [];
+
+	if (call.tool === "write" && typeof call.input.content === "string") {
+		return findHardInContent(path, call.input.content);
+	}
+
+	if (call.tool === "edit" && Array.isArray(call.input.edits)) {
+		const added = call.input.edits
+			.map((edit) => (edit as { newText?: unknown }).newText)
+			.filter((text): text is string => typeof text === "string")
+			.join("\n");
+		return findHardInContent(path, added);
+	}
+
+	return [];
 }
 
 /** "deletes files recursively; force-pushes, overwriting published history" */
