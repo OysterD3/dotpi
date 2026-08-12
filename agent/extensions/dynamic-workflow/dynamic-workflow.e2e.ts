@@ -389,11 +389,11 @@ writeSettings({});
 	await commands.get("ultracode")!.handler("on", ctx);
 	check("thinking raised to xhigh", thinkingLog, ["xhigh"]);
 	check("toggle entry appended", appended, [{ customType: "ultracode", data: { action: "on", previousLevel: "medium" } }]);
-	check("badge set", statuses.at(-1), { key: "ultracode", text: "✦ ultracode" });
+	check("badge set", statuses.at(-1), { key: "ultracode", text: "✦ dynamic workflow" });
 	check(
 		"the success wording",
 		notices.at(-1)?.message,
-		"Set effort level to ultracode (this session only): xhigh + dynamic workflow orchestration",
+		"Set effort level to dynamic workflow (this session only): xhigh + workflow orchestration",
 	);
 
 	const first = await turn("build the feature");
@@ -424,7 +424,7 @@ writeSettings({});
 	check(
 		"status wording",
 		notices.at(-1)?.message,
-		"Current effort level: ultracode (xhigh + dynamic workflow orchestration; this session only)",
+		"Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)",
 	);
 
 	await commands.get("ultracode")!.handler("off", ctx);
@@ -460,7 +460,7 @@ console.log("\n--- /ultracode guards ---");
 	check(
 		"clamp-to-max accepted with honest wording",
 		notices.at(-1)?.message,
-		"Set effort level to ultracode (this session only): max + dynamic workflow orchestration",
+		"Set effort level to dynamic workflow (this session only): max + workflow orchestration",
 	);
 	// Deliver the enter reminder, then change away from the APPLIED level
 	// (max): the mode exits and owes one exit notice.
@@ -479,7 +479,7 @@ console.log("\n--- /ultracode guards ---");
 	const { ctx, notices } = makeCtx({ model: undefined });
 	events.get("session_start")!({}, ctx);
 	await commands.get("ultracode")!.handler("on", ctx);
-	check("no model refused", notices.at(-1)?.message, "Ultracode needs a model selected.");
+	check("no model refused", notices.at(-1)?.message, "Dynamic workflow needs a model selected.");
 }
 {
 	const { ctx, notices } = makeCtx({ model: MODEL });

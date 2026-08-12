@@ -30,7 +30,7 @@
  *        changes nothing else — no effort bump, prompt not rewritten);
  *      - `/dynamic-workflow` (alias `/ultracode`) turns the mode on for the
  *        session: thinking is raised to
- *        xhigh ("xhigh + dynamic workflow orchestration, this session only")
+ *        xhigh ("dynamic workflow: xhigh + workflow orchestration, this session only")
  *        and standing reminders follow a fixed cadence — full on entry, "still
  *        on" every 10th user turn, exit notice once when it goes off. Changing
  *        the thinking level away from xhigh exits the mode.
@@ -44,9 +44,10 @@
  *     triggerTurn/followUp, and BOTH bypass before_agent_start entirely (see
  *     mode.ts's hasMessageSinceLastUserTurn) — so the reactive turn that
  *     processed a result carried no reminder, and if the keyword is not
- *     retyped, neither did every turn after it. Once the keyword has fired
- *     this session, the next real turn that follows a workflow result is
- *     still treated as opted in and gets the sparse reminder;
+ *     retyped, neither did every turn after it. The next real turn that
+ *     follows a workflow result is still treated as opted in, however the
+ *     opt-in arrived, and gets the after-run reminder: the opt-in stands, and
+ *     a finished fleet is not a reason to start another;
  *   - the keyword's tool description forbids un-opted-in workflow use, which
  *     made solo grinding the only path the model's own rules still allowed
  *     once that opt-in had decayed. A run of consecutive main-session
