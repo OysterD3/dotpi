@@ -48,8 +48,16 @@
  * came from that pass — each one adversarially reviewed for false positives
  * against ordinary development commands before being accepted.
  *
- * A corpus test guards this: 171 ordinary commands must produce zero findings,
- * 85 dangerous ones must all be caught. Add to both lists when you edit here.
+ * A corpus test guards this: 179 ordinary commands must produce zero findings,
+ * 125 dangerous ones must all be caught. Add to both lists when you edit here.
+ *
+ * ## The hard tier
+ *
+ * Almost everything here produces a prompt. A pattern marked `hard` produces a
+ * refusal instead — see the field's own comment for the bar it has to clear and
+ * for the four bypass routes that had to be closed to make the word mean
+ * anything. Two patterns carry it, both about putting a local service on the
+ * public internet.
  */
 
 export type Finding = {
@@ -66,12 +74,37 @@ export type Finding = {
 	label?: string;
 	/** The segment that triggered it. */
 	segment: string;
+	/**
+	 * A finding that blocks outright instead of prompting. See `Pattern.hard`.
+	 * Read by decide(), which turns it into `deny` rather than `ask`.
+	 */
+	hard?: true;
 };
 
 type Pattern = {
 	id: string;
 	test: RegExp;
 	reason: string;
+	/**
+	 * Not a prompt — a refusal.
+	 *
+	 * Every other pattern here asks, because "destructive" is a judgement about
+	 * risk and the person at the keyboard may have a reason. A hard pattern is a
+	 * standing decision that no reason is good enough, taken once, in code, so
+	 * that it cannot be taken again per-command at the moment it is least likely
+	 * to be considered carefully.
+	 *
+	 * That only means something if every route around it is closed, so all four
+	 * are: `allowDestructive` cannot suppress it (checked below), a session grant
+	 * cannot lift it (index.ts consults grants only after a deny), the prompt is
+	 * never shown so there is nothing to approve, and it runs in `allowAll` too
+	 * (decide()), because otherwise the block would be one mode switch deep.
+	 *
+	 * The bar for adding one: exposure that outlives the command and cannot be
+	 * undone by the person who approved it. A public tunnel is the case — once a
+	 * URL is live and indexed, "deny" a minute later does not close it.
+	 */
+	hard?: true;
 };
 
 /**
@@ -165,7 +198,18 @@ export const PATTERNS: Pattern[] = [
 
 	// --- reaching other machines, or letting them reach yours ---  [added after the 2026-07 audit]
 	{ id: "remote-shell-copy", test: /(?:^|\|)\s*(?:\w+=\S+\s+)*(?:sudo\s+)?(?:scp|rsync|sftp)\b[^|;&]*\s[\w.-]+@[\w.-]+:|(?:^|\|)\s*(?:\w+=\S+\s+)*(?:sudo\s+)?ssh\s+(?:-[BbcDEeFIiJLlmOopQRSWw]\s+\S+\s+|-(?![BbcDEeFIiJLlmOopQRSWw]\s)\S+\s+)*[\w.@$][\w.@$-]*\s+[^\s-]/, reason: "copies files to or runs a command on a remote host" },
-	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(npx\s+)?localtunnel\b|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|^\s*(\.\/)?frpc\b(?!\.)|\bchisel\s+(client|server)\b|^\s*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet" },
+	// `npx` was one spelling of a package runner among many, and the tunnel rode
+	// in on every other one: pnpx, tnpx, bunx, `pnpm dlx`, `yarn dlx`, `npm exec`.
+	// `lt` is localtunnel's real binary name and needs a port or subdomain flag
+	// to match, being two letters. The runner prefix is optional, so an installed
+	// binary invoked directly is caught too.
+	{ id: "tunnel-expose", test: /\bngrok\s+(http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(run\b|--url\b)|^\s*(?:(?:npx|pnpx|tnpx|bunx)\s+(?:-\S+\s+)*|(?:npm|pnpm|yarn|bun)\s+(?:dlx|exec|x)\s+(?:-\S+\s+)*)?(?:localtunnel\b|lt\s+[^|;&]*(?:-p\b|--port\b|-s\b|--subdomain\b|-h\b|--host\b))|\btailscale\s+funnel\s+(?!(status|off|reset)\b)\S|\bbore\s+local\b|\bzrok\s+share\b|\bpinggy\b|\btelebit\s+(http|https|tcp)\b|^\s*(\.\/)?frpc\b(?!\.)|\bchisel\s+(client|server)\b|^\s*ssh\s(?:[^|]*\s)?-R\s*\S*\d+:/, reason: "exposes a local service to the public internet", hard: true },
+	// Gradio and the UIs built on it put a local app on a public gradio.live URL
+	// from a keyword argument, with no tunnel binary anywhere in the command —
+	// which is why the rule above cannot see it. `--share` is the same switch
+	// spelled as a flag, as stable-diffusion-webui and its forks take it.
+	// `--no-share` does not match: the literal needs a boundary before it.
+	{ id: "public-share", test: /\bshare\s*=\s*True\b|(?:^|\s)--share(?:=(?:1|true|True))?(?=\s|$)|\bgradio\s+deploy\b/, reason: "publishes a local app on a public URL", hard: true },
 	{ id: "git-remote-repoint", test: /\bgit\s+(?:-[cC]\s+\S+\s+|-\S+\s+)*remote\s+set-url\b|\bgit\s+config\s+(?:--(?!get)\S+\s+)*(?:set\s+)?remote\.[\w.-]+\.(?:url|pushurl)\s+[^\s|&><]/, reason: "changes where git pushes go" },
 	{ id: "dns-cert-change", test: /\b(aws\s+route53\s+(change-resource-record-sets|delete-hosted-zone)|aws\s+route53domains\s+(update-domain-nameservers|transfer-domain|disable-domain-transfer-lock)|gcloud\s+dns\s+(record-sets|managed-zones)\s+(update|delete)\b|gcloud\s+dns\s+record-sets\s+transaction\s+execute\b|az\s+network\s+dns\s+(record-set\s+\S+|zone)\s+(update|delete|remove-record)\b|aws\s+acm\s+delete-certificate\b|certbot\s+(?!.*--dry-run)(certonly|run|delete|revoke|renew|--nginx|--apache|--standalone|-d\s)|acme\.sh\s+(?!.*--staging)(--issue|--renew|--deploy|--install-cert|--revoke|--remove)\b)/, reason: "changes DNS records or TLS certificates" },
 
@@ -435,13 +479,17 @@ export function findDestructive(command: string, allow: ReadonlySet<string> = ne
 		const scratch = deletesOnlyScratch(segment);
 
 		for (const pattern of PATTERNS) {
-			if (allow.has(pattern.id)) continue;
+			// A hard pattern ignores the opt-out list. `allowDestructive` is how a
+			// user says "stop asking me about this class"; for these there is no
+			// asking to stop, and a settings key that silently disarmed a refusal
+			// would make the refusal a suggestion.
+			if (pattern.hard !== true && allow.has(pattern.id)) continue;
 			if (scratch && SCRATCH_EXEMPT.has(pattern.id)) continue;
 			if (!pattern.test.test(segment)) continue;
 			const key = `${pattern.id}::${raw}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
-			findings.push({ id: pattern.id, reason: pattern.reason, segment: raw });
+			findings.push({ id: pattern.id, reason: pattern.reason, segment: raw, ...(pattern.hard ? { hard: true as const } : {}) });
 		}
 
 		// A destructive-capable command whose targets are computed cannot be

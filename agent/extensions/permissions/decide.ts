@@ -4,10 +4,20 @@
  * Order of evaluation:
  *
  *   1. deny rules                     — always win, nothing overrides them
+ *   1b. hard findings                 — a refusal; no rule, mode or grant lifts it
  *   2. destructive check              — when the mode asks for it (see below)
  *   3. ask rules
  *   4. allow rules
  *   5. the mode's default
+ *
+ * Step 1b is the only outcome here that cannot be configured. A couple of
+ * patterns in destructive.ts are marked `hard`, meaning the exposure they create
+ * outlives the command and cannot be undone by whoever approved it — a public
+ * tunnel is the case it was added for. Everything else in this file is policy
+ * the user sets; that step is a decision taken once, in code, so it is not
+ * retaken per command at the moment it is least likely to be weighed carefully.
+ * It sits beside the deny rules rather than after the table because it must fire
+ * in `allowAll` too, where the rest of the table deliberately does not.
  *
  * `auto` mode adds a sixth outcome, `classify`, at step 5 and nowhere else. That
  * placement is the whole safety argument for putting a model in a security
@@ -111,9 +121,20 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	// `denyAll` runs it too, for the same reason: its allow rules are the only
 	// thing that can let anything through, and a destructive command should not
 	// be one of them without a prompt.
-	const usesTable = mode !== "allowAll";
-	const findings =
-		usesTable && command !== undefined ? findDestructive(command, policy.allowDestructive) : [];
+	// The table runs in EVERY mode, including allowAll, because of the hard
+	// findings below: a refusal that a mode switch turns off is not one. The
+	// soft findings are still filtered out for allowAll immediately after, which
+	// keeps that mode's promise — it asks about nothing.
+	const all = command !== undefined ? findDestructive(command, policy.allowDestructive) : [];
+	const hard = all.filter((finding) => finding.hard === true);
+	const findings = mode === "allowAll" ? [] : all;
+
+	// Not a prompt. Ahead of ask, allow and the mode entirely, so there is no
+	// rule, no mode and no grant that reaches past it — index.ts consults
+	// remembered approvals only after a deny, and builds no options for one.
+	if (hard.length > 0) {
+		return { behavior: "deny", reason: describe(hard), findings: hard };
+	}
 
 	if (findings.length > 0 && policy.settings.destructiveOverridesAllow) {
 		return { behavior: "ask", reason: describe(findings), findings };

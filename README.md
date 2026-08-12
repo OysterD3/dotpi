@@ -579,10 +579,41 @@ cannot see what is in that script. If the script is one the agent just wrote, th
 visibility it had before; if something else put it there, this is a real loosening, and `deny` rules
 are the answer for paths that should never execute.
 
-**Tunnels were the case that tested this, and they caught a real regression.** Exposing a local
-service to the public internet is stopped deterministically by `destructive.ts`'s `tunnel-expose` —
-ngrok, `cloudflared tunnel`, localtunnel, `tailscale funnel`, bore, frpc, chisel and `ssh -R` — in
-every mode, before the classifier is reached. That layer never depended on any of this.
+**Putting a local service on the public internet is refused, not prompted.** This is the one thing
+in the extension that is not policy: two patterns in `destructive.ts` are marked `hard`, and a hard
+finding produces a **deny** rather than an approval prompt. The bar for the mark is exposure that
+outlives the command and cannot be undone by whoever approved it — once a tunnel URL is live and
+crawled, denying it a minute later does not close it, so there is no moment at which approving was
+a decision anyone could take back.
+
+A refusal only means something if every route around it is shut, so all four are, and each one
+would have worked before:
+
+| route | closed by |
+| --- | --- |
+| `permissions.allowDestructive: ["tunnel-expose"]` | `findDestructive` ignores the opt-out list for hard patterns |
+| "Allow anything that … for the rest of this session" | `index.ts` consults grants only *after* a deny, and builds no options for one |
+| Switching to `allowAll` | the table runs in every mode now; only the *soft* findings are dropped for `allowAll`, so it keeps its promise |
+| A blanket `Bash` allow rule, in either precedence order | the hard check sits beside the deny rules, ahead of ask, allow and the mode |
+
+`corpus.test.ts` asserts all four, because each is a line of code someone could reasonably delete.
+
+What it covers: ngrok, `cloudflared tunnel`, localtunnel — under every package-runner spelling, since
+the rule originally named only `npx` and let `pnpx`, `tnpx`, `bunx`, `pnpm dlx`, `yarn dlx` and
+`npm exec` straight through — plus `lt` (localtunnel's real binary name, which needs a port or
+subdomain flag to match, being two letters), `tailscale funnel`, bore, zrok, pinggy, telebit, frpc,
+chisel and `ssh -R`. Gradio gets a rule of its own, `public-share`: `share=True`, a bare `--share`
+flag as the Stable Diffusion forks take it, and `gradio deploy` put an app on a public URL with no
+tunnel binary in the command at all, which is exactly why the first rule cannot see them.
+`--no-share` does not match, and neither does `npm install localtunnel` — installing is not serving.
+
+**The limit, stated plainly:** a command is all this can read. `python app.py`, where `app.py`
+itself calls `launch(share=True)`, is invisible to the table and to the classifier, which is shown
+the command and not the file. Nothing here closes that; only reading the file would, and that is a
+different control.
+
+Exposing a local service is *also* stopped before the classifier is reached, which is why the
+paragraphs below about the classifier are defence in depth rather than the guarantee.
 
 The classifier is the second layer, and the change above cost it something. A/B on `~/bin/ngrok http
 3000` went **unsafe → safe**, cleared with *"a standard reversible dev tool; no files or credentials
@@ -685,7 +716,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `classify.ts` | One classifier call |
 | `verdict.ts` | Reading the answer; unreadable is never "safe" (pure) |
 | `model.ts` | Resolving `permissions.auto.model` |
-| `corpus.test.ts` | 171 safe / 85 dangerous commands the table must get right |
+| `corpus.test.ts` | 179 safe / 125 dangerous commands the table must get right, plus the hard tier's four bypass routes |
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
 | `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
