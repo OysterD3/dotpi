@@ -9,11 +9,14 @@
  *   intercom_send(to, message)     say it and carry on
  *   intercom_ask(to, question)     say it and wait for the answer
  *
- * Delivery follows background-shell's rule exactly, because it is the same
- * problem: something arrived from outside the turn. An idle session is woken
- * (`triggerTurn`); a busy one gets it as a follow-up on the run it is already
- * doing. One tick's whole drain becomes one message, so three peers do not
- * start three turns.
+ * Delivery is background-shell's problem — something arrived from outside the
+ * turn — with one line drawn through it: only a QUESTION may start a turn. A
+ * plain send waits for the next thing the user types, because a peer must not
+ * be able to spend somebody else's tokens on work they did not ask for. A
+ * question wakes an idle session, because it is the one message that is
+ * worthless late: somebody is blocked on it. Mid-turn both ride the run
+ * already going, and one tick's whole drain becomes one message, so three
+ * peers do not become three turns.
  *
  * Two facts shape everything else. A session id changes under a live process —
  * `/new`, `/resume` and fork all rebind it — so presence is torn down and
@@ -36,16 +39,16 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { CONFIG, MESSAGE_TYPE } from "./config.ts";
-import { intercomBlock } from "./prompts.ts";
+import { intercomBlock, summarise } from "./prompts.ts";
 import { type AliveCheck, drain, ensure, forget, type Layout, layout, processAlive, type Self, sweep, writePresence } from "./store.ts";
 import { registerIntercomTools } from "./tools.ts";
 
 export type IntercomDetails = {
-	/** Display names of the senders, in delivery order. */
-	from: string[];
+	/** One row per message: who sent it, what it is about, and whether it blocks them. */
+	items: { from: string; summary: string; asking: boolean }[];
 	count: number;
-	/** How many of them are blocked waiting for an answer. */
-	asking: number;
+	/** How it landed: a turn of its own, the run already going, or the next prompt. */
+	delivery: "turn" | "followUp" | "nextTurn";
 };
 
 export type Deps = {
@@ -55,11 +58,11 @@ export type Deps = {
 };
 
 function renderIntercom(details: IntercomDetails, theme: Theme): Text {
-	const lines = [
-		theme.fg("accent", theme.bold(`⇄ Intercom: ${details.count} message${details.count === 1 ? "" : "s"}`)),
-		theme.fg("muted", `from ${details.from.join(", ")}`),
-	];
-	if (details.asking > 0) lines.push(theme.fg("dim", `${details.asking} waiting for an answer`));
+	const lines = [theme.fg("accent", theme.bold(`⇄ Intercom: ${details.count} message${details.count === 1 ? "" : "s"}`))];
+	for (const item of details.items) {
+		lines.push(theme.fg("muted", `${item.from} — ${item.summary}${item.asking ? " (waiting for an answer)" : ""}`));
+	}
+	if (details.delivery === "nextTurn") lines.push(theme.fg("dim", "waiting for your next message"));
 	return new Text(lines.join("\n"), 0, 0);
 }
 
@@ -75,17 +78,35 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 	 * event of its own to be handed one.
 	 */
 	let uiCtx: ExtensionContext | undefined;
+	let startedAt = 0;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let poller: ReturnType<typeof setInterval> | undefined;
 
 	const unref = (timer: unknown) => (timer as { unref?: () => void }).unref?.();
 
+	/** Between turns, as far as this heartbeat can tell. A stale runtime counts as working. */
+	const isIdle = () => {
+		try {
+			return uiCtx?.isIdle() ?? false;
+		} catch {
+			return false;
+		}
+	};
+
 	const beat = () => {
-		if (self) writePresence(l, self, now());
+		if (self) writePresence(l, self, { now: now(), startedAt, idle: isIdle() });
 	};
 
 	/**
 	 * Drain this session's inbox and hand it over.
+	 *
+	 * Only a QUESTION may start a turn. A plain send waits for the next thing
+	 * the user types (`nextTurn` is spliced into that prompt unconditionally, so
+	 * an Escape in between cannot lose it) — a peer must not be able to spend
+	 * this user's tokens on work they did not ask for. A question is the one
+	 * message that is worthless late: somebody is blocked on it, and a reply
+	 * that arrives after they gave up helps nobody. Mid-turn, both ride the run
+	 * already going, which is background-shell's rule unchanged.
 	 *
 	 * `drain` removes what it reads, so a throw between here and sendMessage
 	 * loses those messages — the same trade background-shell makes with a
@@ -100,18 +121,26 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		if (envelopes.length === 0) return;
 		try {
 			const idle = ctx.isIdle();
+			const delivery = !idle ? "followUp" : envelopes.some((envelope) => envelope.askId) ? "turn" : "nextTurn";
 			pi.sendMessage<IntercomDetails>(
 				{
 					customType: MESSAGE_TYPE,
 					content: intercomBlock(envelopes),
 					display: true,
 					details: {
-						from: envelopes.map((envelope) => envelope.from.name),
+						// A peer still running an older build of this extension sends no
+						// preview of its own, and a row reading "undefined" is worse
+						// than one derived from what it actually said.
+						items: envelopes.map((envelope) => ({
+							from: envelope.from.name,
+							summary: envelope.summary || summarise(undefined, envelope.text),
+							asking: Boolean(envelope.askId),
+						})),
 						count: envelopes.length,
-						asking: envelopes.filter((envelope) => envelope.askId).length,
+						delivery,
 					},
 				},
-				idle ? { triggerTurn: true } : { deliverAs: "followUp" },
+				delivery === "turn" ? { triggerTurn: true } : { deliverAs: delivery },
 			);
 		} catch {
 			/* a session on its way out cannot receive anything */
@@ -158,6 +187,7 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		sweep(l, now(), alive);
 		self = { id, name: ctx.sessionManager.getSessionName()?.trim() || id.slice(0, CONFIG.idChars), cwd: ctx.cwd };
 		uiCtx = ctx;
+		startedAt = now();
 		beat();
 		start();
 	});

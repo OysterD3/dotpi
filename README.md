@@ -1219,17 +1219,34 @@ intercom_ask(to, question)         say it and wait for the answer
 ```
 
 There are no commands and no `/`-prefix, because the tools are for the model: you say "ask the API
-session which port it settled on" and it does. A target is named by id prefix or by name; a name two
-live sessions share is refused with the ids that would settle it rather than delivered to whichever
-sorted first.
+session which port it settled on" and it does. `intercom_peers` reads like Claude Code's
+`ListAgents`, which this deliberately follows — name, bracketed id, state, cwd, age:
 
-Delivery follows background-shell's rule exactly, because it is the same problem — something
-arrived from outside the turn. An **idle** session is woken by it, a **busy** one gets it as a
-follow-up on the run it is already doing, and one poll tick's whole drain becomes one message, so
-three peers do not start three turns. That is also the cost, stated in the tool description: a send
-spends the receiver's tokens on a turn its user did not ask for. What arrives is wrapped like a
-referenced session — provenance, and one guard line marking a peer's words as a colleague's request
-rather than an instruction that outranks the receiver's own user.
+```
+2 other live sessions:
+api work [bbbbbbbb]  ·  idle     ·  /work/api   ·  started 3h ago
+docs [cccccccc]      ·  working  ·  /work/docs  ·  started 5m ago
+```
+
+The bracketed id is the address, and it is what settles a name two sessions share — an ambiguous
+name is refused with the ids that would answer it rather than delivered to whichever sorted first.
+
+**Only a question may start a turn.** A plain `intercom_send` waits for the next thing the receiving
+user types (`nextTurn`, which is spliced into that prompt unconditionally, so an Escape in between
+cannot lose it): a peer must not be able to spend somebody else's tokens on work they did not ask
+for. An `intercom_ask` does wake an idle peer, because it is the one message that is worthless late
+— somebody is blocked on it. Mid-turn both ride the run already going, which is background-shell's
+rule unchanged, and one poll tick's whole drain becomes one message, so three peers do not become
+three turns. Each message carries a one-line `summary` for the chat row, its own or the first line
+of what was said.
+
+What arrives is wrapped like a referenced session: provenance, one guard line marking a peer's
+words as a colleague's request rather than an instruction that outranks the receiver's own user,
+and one more that matters more than it looks. **Permission mode is per session**, so two sessions
+on this machine do not necessarily have the same answer to "may I run this" — without a rule, the
+intercom is a way around the narrower one: refused here, asked for over there, done. Both sending
+tools carry it and the delivered block repeats it. Claude Code names the same hazard cross-session
+permission laundering; the user decided once, and a peer is not a second opinion.
 
 Everything it can reach is a **live** session. Presence is a heartbeat plus a pid check, not a file
 that exists: a session that is SIGKILLed never runs its shutdown handler, so every session sweeps
@@ -1256,7 +1273,7 @@ tools say why.
 | `tools.ts` | The three tools |
 | `prompts.ts` | Tool descriptions and the delivered block (pure) |
 | `config.ts` | Heartbeats, timeouts, limits |
-| `intercom.test.ts` | Liveness and the sweep, resolution, draining, the block, and two whole sessions end to end |
+| `intercom.test.ts` | Liveness and the sweep, resolution, draining, previews and peer rows, the block, and two whole sessions end to end |
 
 **`agent/extensions/dynamic-workflow/`** — dynamic workflow: a `workflow` tool that orchestrates fleets of
 subagents from a script, and the triggers that opt the model into using it.

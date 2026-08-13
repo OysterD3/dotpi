@@ -40,6 +40,12 @@ export const CONFIG = {
 	/** Longest single message. A longer one is refused, not truncated. */
 	maxMessageChars: 4_000,
 
+	/**
+	 * Longest one-line preview shown for a message. A summary is a courtesy, not
+	 * the message, so an over-long one is cut rather than refused.
+	 */
+	maxSummaryChars: 80,
+
 	/** Messages delivered per tick. The rest wait for the next one. */
 	maxDrainPerTick: 20,
 

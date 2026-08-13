@@ -20,12 +20,14 @@ import { CONFIG, TOOL_ASK, TOOL_PEERS, TOOL_SEND } from "./config.ts";
 import {
 	ASK_DESCRIPTION,
 	ASK_SNIPPET,
+	describePeer,
 	INTERCOM_GUIDELINES,
 	OFF_TEXT,
 	PEERS_DESCRIPTION,
 	PEERS_SNIPPET,
 	SEND_DESCRIPTION,
 	SEND_SNIPPET,
+	summarise,
 } from "./prompts.ts";
 import {
 	type AliveCheck,
@@ -68,12 +70,8 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			if (!me) return said(OFF_TEXT);
 			const rows = others(me);
 			if (rows.length === 0) return said("No other pi session is running right now.");
-			return said(
-				[
-					`${rows.length} other live session${rows.length === 1 ? "" : "s"}:`,
-					...rows.map((peer) => `${peer.id.slice(0, CONFIG.idChars)}  ${peer.name}  ·  ${peer.cwd}`),
-				].join("\n"),
-			);
+			const at = deps.now();
+			return said([`${rows.length} other live session${rows.length === 1 ? "" : "s"}:`, ...rows.map((peer) => describePeer(peer, at))].join("\n"));
 		},
 	});
 
@@ -90,6 +88,9 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 				}),
 			),
 			message: Type.String({ description: "What to say. Say who you are and what you need — the peer has none of your context." }),
+			summary: Type.Optional(
+				Type.String({ description: "A few words naming what this is about, shown as the one-line preview in the receiver's chat. Defaults to the first line of the message." }),
+			),
 			reply_to: Type.Optional(
 				Type.String({ description: `The ask id stated in a question a peer sent you with ${TOOL_ASK}. Answers that question and needs no 'to'.` }),
 			),
@@ -117,8 +118,13 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			const target = resolvePeer(others(me), String(params.to ?? ""));
 			if (!target.ok) return said(target.reason);
 
-			putMessage(deps.layout, target.peer.id, { from: me, text: message, sentAt: deps.now() });
-			return said(`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). It arrives on that session's next turn. There is no reply unless it sends one.`);
+			putMessage(deps.layout, target.peer.id, {
+				from: me,
+				text: message,
+				summary: summarise(typeof params.summary === "string" ? params.summary : undefined, message),
+				sentAt: deps.now(),
+			});
+			return said(`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). It arrives on that session's next turn, without interrupting it. There is no reply unless it sends one.`);
 		},
 	});
 
@@ -130,6 +136,9 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 		parameters: Type.Object({
 			to: Type.String({ description: `The target session's id (or its name, when that is unambiguous), from ${TOOL_PEERS}.` }),
 			question: Type.String({ description: "What to ask. Include the context the peer needs — it cannot see your session." }),
+			summary: Type.Optional(
+				Type.String({ description: "A few words naming what this is about, shown as the one-line preview in the receiver's chat. Defaults to the first line of the question." }),
+			),
 			timeout_seconds: Type.Optional(
 				Type.Number({ description: `How long to wait. Default ${CONFIG.defaultAskTimeoutMs / 1000}, maximum ${CONFIG.maxAskTimeoutMs / 1000}.` }),
 			),
@@ -158,7 +167,13 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 			// nobody was listening.
 			openAsk(deps.layout, askId, deps.now());
 			try {
-				putMessage(deps.layout, peer.id, { from: me, text: question, askId, sentAt: deps.now() });
+				putMessage(deps.layout, peer.id, {
+					from: me,
+					text: question,
+					summary: summarise(typeof params.summary === "string" ? params.summary : undefined, question),
+					askId,
+					sentAt: deps.now(),
+				});
 
 				while (deps.now() < deadline) {
 					const answer = takeAnswer(deps.layout, askId);

@@ -32,14 +32,23 @@ export type Peer = {
 	pid: number;
 	/** Last heartbeat, ms since epoch. */
 	updatedAt: number;
+	/** When this session joined the peer list, ms since epoch. */
+	startedAt: number;
+	/** Whether it was between turns as of that heartbeat. */
+	idle: boolean;
 };
 
 /** Who a session is, as its peers see it. */
 export type Self = Pick<Peer, "id" | "name" | "cwd">;
 
+/** What a heartbeat records beyond the identity that does not change. */
+export type Presence = { now: number; startedAt: number; idle: boolean };
+
 export type Envelope = {
 	from: Self;
 	text: string;
+	/** One line for the receiver's chat row. Derived from the text when unstated. */
+	summary: string;
 	/** Set when the sender is blocked waiting for an answer to this. */
 	askId?: string;
 	sentAt: number;
@@ -104,8 +113,14 @@ function isLive(peer: Peer | undefined, now: number, alive: AliveCheck): peer is
 	return now - peer.updatedAt <= CONFIG.staleAfterMs && alive(peer.pid);
 }
 
-export function writePresence(l: Layout, self: Self, now: number): void {
-	writeJson(join(l.peers, `${self.id}.json`), { ...self, pid: process.pid, updatedAt: now } satisfies Peer);
+export function writePresence(l: Layout, self: Self, state: Presence): void {
+	writeJson(join(l.peers, `${self.id}.json`), {
+		...self,
+		pid: process.pid,
+		updatedAt: state.now,
+		startedAt: state.startedAt,
+		idle: state.idle,
+	} satisfies Peer);
 }
 
 /** Drop a session's presence and its inbox. An inbox with no owner is undrainable. */

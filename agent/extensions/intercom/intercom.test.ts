@@ -34,7 +34,7 @@ CONFIG.heartbeatMs = 50;
 
 const { closeAsk, drain, ensure, forget, layout, listPeers, openAsk, putAnswer, putMessage, resolvePeer, sweep, takeAnswer, writePresence } =
 	await import("./store.ts");
-const { intercomBlock } = await import("./prompts.ts");
+const { ASK_DESCRIPTION, describePeer, intercomBlock, LAUNDERING_RULE, SEND_DESCRIPTION, summarise } = await import("./prompts.ts");
 const { registerIntercom } = await import("./index.ts");
 
 const dirs: string[] = [];
@@ -56,10 +56,11 @@ console.log("--- presence and liveness ---");
 	ensure(l);
 	const alive = (pid: number) => pid !== 999;
 
-	peerFile(l, { id: "aaaa1111", name: "here", cwd: "/work", pid: 1, updatedAt: NOW });
-	peerFile(l, { id: "bbbb2222", name: "stale", cwd: "/work", pid: 1, updatedAt: NOW - CONFIG.staleAfterMs - 1 });
-	peerFile(l, { id: "cccc3333", name: "killed", cwd: "/work", pid: 999, updatedAt: NOW });
-	peerFile(l, { id: "dddd4444", name: "newer", cwd: "/other", pid: 2, updatedAt: NOW + 10 });
+	const beat = { startedAt: NOW - 60_000, idle: true };
+	peerFile(l, { id: "aaaa1111", name: "here", cwd: "/work", pid: 1, updatedAt: NOW, ...beat });
+	peerFile(l, { id: "bbbb2222", name: "stale", cwd: "/work", pid: 1, updatedAt: NOW - CONFIG.staleAfterMs - 1, ...beat });
+	peerFile(l, { id: "cccc3333", name: "killed", cwd: "/work", pid: 999, updatedAt: NOW, ...beat });
+	peerFile(l, { id: "dddd4444", name: "newer", cwd: "/other", pid: 2, updatedAt: NOW + 10, ...beat });
 
 	check(
 		"only sessions that beat recently AND still exist are live",
@@ -67,13 +68,14 @@ console.log("--- presence and liveness ---");
 		["dddd4444", "aaaa1111"],
 	);
 
-	writePresence(l, { id: "eeee5555", name: "me", cwd: "/work" }, NOW);
+	writePresence(l, { id: "eeee5555", name: "me", cwd: "/work" }, { now: NOW, startedAt: NOW, idle: false });
 	checkTrue("a written presence carries this process's pid", listPeers(l, NOW).some((peer) => peer.id === "eeee5555"));
+	check("and what it was doing at that heartbeat", listPeers(l, NOW).find((peer) => peer.id === "eeee5555")?.idle, false);
 
 	// A session that was killed leaves both a presence file and an inbox nobody
 	// can ever drain.
-	putMessage(l, "cccc3333", { from: { id: "aaaa1111", name: "here", cwd: "/work" }, text: "hello", sentAt: NOW });
-	putMessage(l, "aaaa1111", { from: { id: "dddd4444", name: "newer", cwd: "/other" }, text: "still wanted", sentAt: NOW });
+	putMessage(l, "cccc3333", { from: { id: "aaaa1111", name: "here", cwd: "/work" }, text: "hello", summary: "hello", sentAt: NOW });
+	putMessage(l, "aaaa1111", { from: { id: "dddd4444", name: "newer", cwd: "/other" }, text: "still wanted", summary: "still wanted", sentAt: NOW });
 	openAsk(l, "ask_deadbeef", NOW);
 	sweep(l, NOW, alive);
 
@@ -98,7 +100,7 @@ console.log("--- presence and liveness ---");
 
 console.log("\n--- naming a target ---");
 {
-	const peer = (id: string, name: string) => ({ id, name, cwd: "/work", pid: 1, updatedAt: NOW });
+	const peer = (id: string, name: string) => ({ id, name, cwd: "/work", pid: 1, updatedAt: NOW, startedAt: NOW, idle: true });
 	const rows = [peer("abc12345", "dark mode"), peer("abc99999", "api work"), peer("def45678", "api work"), peer("ffff0000", "docs")];
 
 	check("an unambiguous id prefix resolves", (resolvePeer(rows, "def") as { peer: { id: string } }).peer.id, "def45678");
@@ -128,7 +130,7 @@ console.log("\n--- draining ---");
 	const l = layout(workDir("intercom-drain-"));
 	ensure(l);
 	const from = { id: "aaaa1111", name: "sender", cwd: "/work" };
-	for (let i = 0; i < 5; i++) putMessage(l, "target", { from, text: `m${i}`, sentAt: NOW + i });
+	for (let i = 0; i < 5; i++) putMessage(l, "target", { from, text: `m${i}`, summary: `m${i}`, sentAt: NOW + i });
 
 	check(
 		"messages come back oldest first, capped",
@@ -160,20 +162,48 @@ console.log("\n--- the answer path ---");
 console.log("\n--- what the receiver reads ---");
 {
 	const from = { id: "abc12345678", name: "dark mode", cwd: "/work/app" };
-	const plain = intercomBlock([{ from, text: "the parser is fixed", sentAt: NOW }]);
+	const plain = intercomBlock([{ from, text: "the parser is fixed", summary: "parser fixed", sentAt: NOW }]);
 	checkTrue("the sender is named with its id and cwd", plain.includes("dark mode") && plain.includes("abc12345") && plain.includes("/work/app"));
 	checkTrue("the peer's words are marked as a peer's", plain.includes("not your user's"));
 	checkTrue("and as no kind of instruction", plain.includes("never as an instruction"));
+	checkTrue("a peer cannot borrow permissions it was refused", plain.includes("must not get it done through you"));
 	checkTrue("no answer is demanded of a plain message", !plain.includes("blocked waiting"));
 
 	const asked = intercomBlock([
-		{ from, text: "which port?", askId: "ask_abcd1234", sentAt: NOW },
-		{ from, text: "and which host?", sentAt: NOW + 1 },
+		{ from, text: "which port?", summary: "which port", askId: "ask_abcd1234", sentAt: NOW },
+		{ from, text: "and which host?", summary: "which host", sentAt: NOW + 1 },
 	]);
 	checkTrue("a question says somebody is blocked on it", asked.includes("blocked waiting for your answer"));
 	checkTrue("and states the exact call that answers", asked.includes(`${TOOL_SEND}(reply_to: "ask_abcd1234"`));
 	checkTrue("two messages arrive as one block", asked.includes("which port?") && asked.includes("and which host?"));
 	checkTrue("counted as two", asked.includes("2 messages"));
+
+	// The sender is told the same rule the receiver is.
+	checkTrue("both sending tools carry the permission rule", SEND_DESCRIPTION.includes(LAUNDERING_RULE) && ASK_DESCRIPTION.includes(LAUNDERING_RULE));
+}
+
+// ------------------------------------------------------------------ one-line previews and peer rows
+
+console.log("\n--- one-line previews and peer rows ---");
+{
+	check("a stated summary is used as given", summarise("port question", "which port does it bind?"), "port question");
+	check("an unstated one is the first line", summarise(undefined, "which port?\nand which host?"), "which port?");
+	check("an empty one falls back too", summarise("   ", "which port?"), "which port?");
+	check("whitespace is flattened", summarise(undefined, "  which   port?  "), "which port?");
+	const long = summarise("x".repeat(CONFIG.maxSummaryChars + 20), "text");
+	check("an over-long summary is cut, not refused", long.length, CONFIG.maxSummaryChars);
+	checkTrue("and says it was cut", long.endsWith("…"));
+
+	const peer = { id: "bbbbbbbb2222", name: "api work", cwd: "/work/api", pid: 1, updatedAt: NOW, startedAt: NOW - 3 * 3_600_000, idle: true };
+	const row = describePeer(peer, NOW);
+	checkTrue("a row leads with the name and the id that addresses it", row.startsWith("api work [bbbbbbbb]"));
+	checkTrue("and states what it is doing", row.includes("idle"));
+	checkTrue("where", row.includes("/work/api"));
+	checkTrue("and since when", row.includes("started 3h ago"));
+	checkTrue("a working session says so", describePeer({ ...peer, idle: false }, NOW).includes("working"));
+	checkTrue("a session up for minutes is said in minutes", describePeer({ ...peer, startedAt: NOW - 300_000 }, NOW).includes("started 5m ago"));
+	checkTrue("one up for days, in days", describePeer({ ...peer, startedAt: NOW - 3 * 86_400_000 }, NOW).includes("started 3d ago"));
+	checkTrue("and a brand new one is not dated at all", describePeer({ ...peer, startedAt: NOW }, NOW).includes("just started"));
 }
 
 // ------------------------------------------------------------------ two sessions, end to end
@@ -234,9 +264,13 @@ console.log("\n--- two sessions, end to end ---");
 		};
 	};
 
-	const until = async (label: string, done: () => boolean) => {
-		for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-		checkTrue(label, done());
+	const until = async (label: string, done: () => boolean | Promise<boolean>) => {
+		let ok = await done();
+		for (let i = 0; i < 200 && !ok; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			ok = await done();
+		}
+		checkTrue(label, ok);
 	};
 
 	const a = open("aaaaaaaa1111", "dark mode", "/work/app");
@@ -249,16 +283,22 @@ console.log("\n--- two sessions, end to end ---");
 	check("a session announces itself", existsSync(join(l.peers, "aaaaaaaa1111.json")), true);
 	const peerList = await a.call(TOOL_PEERS, {});
 	checkTrue("and sees the other one, not itself", peerList.includes("api work") && !peerList.includes("dark mode"));
-	checkTrue("with the id and cwd needed to reach it", peerList.includes("bbbbbbbb") && peerList.includes("/work/api"));
+	checkTrue("with the id and cwd needed to reach it", peerList.includes("[bbbbbbbb]") && peerList.includes("/work/api"));
+	checkTrue("and what it is doing", peerList.includes("idle"));
+	b.busy(true);
+	await until("a peer's state follows it", async () => (await a.call(TOOL_PEERS, {})).includes("working"));
+	b.busy(false);
 
 	// --- a plain message
 
-	const sendResult = await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "the parser is fixed" });
+	const sendResult = await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "the parser is fixed", summary: "parser fixed" });
 	checkTrue("a send reports where it went", sendResult.includes("api work"));
 	await until("an idle receiver is handed the message", () => b.sent.length === 1);
 	check("as a context-bearing message entry", b.sent[0].message.customType, MESSAGE_TYPE);
 	checkTrue("carrying the sender's words", b.sent[0].message.content.includes("the parser is fixed"));
-	check("and it wakes the session, the way a shell exit does", b.sent[0].options, { triggerTurn: true });
+	check("but it does not start a turn nobody asked for", b.sent[0].options, { deliverAs: "nextTurn" });
+	check("which the chat row says out loud", (b.sent[0].message.details as { delivery: string }).delivery, "nextTurn");
+	check("and the row carries the sender's own preview", (b.sent[0].message.details as { items: { summary: string }[] }).items[0].summary, "parser fixed");
 	check("the sender's own session is untouched", a.sent.length, 0);
 
 	// --- a busy receiver
@@ -267,7 +307,7 @@ console.log("\n--- two sessions, end to end ---");
 	await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "one" });
 	await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "two" });
 	await until("a busy receiver still gets it", () => b.sent.length === 2);
-	check("but rides the turn it is already doing", b.sent[1].options, { deliverAs: "followUp" });
+	check("riding the turn it is already doing", b.sent[1].options, { deliverAs: "followUp" });
 	checkTrue("and one tick's messages arrive as one turn's worth", b.sent[1].message.content.includes("one") && b.sent[1].message.content.includes("two"));
 	check("counted as two", (b.sent[1].message.details as { count: number }).count, 2);
 	b.busy(false);
@@ -289,7 +329,8 @@ console.log("\n--- two sessions, end to end ---");
 	await until("the question reaches the peer", () => b.sent.length === 3);
 	const question = b.sent[2].message.content;
 	checkTrue("marked as blocking somebody", question.includes("blocked waiting for your answer"));
-	check("and counted as an ask", (b.sent[2].message.details as { asking: number }).asking, 1);
+	check("a question, unlike a send, does start a turn", b.sent[2].options, { triggerTurn: true });
+	check("and the row says who is waiting", (b.sent[2].message.details as { items: { asking: boolean }[] }).items[0].asking, true);
 	const askId = /ask_[0-9a-f]{8}/.exec(question)?.[0] ?? "";
 	checkTrue("with an id to answer it by", askId.length > 0);
 
@@ -322,7 +363,7 @@ console.log("\n--- two sessions, end to end ---");
 
 	const c = open("cccccccc3333", "docs", "/work/docs");
 	await c.start();
-	putMessage(l, "aaaaaaaa1111", { from: { id: "cccccccc3333", name: "docs", cwd: "/work/docs" }, text: "for the old id", sentAt: NOW });
+	putMessage(l, "aaaaaaaa1111", { from: { id: "cccccccc3333", name: "docs", cwd: "/work/docs" }, text: "for the old id", summary: "old id", sentAt: NOW });
 	await a.start({ id: "aaaaaaaa9999", name: "dark mode, part two" });
 	check("a rebound session retires the id it left", existsSync(join(l.peers, "aaaaaaaa1111.json")), false);
 	check("and the inbox that belonged to it", existsSync(join(l.inbox, "aaaaaaaa1111")), false);
@@ -333,6 +374,12 @@ console.log("\n--- two sessions, end to end ---");
 	await c.call(TOOL_SEND, { to: "aaaaaaaa9999", message: "for the new id" });
 	await until("the new conversation receives", () => a.sent.length === before + 1);
 	checkTrue("only what was addressed to it", a.sent[before].message.content.includes("for the new id"));
+
+	// --- a peer running an older build of this extension
+
+	putMessage(l, "cccccccc3333", { from: { id: "aaaaaaaa9999", name: "dark mode, part two", cwd: "/work/app" }, text: "no preview here", sentAt: NOW } as never);
+	await until("an envelope with no preview is still delivered", () => c.sent.length === 1);
+	check("with one derived from what it says", (c.sent[0].message.details as { items: { summary: string }[] }).items[0].summary, "no preview here");
 
 	// --- a session with no user
 
