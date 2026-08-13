@@ -68,10 +68,10 @@
     "active": "mixed",
     "providers": {
       "openai": {
-        "session": "openai-codex/gpt-5.6-sol",
-        "frontier": "openai-codex/gpt-5.6-sol",
-        "fast": "openai-codex/gpt-5.6-terra",
-        "cheap": "openai-codex/gpt-5.6-luna"
+        "session": "openai-codex/gpt-5.6-sol:high",
+        "frontier": "openai-codex/gpt-5.6-sol:xhigh",
+        "fast": "openai-codex/gpt-5.6-terra:medium",
+        "cheap": "openai-codex/gpt-5.6-luna:high"
       },
       "anthropic": {
         "session": "anthropic/claude-opus-5",
