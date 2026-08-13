@@ -209,16 +209,17 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
     <li><a href="#mem-assemble"><span class="num">04</span><span>Assembly and the budget</span></a></li>
     <li><a href="#mem-fork"><span class="num">05</span><span>The fork</span></a></li>
     <li><a href="#mem-write"><span class="num">06</span><span>The write path</span></a></li>
+    <li><a href="#mem-when"><span class="num">07</span><span>When it actually writes</span></a></li>
     <li class="grp">context-diet</li>
-    <li><a href="#diet-why"><span class="num">07</span><span>The gap it fills</span></a></li>
-    <li><a href="#diet-round"><span class="num">08</span><span>A round</span></a></li>
-    <li><a href="#diet-pick"><span class="num">09</span><span>What gets dropped</span></a></li>
-    <li><a href="#diet-stick"><span class="num">10</span><span>Stickiness, two invariants</span></a></li>
-    <li><a href="#diet-extra"><span class="num">11</span><span>Reasoning, escalation, resets</span></a></li>
+    <li><a href="#diet-why"><span class="num">08</span><span>The gap it fills</span></a></li>
+    <li><a href="#diet-round"><span class="num">09</span><span>A round</span></a></li>
+    <li><a href="#diet-pick"><span class="num">10</span><span>What gets dropped</span></a></li>
+    <li><a href="#diet-stick"><span class="num">11</span><span>Stickiness, two invariants</span></a></li>
+    <li><a href="#diet-extra"><span class="num">12</span><span>Reasoning, escalation, resets</span></a></li>
     <li class="grp">Together</li>
-    <li><a href="#meet"><span class="num">12</span><span>Where they meet</span></a></li>
-    <li><a href="#edges"><span class="num">13</span><span>Sharp edges</span></a></li>
-    <li><a href="#settings"><span class="num">14</span><span>Settings reference</span></a></li>
+    <li><a href="#meet"><span class="num">13</span><span>Where they meet</span></a></li>
+    <li><a href="#edges"><span class="num">14</span><span>Sharp edges</span></a></li>
+    <li><a href="#settings"><span class="num">15</span><span>Settings reference</span></a></li>
   </ul>
 </nav>
 
@@ -643,8 +644,148 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 /memory         <span class="k">→</span> status | show | reload</pre>
 </section>
 
+<section id="mem-when">
+  <p class="eyebrow">07 · memory</p>
+  <h2>When it actually writes</h2>
+  <p class="lede">
+    Everything above is mechanism. This is policy — and the short version is that reading is automatic and
+    unconditional, while writing is unguided: nothing in the extension ever asks for it.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">WHO DECIDES</span><span class="tt">What fires each half of memory</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 252" role="img" aria-label="Which parts of memory pi fires automatically and which parts only the model can fire">
+        <text class="tb" x="0" y="14">two halves, two very different triggers</text>
+
+        <text class="ta" x="0" y="36">pi fires these — every session, unconditionally</text>
+        <g class="np" data-a="wh-load" tabindex="0" role="button">
+          <rect class="hit" x="0" y="44" width="352" height="42" rx="5"/>
+          <rect class="bx-g" x="3" y="46" width="346" height="38" rx="4"/>
+          <text class="t" x="16" y="64">session_start → read + assemble</text>
+          <text class="tf" x="16" y="79">the whole store, no question asked</text>
+        </g>
+        <g class="np" data-a="wh-inject" tabindex="0" role="button">
+          <rect class="hit" x="0" y="92" width="352" height="42" rx="5"/>
+          <rect class="bx-g" x="3" y="94" width="346" height="38" rx="4"/>
+          <text class="t" x="16" y="112">before_agent_start → inject</text>
+          <text class="tf" x="16" y="127">appended to the system prompt, once a turn</text>
+        </g>
+        <text class="tf" x="0" y="156">the model never has to ask for its memory,</text>
+        <text class="tf" x="0" y="172">and cannot decline it</text>
+
+        <text class="tr" x="396" y="36">only the model fires these — nothing prompts it</text>
+        <g class="np" data-a="wh-list" tabindex="0" role="button">
+          <rect class="hit" x="396" y="44" width="360" height="30" rx="5"/>
+          <rect class="bx" x="399" y="46" width="354" height="26" rx="4"/>
+          <text class="tm" x="412" y="63">list — what files exist</text>
+        </g>
+        <g class="np" data-a="wh-read" tabindex="0" role="button">
+          <rect class="hit" x="396" y="80" width="360" height="30" rx="5"/>
+          <rect class="bx" x="399" y="82" width="354" height="26" rx="4"/>
+          <text class="tm" x="412" y="99">read — one file whole</text>
+        </g>
+        <g class="np" data-a="wh-write" tabindex="0" role="button">
+          <rect class="hit" x="396" y="116" width="360" height="30" rx="5"/>
+          <rect class="bx-y" x="399" y="118" width="354" height="26" rx="4"/>
+          <text class="tm" x="412" y="135">write — replace a whole file</text>
+        </g>
+        <g class="np" data-a="wh-del" tabindex="0" role="button">
+          <rect class="hit" x="396" y="152" width="360" height="30" rx="5"/>
+          <rect class="bx-r" x="399" y="154" width="354" height="26" rx="4"/>
+          <text class="tr" x="412" y="171">delete — no criterion stated anywhere</text>
+        </g>
+
+        <g class="np" data-a="wh-gap" tabindex="0" role="button">
+          <rect class="hit" x="0" y="196" width="756" height="48" rx="6"/>
+          <rect class="bx-r" x="3" y="198" width="750" height="44" rx="5"/>
+          <text class="tr" x="18" y="218">no nudge · no reminder · no keyword · no end-of-session pass</text>
+          <text class="tf" x="18" y="234">the only pressure on the write path is five lines of prose in the tool description</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap any block.</span></figcaption>
+    <div class="anns">
+      <div id="an-wh-load"><b>Not a decision</b>The store is read, assembled and held at every session start, whatever the model thinks. There is no "should I load my memory" step to get wrong, and no way for a session to run without it.</div>
+      <div id="an-wh-inject"><b>Once per turn</b><code>before_agent_start</code> appends the block to whatever system prompt pi built. Also not a decision — if a block was assembled, it goes in.</div>
+      <div id="an-wh-list"><b>list</b>Names every <code>*.md</code> in the resolved store and says whether it is pi's own or inherited. Cheap, and the only way to see a fact the budget dropped without knowing its filename.</div>
+      <div id="an-wh-read"><b>read — two real uses</b>A fact the budget dropped (the injected block says when it truncated), and the one the tool description spells out: <em>"Read a file before rewriting it"</em>. A whole-file write from a half-remembered file destroys the rest of it.</div>
+      <div id="an-wh-write"><b>write — the only guidance there is</b>One paragraph in the tool description, quoted in full below. No trigger, no schedule, no checkpoint.</div>
+      <div id="an-wh-del"><b>delete — the gap</b>The description opens with "Add to, change, or remove" and never returns to removal. Nothing says when a fact is stale, wrong, or superseded enough to go.</div>
+      <div id="an-wh-gap"><b>The consequence</b>In practice memory gets written when the user asks for it. The tool sits in the cached prefix, read long before there is anything to apply it to — which is exactly the problem <code>ask-user</code> was built to solve, and memory has no equivalent.</div>
+    </div>
+  </figure>
+
+  <h3>Read is not a decision</h3>
+  <p>
+    Worth separating from the rest, because it is the half that cannot go wrong. The store is read and injected on
+    every session, unconditionally. The <code>read</code> action is not how memory reaches the model — it is the
+    escape hatch for the two cases the injected block cannot cover: a fact dropped for budget, and the file you are
+    about to overwrite.
+  </p>
+
+  <h3>Write is judgement, and this is all of it</h3>
+  <p>
+    The entire policy lives in <code>TOOL_DESCRIPTION</code> in <code>agent/extensions/memory/index.ts</code>:
+  </p>
+  <pre class="code">Save what stays true and is not already recorded: <b>how the user works</b>, <b>a decision and the
+reason behind it</b>, <b>a project constraint that is not derivable from the code</b>. Do not save
+what the repository already says (structure, past fixes, git history), or anything
+that only matters to this conversation.</pre>
+  <p>
+    Four types carry the same split — <code>user</code>, <code>feedback</code>, <code>project</code>,
+    <code>reference</code> — and <code>feedback</code> and <code>project</code> are asked for a
+    <b>Why:</b> and a <b>How to apply:</b> line, because a preference with no reason behind it cannot be applied to
+    a case it does not literally name.
+  </p>
+
+  <h3>There is no update</h3>
+  <p>
+    <code>write</code> replaces a whole file. There is no append, no patch, no merge. "Updating a fact" is therefore
+    <code>read</code> then <code>write</code>, and skipping the read silently truncates whatever the model did not
+    remember. That is the reason the read action exists at all, and the reason the tool description says to use it.
+  </p>
+
+  <table class="kv">
+    <thead><tr><th>action</th><th>what should trigger it</th><th>what actually does</th></tr></thead>
+    <tbody>
+      <tr><td class="k">load</td><td class="d">every session</td><td class="x">pi does, at <code>session_start</code>. Automatic.</td></tr>
+      <tr><td class="k">read</td><td class="d">before a rewrite; a dropped fact</td><td class="x">The tool description says so. Nothing checks.</td></tr>
+      <tr><td class="k">write</td><td class="d">a durable fact the repo does not record</td><td class="x">Nothing. The model's own notice, or the user asking.</td></tr>
+      <tr><td class="k">delete</td><td class="d">a fact that turned out wrong or stale</td><td class="x">Nothing, and no criterion is written down either.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout warn">
+    <span class="lbl">The gap, named by the repo itself</span>
+    <p>
+      <code>ask-user</code> sits in the same <code>agent/extensions/</code> directory and states the problem in its
+      own header: <em>"Offering the tool is not enough to get it used: the description, the snippet and the
+      guidelines all sit in the cached prefix, read long before there is a request to apply them to."</em>
+    </p>
+    <p>
+      Its answer is <code>nudge.ts</code> — an opening nudge on the turn that opens new work, and a second that
+      watches <code>tool_call</code> for real cost being spent and speaks up after N distinct files have been
+      mutated with no <code>ask_user</code> call in between. <b>memory has the identical exposure and no equivalent.</b>
+      Its <code>index.ts</code> registers <code>session_start</code>, <code>before_agent_start</code>, the tool and
+      <code>/memory</code>, and nothing else: no nudge, no reminder, no keyword, no end-of-session pass.
+    </p>
+  </div>
+
+  <div class="callout note">
+    <span class="lbl">MEMORY.md is a convention, not a mechanism</span>
+    <p>
+      The tool description asks for a one-line pointer in the index for every fact file. Nothing enforces it —
+      <code>readMemory</code> loads every <code>*.md</code> as a fact whether the index mentions it or not, so an
+      unindexed fact is still injected. The index only starts to matter once facts are being dropped for budget,
+      which is precisely the moment the model can no longer see the fact it needs. A correct write is two tool calls,
+      and the second one is the one that gets forgotten.
+    </p>
+  </div>
+</section>
+
 <section id="diet-why">
-  <p class="eyebrow">07 · context-diet</p>
+  <p class="eyebrow">08 · context-diet</p>
   <h2>The gap it fills</h2>
   <p class="lede">
     One measured session, <code>019fcad1</code>, is the entire argument. One prompt, one turn, and the compaction
@@ -695,7 +836,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="diet-round">
-  <p class="eyebrow">08 · context-diet</p>
+  <p class="eyebrow">09 · context-diet</p>
   <h2>A round</h2>
   <p class="lede">
     A round is rare on purpose. It fires at a high-water mark, trims well past it, and the gap between the two is
@@ -768,7 +909,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="diet-pick">
-  <p class="eyebrow">09 · context-diet</p>
+  <p class="eyebrow">10 · context-diet</p>
   <h2>What gets dropped</h2>
   <p class="lede">
     Candidates are collected oldest-first, and a ladder of protections decides what is off limits. Two of the
@@ -863,7 +1004,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="diet-stick">
-  <p class="eyebrow">10 · context-diet</p>
+  <p class="eyebrow">11 · context-diet</p>
   <h2>Stickiness, and the two invariants</h2>
   <p class="lede">
     Everything above describes one round. What makes the extension safe is what happens on the hundreds of calls
@@ -911,7 +1052,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="diet-extra">
-  <p class="eyebrow">11 · context-diet</p>
+  <p class="eyebrow">12 · context-diet</p>
   <h2>Reasoning, escalation, resets</h2>
 
   <h3>dropOldReasoning — experimental, and on in this config</h3>
@@ -966,7 +1107,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="meet">
-  <p class="eyebrow">12 · Together</p>
+  <p class="eyebrow">13 · Together</p>
   <h2>Where they meet</h2>
   <p class="lede">
     They never edit the same bytes, but they are coupled twice: through the cache, and through the threshold.
@@ -1024,7 +1165,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="edges">
-  <p class="eyebrow">13 · Together</p>
+  <p class="eyebrow">14 · Together</p>
   <h2>Sharp edges</h2>
   <p class="lede">
     Four things that are true of the code as it stands, and are not obvious from reading either extension's
@@ -1070,7 +1211,7 @@ memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks 
 </section>
 
 <section id="settings">
-  <p class="eyebrow">14 · Reference</p>
+  <p class="eyebrow">15 · Reference</p>
   <h2>Settings</h2>
   <p class="lede">Both blocks live in <code>agent/settings.json</code>, and both are re-read on every session start.</p>
 
