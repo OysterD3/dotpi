@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi config — /goal: a stop hook without a stop hook</title>
+<script>
+document.documentElement.className="js";
+try{ if(localStorage.getItem("pi-ext-theme")==="dark") document.documentElement.setAttribute("data-theme","dark"); }catch(e){}
+</script>
+<style>
+:root{
+  --bg:#fdfcfa; --bg-1:#f8f6f1; --bg-2:#f3f0e9; --bg-3:#ece8df; --bg-4:#e3ded2;
+  --line:#e6e2da; --line-2:#d3ccbf; --line-3:#b2aa99;
+  --fg:#1c1a17; --fg-2:#5a554b; --fg-3:#635d52; --fg-4:#70695c;
+  --teal:#10695f; --amber:#8f6109; --blue:#1f4c96; --violet:#7a3ea8; --red:#b3261e; --green:#3a7429;
+  --teal-rgb:16,105,95; --amber-rgb:143,97,9; --blue-rgb:31,76,150;
+  --violet-rgb:122,62,168; --red-rgb:179,38,30; --green-rgb:58,116,41; --fg2-rgb:90,85,75;
+  --fg-strong:#0f0e0c; --code-inline-fg:#0f6257; --link-hover:#16386f;
+  --hero-grad-2:#6f6759; --on-accent:#ffffff;
+  --nav-bg:rgba(253,252,250,.82); --overlay-1:rgba(28,26,23,.028); --overlay-2:rgba(28,26,23,.045); --row-hover:rgba(28,26,23,.032);
+  --shadow-lg:0 18px 44px -26px rgba(70,58,40,.34); --shadow-md:0 10px 26px -18px rgba(70,58,40,.30); --glow:.055;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --r:14px;
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#0a0c11; --bg-1:#0f131b; --bg-2:#141924; --bg-3:#1a2130; --bg-4:#212a3c;
+  --line:#232b3a; --line-2:#2e3849; --line-3:#3a4559;
+  --fg:#e8ecf5; --fg-2:#9ba5ba; --fg-3:#8891a4; --fg-4:#76839d;
+  --teal:#5eead4; --amber:#fbbf24; --blue:#7aa2f7; --violet:#c4b5fd; --red:#f87171; --green:#86efac;
+  --teal-rgb:94,234,212; --amber-rgb:251,191,36; --blue-rgb:122,162,247;
+  --violet-rgb:196,181,253; --red-rgb:248,113,113; --green-rgb:134,239,172; --fg2-rgb:155,165,186;
+  --fg-strong:#ffffff; --code-inline-fg:#7fe7d5; --link-hover:#a9c4ff;
+  --hero-grad-2:#b6c2d8; --on-accent:#08131a;
+  --nav-bg:rgba(10,12,17,.72); --overlay-1:rgba(0,0,0,.16); --overlay-2:rgba(0,0,0,.24); --row-hover:rgba(255,255,255,.028);
+  --shadow-lg:0 20px 50px -22px rgba(0,0,0,.85); --shadow-md:0 14px 36px -20px rgba(0,0,0,.9); --glow:.09;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:30px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.82;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(900px 520px at 12% -6%, rgba(var(--teal-rgb),var(--glow)), transparent 62%),
+    radial-gradient(760px 460px at 92% 4%, rgba(var(--blue-rgb),var(--glow)), transparent 60%),
+    radial-gradient(700px 700px at 50% 108%, rgba(var(--violet-rgb),var(--glow)), transparent 66%)}
+h1,h2,h3,h4{color:var(--fg-strong);font-weight:650;margin:0}
+a{color:var(--blue);text-decoration:none;border-bottom:1px solid rgba(var(--blue-rgb),.28);transition:border-color .18s,color .18s}
+a:hover{color:var(--link-hover);border-bottom-color:var(--link-hover)}
+p{margin:0 0 16px;max-width:80ch}
+ul,ol{margin:0 0 16px;padding-left:24px}
+li{margin-bottom:9px;max-width:78ch}
+li::marker{color:var(--fg-4)}
+code{font-family:var(--mono);font-size:.855em;background:rgba(var(--teal-rgb),.07);color:var(--code-inline-fg);
+  padding:.14em .42em;border-radius:5px;border:1px solid rgba(var(--teal-rgb),.16);word-break:break-word}
+
+#bar{position:fixed;top:0;left:0;height:2px;z-index:99;background:linear-gradient(90deg,var(--teal),var(--blue),var(--violet));width:0;transition:width .1s linear}
+.wrap{display:grid;grid-template-columns:284px minmax(0,1fr);max-width:1560px;margin:0 auto;position:relative;z-index:1}
+nav.toc{position:sticky;top:0;height:100vh;overflow-y:auto;overscroll-behavior:contain;padding:34px 20px 80px;border-right:1px solid var(--line);background:var(--nav-bg);backdrop-filter:blur(14px)}
+nav.toc::-webkit-scrollbar{width:7px}
+nav.toc::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:4px}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:8px}
+.brand-mark{width:34px;height:34px;flex:none;border-radius:9px;display:grid;place-items:center;font-family:var(--mono);font-size:15px;color:var(--on-accent);background:linear-gradient(150deg,var(--teal),var(--blue));box-shadow:var(--shadow-md)}
+.brand-t{font-size:14.6px;font-weight:650;color:var(--fg-strong);line-height:1.35}
+.brand-s{font-family:var(--mono);font-size:10.8px;color:var(--fg-4);line-height:1.7;margin-bottom:18px}
+.tgl{display:flex;gap:6px;margin:0 0 22px;padding:4px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px}
+.tgl button{flex:1;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:var(--fg-3);
+  font-family:var(--sans);font-size:12px;cursor:pointer;transition:background .16s,color .16s}
+.tgl button:hover{color:var(--fg)}
+.tgl button[aria-pressed="true"]{background:var(--bg-4);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+nav.toc ul{list-style:none;margin:0;padding:0}
+nav.toc a{display:flex;gap:9px;padding:6px 10px;border-radius:8px;color:var(--fg-2);font-size:13.2px;border:0;line-height:1.55;transition:background .16s,color .16s}
+nav.toc a .num{font-family:var(--mono);font-size:10.5px;color:var(--fg-4);padding-top:3px;flex:none;width:15px}
+nav.toc a:hover{background:var(--bg-2);color:var(--fg)}
+nav.toc a.on{background:linear-gradient(90deg,rgba(var(--teal-rgb),.14),rgba(var(--teal-rgb),.02));color:var(--teal);box-shadow:inset 2px 0 0 var(--teal)}
+nav.toc a.on .num{color:var(--teal)}
+nav.toc .grp{padding:18px 10px 5px;font-family:var(--mono);font-size:10.2px;letter-spacing:1.5px;text-transform:uppercase;color:var(--fg-4)}
+main{padding:0 58px 160px;min-width:0}
+
+.hero{padding:92px 0 44px}
+.hero h1{font-size:clamp(32px,3.7vw,50px);line-height:1.16;margin:0 0 22px;letter-spacing:-1.3px;font-weight:700;
+  background:linear-gradient(170deg,var(--fg-strong) 12%,var(--hero-grad-2) 92%);-webkit-background-clip:text;background-clip:text;color:transparent;max-width:20ch}
+.hero .sub{font-size:18px;color:var(--fg-2);max-width:78ch;line-height:1.82;margin-bottom:26px}
+.hero .sub b{color:var(--fg);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:9px}
+.chip{font-size:11.8px;font-family:var(--mono);background:var(--bg-2);border:1px solid var(--line-2);padding:6px 13px;border-radius:24px;color:var(--fg-2)}
+.chip b{color:var(--teal);font-weight:600}
+section{margin:98px 0 0;scroll-margin-top:24px}
+section:first-of-type{margin-top:0}
+h2{font-size:clamp(25px,2.4vw,33px);margin:0 0 12px;letter-spacing:-.7px;font-weight:680}
+h3{font-size:21px;margin:48px 0 14px;font-weight:650;letter-spacing:-.3px;display:flex;align-items:center;gap:12px}
+h3::before{content:"";width:3px;height:19px;background:linear-gradient(180deg,var(--teal),transparent);border-radius:2px;flex:none}
+.card h3,.stat h3{margin:0 0 10px;font-size:16.5px}
+.card h3::before,.stat h3::before{display:none}
+.eyebrow{font-size:11.5px;text-transform:uppercase;letter-spacing:1.7px;color:var(--teal);margin:0 0 14px;font-weight:680;font-family:var(--mono)}
+.lede{font-size:17px;color:var(--fg-2);max-width:80ch;line-height:1.85;margin:0 0 20px}
+
+.card{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;box-shadow:var(--shadow-md)}
+.grid{display:grid;gap:15px;margin:26px 0}
+.g2{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.g3{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.callout{margin:22px 0;padding:16px 19px;border-radius:10px;background:linear-gradient(120deg,rgba(var(--teal-rgb),.09),rgba(var(--teal-rgb),.02));border:1px solid rgba(var(--teal-rgb),.24);border-left:3px solid var(--teal);font-size:14.6px;line-height:1.8}
+.callout .lbl{font-family:var(--mono);font-size:9.8px;letter-spacing:1.5px;text-transform:uppercase;color:var(--teal);font-weight:700;display:block;margin-bottom:7px}
+.callout p{margin:0;max-width:76ch}
+.callout p+p{margin-top:11px}
+.callout.warn{background:linear-gradient(150deg,rgba(var(--red-rgb),.06),transparent);border-color:rgba(var(--red-rgb),.24);border-left-color:var(--red)}
+.callout.warn .lbl{color:var(--red)}
+.callout.note{background:linear-gradient(150deg,rgba(var(--amber-rgb),.07),transparent);border-color:rgba(var(--amber-rgb),.24);border-left-color:var(--amber)}
+.callout.note .lbl{color:var(--amber)}
+.stat{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r);padding:20px;box-shadow:var(--shadow-md)}
+.stat .n{font-family:var(--mono);font-size:28px;line-height:1.1;color:var(--fg-strong);letter-spacing:-1px;font-weight:650;display:block}
+.stat .n.g{color:var(--green)} .stat .n.r{color:var(--red)}
+.stat .k{font-size:13.2px;color:var(--fg-3);margin-top:10px;display:block;line-height:1.65}
+ul.tight{list-style:none;padding:0;margin:0}
+ul.tight li{margin-bottom:13px;padding-left:20px;position:relative;font-size:14.6px;color:var(--fg-2);line-height:1.8}
+ul.tight li:last-child{margin-bottom:0}
+ul.tight li::before{content:"";position:absolute;left:2px;top:12px;width:5px;height:5px;border-radius:50%;background:var(--teal)}
+ol.steps{counter-reset:s;list-style:none;padding:0;margin:22px 0}
+ol.steps li{counter-increment:s;position:relative;padding-left:44px;margin-bottom:18px;max-width:80ch;font-size:14.8px;line-height:1.82;color:var(--fg-2)}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:2px;width:27px;height:27px;border-radius:8px;
+  display:grid;place-items:center;font:650 12px var(--mono);color:var(--on-accent);background:linear-gradient(150deg,var(--teal),var(--blue))}
+ol.steps li b{color:var(--fg-strong)}
+
+pre.code{margin:18px 0;padding:18px 20px;border:1px solid var(--line);border-radius:12px;background:var(--bg-2);
+  box-shadow:var(--shadow-md);overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.75;color:var(--fg);tab-size:2}
+pre.code .c{color:var(--fg-4)}
+pre.code .k{color:var(--blue)}
+pre.code .s{color:var(--green)}
+pre.code b{color:var(--teal);font-weight:600}
+.kv{width:100%;border-collapse:collapse;font-size:13.8px;line-height:1.7;margin:14px 0 0}
+.kv th,.kv td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.kv thead th{font-family:var(--mono);font-size:10.2px;letter-spacing:1.5px;text-transform:uppercase;color:var(--fg-4);font-weight:700;border-bottom:1px solid var(--line-2)}
+.kv tbody tr:hover td{background:var(--row-hover)}
+.kv td.k{font-family:var(--mono);font-size:12.4px;color:var(--teal);white-space:nowrap;width:1%}
+.kv td.d{font-family:var(--mono);font-size:12.2px;color:var(--fg-3);white-space:nowrap;width:1%}
+.kv td.x{color:var(--fg-2)}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr} nav.toc{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+  main{padding:0 22px 100px}
+  .kv,.kv tbody,.kv tr,.kv td,.kv th{display:block;width:auto}
+  .kv thead{display:none}
+  .kv tbody tr{border-bottom:1px solid var(--line-2);padding:8px 0}
+  .kv td{border:0;padding:3px 0}
+  .kv td.k,.kv td.d{white-space:normal;width:auto}
+}
+
+figure{margin:28px 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg-1);box-shadow:var(--shadow-lg)}
+figure .dg-top{display:flex;align-items:center;gap:10px;padding:13px 20px;border-bottom:1px solid var(--line);background:var(--overlay-2)}
+figure .dg-top .ic{font-family:var(--mono);font-size:10px;letter-spacing:1.4px;color:var(--fg-4);border:1px solid var(--line-2);padding:3px 8px;border-radius:5px;flex:none}
+figure .dg-top .tt{font-size:14.5px;color:var(--fg-strong);font-weight:600}
+figure .svgbox{padding:26px 24px;overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;min-width:660px}
+figcaption{padding:15px 22px;border-top:1px solid var(--line);font-size:13.5px;color:var(--fg-3);background:var(--overlay-1);line-height:1.75}
+svg .bx{fill:var(--bg-2);stroke:var(--line-2);stroke-width:1}
+svg .bx-a{fill:rgba(var(--teal-rgb),.10);stroke:var(--teal);stroke-width:1}
+svg .bx-g{fill:rgba(var(--green-rgb),.11);stroke:var(--green);stroke-width:1}
+svg .bx-r{fill:rgba(var(--red-rgb),.10);stroke:var(--red);stroke-width:1}
+svg .bx-y{fill:rgba(var(--amber-rgb),.11);stroke:var(--amber);stroke-width:1}
+svg .bx-v{fill:rgba(var(--violet-rgb),.10);stroke:var(--violet);stroke-width:1}
+svg .t{fill:var(--fg-strong);font:650 12px var(--sans)}
+svg .tb{fill:var(--fg-strong);font:650 12.5px var(--sans)}
+svg .ts{fill:var(--fg-2);font:400 10.5px var(--sans)}
+svg .tm{fill:var(--fg-2);font:400 10px var(--mono)}
+svg .ta{fill:var(--teal);font:600 10px var(--mono)}
+svg .tg{fill:var(--green);font:600 10.5px var(--mono)}
+svg .tr{fill:var(--red);font:600 10.5px var(--mono)}
+svg .tv{fill:var(--violet);font:600 10px var(--mono)}
+svg .tf{fill:var(--fg-3);font:400 9.5px var(--mono)}
+svg .ln{stroke:var(--line-3);stroke-width:1;fill:none}
+svg .lna{stroke:var(--teal);stroke-width:1.25;fill:none}
+svg .lnd{stroke:var(--fg-4);stroke-width:1;fill:none;stroke-dasharray:3 3}
+svg .lnr{stroke:var(--red);stroke-width:1.25;fill:none}
+svg .fa{fill:var(--teal)} svg .ff{fill:var(--fg-4)} svg .fr{fill:var(--red)}
+.iann .np{cursor:pointer}
+.iann .np:focus{outline:none}
+.iann .np:focus-visible>rect{stroke:var(--teal);stroke-width:2}
+.iann .np:hover rect.hit,.iann .np[data-on] rect.hit{fill:rgba(var(--teal-rgb),.10);stroke:var(--teal)}
+.iann rect.hit{fill:transparent;stroke:transparent;stroke-width:1}
+figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
+.ann b{display:block;font:600 10px var(--mono);letter-spacing:.04em;color:var(--teal);margin-bottom:4px}
+.ann .hint{color:var(--fg-4);font-size:12px}
+.anns{display:none}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+<nav class="toc">
+  <div class="brand">
+    <div class="brand-mark">◎</div>
+    <div class="brand-t">/goal</div>
+  </div>
+  <div class="brand-s">~/.pi · agent/extensions/goal<br>a stop hook, without a stop hook</div>
+  <div class="tgl" role="group" aria-label="Theme">
+    <button type="button" data-theme="light" aria-pressed="true">Light</button>
+    <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+  </div>
+  <ul>
+    <li><a href="#top"><span class="num">00</span><span>What it is</span></a></li>
+    <li class="grp">The mechanism</li>
+    <li><a href="#shape"><span class="num">01</span><span>The shape it wants to be</span></a></li>
+    <li><a href="#loop"><span class="num">02</span><span>The loop</span></a></li>
+    <li><a href="#judge"><span class="num">03</span><span>The judge</span></a></li>
+    <li><a href="#verdicts"><span class="num">04</span><span>Five verdicts</span></a></li>
+    <li><a href="#transcript"><span class="num">05</span><span>What the judge reads</span></a></li>
+    <li class="grp">Staying alive</li>
+    <li><a href="#survive"><span class="num">06</span><span>Surviving the session</span></a></li>
+    <li><a href="#capture"><span class="num">07</span><span>autoCapture</span></a></li>
+    <li class="grp">Living with it</li>
+    <li><a href="#cost"><span class="num">08</span><span>What it costs</span></a></li>
+    <li><a href="#edges"><span class="num">09</span><span>Sharp edges</span></a></li>
+    <li><a href="#settings"><span class="num">10</span><span>Settings reference</span></a></li>
+  </ul>
+</nav>
+
+<main>
+
+<section id="top">
+  <div class="hero">
+    <h1>Set a condition. The agent is not allowed to stop until it holds.</h1>
+    <p class="sub">
+      <code>/goal all tests pass and the linter is clean</code>. From then on, every time the agent tries to end a
+      run, <b>a separate tool-less LLM call reads the transcript and judges it against the condition</b>. Met, and
+      the goal clears itself and prints what it cost. Not met, and the reason is fed back and the agent resumes.
+    </p>
+    <p class="sub">
+      The interesting part is that pi has <b>no stop hook</b> — no event whose return value can veto the end of a
+      run. Everything below is what that constraint does to the design.
+    </p>
+    <div class="chips">
+      <span class="chip">judged on <b>agent_end</b></span>
+      <span class="chip">resumed by a <b>follow-up</b></span>
+      <span class="chip">transcript budget <b>50%</b> of the judge's window</span>
+      <span class="chip">cap <b>20 iterations</b></span>
+    </div>
+  </div>
+</section>
+
+<section id="shape">
+  <p class="eyebrow">01 · The mechanism</p>
+  <h2>The shape it wants to be</h2>
+  <p class="lede">
+    The natural design is a session-scoped <b>stop hook</b>: the agent tries to stop, a handler judges the work,
+    and either lets it stop or blocks with a reason. pi has no such hook, and neither <code>agent_end</code> nor
+    <code>agent_settled</code> reads its handler's return value. So the block is expressed the way pi's own shipped
+    example does it — and the observable behaviour is identical.
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>What a stop hook would do</h3>
+      <ul class="tight">
+        <li>Agent signals it is finished.</li>
+        <li>Hook judges, returns <code>{block: true, reason}</code>.</li>
+        <li>The runtime declines to stop and hands the reason back.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>What this does instead</h3>
+      <ul class="tight">
+        <li>Agent finishes; <code>agent_end</code> fires.</li>
+        <li>The handler judges, and on "not met" sends a follow-up message.</li>
+        <li>A delivered message resumes the agent. Same loop, pi-native.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="lbl">The one thing the substitution costs</span>
+    <p>
+      A blocked stop would resume <em>by definition</em>. A follow-up message does not — it is just text arriving.
+      So the message has to say the quiet part out loud, and <code>notMetInstruction</code> does:
+      <em>"The goal is not met yet. Continue working toward it. Do not stop to ask the user what to do next."</em>
+      Without that last sentence the agent reads a critique and asks what you would like to do about it.
+    </p>
+  </div>
+</section>
+
+<section id="loop">
+  <p class="eyebrow">02 · The mechanism</p>
+  <h2>The loop</h2>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">FLOW</span><span class="tt">From a condition to one of five endings</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 340" role="img" aria-label="The goal loop, from setting a condition to its five possible outcomes">
+        <g class="np" data-a="lp-set" tabindex="0" role="button">
+          <rect class="hit" x="0" y="6" width="250" height="34" rx="5"/>
+          <rect class="bx-a" x="3" y="8" width="244" height="30" rx="4"/>
+          <text class="ta" x="16" y="28">/goal &lt;condition&gt;</text>
+        </g>
+        <text class="tf" x="262" y="28">or</text>
+        <g class="np" data-a="lp-auto" tabindex="0" role="button">
+          <rect class="hit" x="288" y="6" width="290" height="34" rx="5"/>
+          <rect class="bx" x="291" y="8" width="284" height="30" rx="4"/>
+          <text class="tm" x="304" y="28">autoCapture, on the first prompt</text>
+        </g>
+
+        <path class="lna" d="M126 40 L 126 58"/><polygon class="fa" points="126,64 122,56 130,56"/>
+        <path class="lna" d="M430 40 L 430 50 L 126 50"/>
+
+        <g class="np" data-a="lp-active" tabindex="0" role="button">
+          <rect class="hit" x="0" y="64" width="360" height="34" rx="5"/>
+          <rect class="bx-g" x="3" y="66" width="354" height="30" rx="4"/>
+          <text class="tg" x="16" y="86">goal active · persisted as a custom entry</text>
+        </g>
+
+        <path class="lna" d="M126 98 L 126 116"/><polygon class="fa" points="126,122 122,114 130,114"/>
+        <rect class="bx" x="3" y="122" width="354" height="30" rx="4"/>
+        <text class="t" x="16" y="142">the agent works</text>
+
+        <path class="lna" d="M126 152 L 126 170"/><polygon class="fa" points="126,176 122,168 130,168"/>
+        <g class="np" data-a="lp-end" tabindex="0" role="button">
+          <rect class="hit" x="0" y="176" width="360" height="34" rx="5"/>
+          <rect class="bx-y" x="3" y="178" width="354" height="30" rx="4"/>
+          <text class="tm" x="16" y="198">the run ends → agent_end fires</text>
+        </g>
+
+        <path class="lna" d="M360 193 L 400 193"/><polygon class="fa" points="406,193 398,189 398,197"/>
+        <g class="np" data-a="lp-judge" tabindex="0" role="button">
+          <rect class="hit" x="406" y="164" width="350" height="58" rx="5"/>
+          <rect class="bx-v" x="409" y="166" width="344" height="54" rx="4"/>
+          <text class="tv" x="422" y="186">the judge · one tool-less LLM call</text>
+          <text class="tf" x="422" y="206">its own model, its own budget, bare JSON back</text>
+        </g>
+
+        <path class="lna" d="M580 222 L 580 244"/><polygon class="fa" points="580,250 576,242 584,242"/>
+        <text class="tf" x="0" y="252">five endings, and only two of them stop the loop cleanly:</text>
+
+        <g class="np" data-a="lp-met" tabindex="0" role="button">
+          <rect class="hit" x="0" y="262" width="146" height="34" rx="5"/>
+          <rect class="bx-g" x="3" y="264" width="140" height="30" rx="4"/>
+          <text class="tg" x="14" y="284">met → clears</text>
+        </g>
+        <g class="np" data-a="lp-imp" tabindex="0" role="button">
+          <rect class="hit" x="152" y="262" width="152" height="34" rx="5"/>
+          <rect class="bx-g" x="155" y="264" width="146" height="30" rx="4"/>
+          <text class="tg" x="166" y="284">impossible → clears</text>
+        </g>
+        <g class="np" data-a="lp-notmet" tabindex="0" role="button">
+          <rect class="hit" x="310" y="262" width="150" height="34" rx="5"/>
+          <rect class="bx-y" x="313" y="264" width="144" height="30" rx="4"/>
+          <text class="tm" x="324" y="284">not met → resume</text>
+        </g>
+        <g class="np" data-a="lp-capped" tabindex="0" role="button">
+          <rect class="hit" x="466" y="262" width="140" height="34" rx="5"/>
+          <rect class="bx-r" x="469" y="264" width="134" height="30" rx="4"/>
+          <text class="tr" x="480" y="284">capped → clears</text>
+        </g>
+        <g class="np" data-a="lp-err" tabindex="0" role="button">
+          <rect class="hit" x="612" y="262" width="144" height="34" rx="5"/>
+          <rect class="bx" x="615" y="264" width="138" height="30" rx="4"/>
+          <text class="tm" x="626" y="284">error / abort</text>
+        </g>
+
+        <path class="lnd" d="M382 296 L 382 318 L 180 318 L 180 152"/>
+        <polygon class="ff" points="180,146 176,154 184,154"/>
+        <text class="tf" x="392" y="316">a follow-up message restarts the agent — this is the whole block</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap any box.</span></figcaption>
+    <div class="anns">
+      <div id="an-lp-set"><b>/goal &lt;condition&gt;</b>Rejected over 4,000 characters rather than truncated — a clipped goal would be judged against something nobody wrote. Setting it sends a <em>visible</em> message with <code>triggerTurn</code>, so the agent acknowledges and starts immediately instead of waiting for you to say go.</div>
+      <div id="an-lp-auto"><b>autoCapture</b>Off by default. On the first work-opening prompt of a session with no goal active, one extraction call asks whether your own message already states measurable criteria. See §07.</div>
+      <div id="an-lp-active"><b>Persisted, invisibly</b>The goal is written to the session as a custom entry, which does <em>not</em> enter LLM context. That is deliberate: the model learns the condition from the instruction message, not from bookkeeping. It is also what forces the reassertion machinery in §06.</div>
+      <div id="an-lp-end"><b>agent_end</b>The substitute for a stop hook. It fires once per run, and it fires again for each resumed run, so the loop is: judge, resume, judge, resume. A concurrency latch (<code>beginEvaluation</code>) stops a second <code>agent_end</code> from starting a second judge call while the first is still in flight.</div>
+      <div id="an-lp-judge"><b>One call, every stop attempt</b>A separate model if <code>goal.model</code> names one, otherwise the session's own. Tool-less, <code>reasoning: "minimal"</code>, 30-second timeout, transcript capped at half the judge's context window.</div>
+      <div id="an-lp-met"><b>met</b>The goal clears itself and appends a display-only outcome entry: <em>Goal achieved (1m · 3 turns · 12.4k tokens)</em>. The instruction message explicitly tells the model not to suggest running <code>/goal clear</code> afterwards — it already cleared.</div>
+      <div id="an-lp-imp"><b>impossible</b>The judge may rule a condition unachievable, which ends the loop instead of retrying forever. The prompt makes this deliberately hard to reach: <em>"the assistant claiming the goal is impossible is evidence, not proof"</em> — the judge must independently confirm rather than defer to the agent's self-assessment.</div>
+      <div id="an-lp-notmet"><b>not met</b>The reason is recorded, the iteration count goes up, and the reason is fed back as a follow-up that resumes the agent. This is the only branch that continues.</div>
+      <div id="an-lp-capped"><b>capped</b>After <code>maxIterations</code> not-met verdicts (20 by default) the goal gives up and clears. A runaway loop spends real money unattended, so the cap is finite by default; set it to 0 to run until interrupted.</div>
+      <div id="an-lp-err"><b>error and abort — neither blocks</b>An evaluator that cannot be reached or parsed lets the agent stop, warns, and leaves the goal standing. An interrupt says nothing at all. Neither counts as met, and neither counts as an iteration.</div>
+    </div>
+  </figure>
+</section>
+
+<section id="judge">
+  <p class="eyebrow">03 · The mechanism</p>
+  <h2>The judge</h2>
+  <p class="lede">
+    The right way to constrain a judge is a provider-level JSON schema. pi's stream options have no equivalent, so
+    the schema is enforced by hand: the prompt demands bare JSON, the response is scanned for the first balanced
+    brace run, and the result is validated. <b>Anything that fails validation is an error, never a silent "met".</b>
+  </p>
+
+  <pre class="code"><span class="c">// the three shapes the evaluator may return</span>
+{<span class="k">"ok"</span>: <span class="s">true</span>,  <span class="k">"reason"</span>: <span class="s">"&lt;quote evidence from the transcript that satisfies the condition&gt;"</span>}
+{<span class="k">"ok"</span>: <span class="s">false</span>, <span class="k">"reason"</span>: <span class="s">"&lt;quote what is missing or what blocks the condition&gt;"</span>}
+{<span class="k">"ok"</span>: <span class="s">false</span>, <span class="k">"impossible"</span>: <span class="s">true</span>, <span class="k">"reason"</span>: <span class="s">"&lt;why it can never be satisfied&gt;"</span>}</pre>
+  <p>
+    Models wrap JSON in prose or fences even when told not to, so <code>extractJson</code> scans for the first
+    balanced brace run rather than trusting the whole string — tracking string literals, so a brace inside a quoted
+    reason cannot end the scan early.
+  </p>
+
+  <h3>The read order is load-bearing</h3>
+  <p>
+    A provider rejection is <b>not</b> an exception here. <code>completeSimple</code> resolves with an assistant
+    message carrying <code>stopReason: "error"</code> and the provider's text in <code>errorMessage</code>; only
+    transport-level failures throw. So every outcome is read off the resolved value — and the order it is read in
+    changes what the feature does.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">ORDER</span><span class="tt">How one response is turned into a verdict</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 218" role="img" aria-label="The order in which a judge response is interpreted">
+        <g class="np" data-a="rd-abort" tabindex="0" role="button">
+          <rect class="hit" x="0" y="8" width="470" height="34" rx="5"/>
+          <rect class="bx-r" x="3" y="10" width="464" height="30" rx="4"/>
+          <text class="tr" x="16" y="30">1 · aborted?  →  abandon, whatever it emitted</text>
+        </g>
+        <text class="tf" x="482" y="30">Esc must never read as success</text>
+
+        <g class="np" data-a="rd-parse" tabindex="0" role="button">
+          <rect class="hit" x="0" y="48" width="470" height="34" rx="5"/>
+          <rect class="bx-g" x="3" y="50" width="464" height="30" rx="4"/>
+          <text class="tg" x="16" y="70">2 · parses as JSON?  →  that is the verdict</text>
+        </g>
+        <text class="tf" x="482" y="70">a readable answer beats a billing heuristic</text>
+
+        <g class="np" data-a="rd-over" tabindex="0" role="button">
+          <rect class="hit" x="0" y="88" width="470" height="34" rx="5"/>
+          <rect class="bx-y" x="3" y="90" width="464" height="30" rx="4"/>
+          <text class="tm" x="16" y="110">3 · looks like context overflow?  →  retry smaller, once</text>
+        </g>
+        <text class="tf" x="482" y="110">half the budget, and only if that is smaller</text>
+
+        <g class="np" data-a="rd-error" tabindex="0" role="button">
+          <rect class="hit" x="0" y="128" width="470" height="34" rx="5"/>
+          <rect class="bx" x="3" y="130" width="464" height="30" rx="4"/>
+          <text class="tm" x="16" y="150">4 · anything else  →  error, non-blocking</text>
+        </g>
+        <text class="tf" x="482" y="150">the agent stops; the goal stays unresolved</text>
+
+        <line class="lnd" x1="0" y1="178" x2="756" y2="178"/>
+        <text class="tb" x="0" y="200">every branch above is billed — the spend is announced even for the aborted and errored ones</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a step.</span></figcaption>
+    <div class="anns">
+      <div id="an-rd-abort"><b>1 · abort wins over everything</b>A cancelled call can carry a <em>complete</em> JSON verdict followed by truncated prose. Parsing that would let Escape silently register as "Goal achieved" — which is the worst failure this feature has, because it is indistinguishable from success.</div>
+      <div id="an-rd-parse"><b>2 · a parsed verdict beats overflow</b>The overflow check fires partly on <code>usage.input &gt; contextWindow</code>, which a perfectly successful call can trip when the registry under-declares the window or the chars-per-token estimate under-counts (CJK, dense code). Throwing away a verdict you can read, in favour of a heuristic about how it was billed, would be strictly worse.</div>
+      <div id="an-rd-over"><b>3 · one retry, and only if it helps</b>The transcript fitter always keeps the newest section, so when a single message blows the budget — a write tool call carrying a whole file — the smaller budget yields byte-identical text. Retrying that buys a second rejection and another 30 seconds of your time, so it is checked first and skipped.</div>
+      <div id="an-rd-error"><b>4 · non-blocking by design</b>An evaluator that cannot be reached or understood must not trap the agent in a loop, and must not silently pass the goal either. So it warns, lets the agent stop, and leaves the goal active for the next attempt.</div>
+    </div>
+  </figure>
+</section>
+
+<section id="verdicts">
+  <p class="eyebrow">04 · The mechanism</p>
+  <h2>Five verdicts</h2>
+  <table class="kv">
+    <thead><tr><th>verdict</th><th>the goal</th><th>what happens</th></tr></thead>
+    <tbody>
+      <tr><td class="k">met</td><td class="d">clears</td><td class="x">An outcome entry is appended with the duration, the turn count and the tokens spent. Display-only — it never enters context.</td></tr>
+      <tr><td class="k">impossible</td><td class="d">clears</td><td class="x">The loop ends rather than retrying forever. Deliberately hard to reach: the judge is told to confirm independently and, when in doubt, to return a plain not-met.</td></tr>
+      <tr><td class="k">not_met</td><td class="d">stays</td><td class="x">Iteration count up, reason recorded, follow-up sent, agent resumes.</td></tr>
+      <tr><td class="k">error</td><td class="d">stays</td><td class="x">Warns, does not block, does not count as an iteration.</td></tr>
+      <tr><td class="k">aborted</td><td class="d">stays</td><td class="x">Silent. An interrupt is not a failed check, and the next stop attempt evaluates again.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="lbl">Two races, both closed</span>
+    <p>
+      The judge call takes tens of seconds and you can type through it. If you cleared the goal or set a different
+      one meanwhile, <b>the verdict answers a question nobody is asking</b> — so before acting on it the handler
+      re-checks that the goal object is still the same one. Without that, <code>/goal clear</code> could fail to
+      stop the loop, or the old goal's reason could be fed back under the new goal's name.
+    </p>
+    <p>
+      And <code>agent_end</code> can fire again while the first evaluation is in flight, so a latch makes the
+      second one a no-op rather than a second call and a duplicate follow-up.
+    </p>
+  </div>
+</section>
+
+<section id="transcript">
+  <p class="eyebrow">05 · The mechanism</p>
+  <h2>What the judge reads</h2>
+  <p class="lede">
+    The evaluator is tool-less, so the conversation has to arrive as flat text. <b>Tool calls are included</b>, and
+    that is the point: "did you run the tests" is answered by a tool call, not by prose.
+  </p>
+  <ul class="tight">
+    <li><b>Budget:</b> half the evaluator model's context window, oldest sections dropped first — evidence that a
+      goal was met is recent.</li>
+    <li><b>When anything was dropped</b>, a notice says so and tells the judge what to do about it: if the required
+      evidence may be in the omitted prefix, return <code>insufficient evidence in transcript</code> rather than
+      guessing.</li>
+    <li><b>An empty transcript is a not-met</b>, with that same reason — never an error, and never a pass.</li>
+  </ul>
+  <div class="callout warn">
+    <span class="lbl">The limit worth understanding before you rely on it</span>
+    <p>
+      The judge grades <b>the conversation, not the world</b>. It has no tools, no repo and no shell — its only
+      evidence is what the transcript contains. A condition like "all tests pass" is satisfied by transcript
+      evidence that tests were run and passed; an agent that merely <em>claims</em> they pass produces the same
+      words. The prompt pushes back hard — quote evidence, and return insufficient-evidence when there is none —
+      but the failure mode is inherent to judging a transcript, and it is why conditions that name an artefact
+      ("the test command exits 0 and its output is in the transcript") hold up better than conditions that name a
+      feeling ("the code is clean").
+    </p>
+  </div>
+</section>
+
+<section id="survive">
+  <p class="eyebrow">06 · Staying alive</p>
+  <h2>Surviving the session</h2>
+  <p class="lede">
+    A goal outlives the process, so it is written to the session as a custom entry — and custom entries do not enter
+    LLM context. That is exactly what you want for bookkeeping, and exactly what creates the next problem: after a
+    <code>/resume</code>, the goal is active and <b>the model has never heard of it</b>.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">THREE PATHS</span><span class="tt">How the model learns the condition</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 216" role="img" aria-label="The three messages that tell the model about the goal">
+        <g class="np" data-a="sv-set" tabindex="0" role="button">
+          <rect class="hit" x="0" y="8" width="756" height="44" rx="5"/>
+          <rect class="bx-a" x="3" y="10" width="750" height="40" rx="4"/>
+          <text class="ta" x="16" y="28">goalSetInstruction — visible, triggers a turn</text>
+          <text class="tf" x="16" y="44">on /goal, and on an autoCapture hit</text>
+        </g>
+        <g class="np" data-a="sv-notmet" tabindex="0" role="button">
+          <rect class="hit" x="0" y="58" width="756" height="44" rx="5"/>
+          <rect class="bx-y" x="3" y="60" width="750" height="40" rx="4"/>
+          <text class="tm" x="16" y="78">notMetInstruction — visible, delivered as a follow-up</text>
+          <text class="tf" x="16" y="94">on every not-met verdict; carries the judge's reason in brackets</text>
+        </g>
+        <g class="np" data-a="sv-reassert" tabindex="0" role="button">
+          <rect class="hit" x="0" y="108" width="756" height="44" rx="5"/>
+          <rect class="bx-v" x="3" y="110" width="750" height="40" rx="4"/>
+          <text class="tv" x="16" y="128">reassertInstruction — HIDDEN, wrapped as a system-reminder</text>
+          <text class="tf" x="16" y="144">armed by a compaction or a resume, spent once on the next turn</text>
+        </g>
+        <line class="lnd" x1="0" y1="170" x2="756" y2="170"/>
+        <text class="tf" x="0" y="192">the custom entry that persists the goal is read by neither the model nor the judge —</text>
+        <text class="tf" x="0" y="208">it exists so the goal survives a restart, and that is all</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a path.</span></figcaption>
+    <div class="anns">
+      <div id="an-sv-set"><b>The opening instruction</b>Names the condition, tells the agent to acknowledge briefly and start work immediately rather than asking what to do, and says the check auto-clears on success — so the agent does not finish by telling you to run <code>/goal clear</code>.</div>
+      <div id="an-sv-notmet"><b>The feedback</b>Header names the mechanism, brackets name the condition that blocked, then the judge's reason. The framing matters: the model has to be able to tell this apart from something you typed.</div>
+      <div id="an-sv-reassert"><b>The one that exists because of a gap</b>Two events can leave the model without a legible copy of the condition: a <b>compaction</b> is free to summarise the original instruction into prose with no directive weight, and a <b>resume</b> restores the goal from a custom entry the model never sees. Either arms a flag; the next <code>before_agent_start</code> spends it on one hidden reminder. A session where neither happens never pays for it.</div>
+    </div>
+  </figure>
+
+  <div class="callout">
+    <span class="lbl">Time is banked, not measured</span>
+    <p>
+      <code>setAt</code> alone would count wall-clock across a resume, so a goal set before dinner reports "16h" the
+      next morning beside a turn count and a token figure that both measure work. Elapsed time is banked at each
+      persist and the clock restarts for the new session — losing only the stretch between the last write and the
+      process exiting.
+    </p>
+    <p>
+      The token figure is dropped rather than faked in the one case it cannot be known: a compaction mid-goal leaves
+      the current context reading <em>below</em> the baseline, and printing "0 tokens" would claim the goal was free.
+    </p>
+  </div>
+</section>
+
+<section id="capture">
+  <p class="eyebrow">07 · Staying alive</p>
+  <h2>autoCapture</h2>
+  <p class="lede">
+    A benchmark traced a runaway session to this extension sitting unused: a request <em>with explicit acceptance
+    criteria</em> ran to a bad result with nothing checking it against them, because nobody had typed
+    <code>/goal</code>. <code>goal.autoCapture</code> closes that — off by default, because a stop-gate nobody asked
+    for is a tax on every reply.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">ONE SHOT</span><span class="tt">Per session, spent whether or not it finds anything</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 244" role="img" aria-label="The autoCapture path from an input event to a registered goal">
+        <g class="np" data-a="cp-gate" tabindex="0" role="button">
+          <rect class="hit" x="0" y="8" width="360" height="96" rx="5"/>
+          <rect class="bx" x="3" y="10" width="354" height="92" rx="4"/>
+          <text class="t" x="16" y="30">the input gate — pure, no model call</text>
+          <text class="tf" x="16" y="50">interactive source, not steered mid-turn</text>
+          <text class="tf" x="16" y="66">not a / command, not a ! bash line</text>
+          <text class="tf" x="16" y="82">at least 4 words</text>
+          <text class="tf" x="16" y="98">no goal already active</text>
+        </g>
+
+        <path class="lna" d="M360 56 L 400 56"/><polygon class="fa" points="406,56 398,52 398,60"/>
+
+        <g class="np" data-a="cp-extract" tabindex="0" role="button">
+          <rect class="hit" x="406" y="8" width="350" height="96" rx="5"/>
+          <rect class="bx-v" x="409" y="10" width="344" height="92" rx="4"/>
+          <text class="tv" x="422" y="30">the extraction call</text>
+          <text class="tf" x="422" y="50">one message, capped at 6,000 chars</text>
+          <text class="tf" x="422" y="66">"does this already state a stop condition?"</text>
+          <text class="tf" x="422" y="82">{"criteria": "…"} or {"criteria": null}</text>
+          <text class="tf" x="422" y="98">runs on before_agent_start, same turn</text>
+        </g>
+
+        <path class="lna" d="M580 104 L 580 126"/><polygon class="fa" points="580,132 576,124 584,124"/>
+        <g class="np" data-a="cp-yes" tabindex="0" role="button">
+          <rect class="hit" x="406" y="132" width="350" height="34" rx="5"/>
+          <rect class="bx-g" x="409" y="134" width="344" height="30" rx="4"/>
+          <text class="tg" x="422" y="154">criteria → registered exactly as /goal would</text>
+        </g>
+        <g class="np" data-a="cp-no" tabindex="0" role="button">
+          <rect class="hit" x="406" y="172" width="350" height="34" rx="5"/>
+          <rect class="bx" x="409" y="174" width="344" height="30" rx="4"/>
+          <text class="tm" x="422" y="194">null, error, or too long → nothing set</text>
+        </g>
+
+        <g class="np" data-a="cp-once" tabindex="0" role="button">
+          <rect class="hit" x="0" y="132" width="360" height="74" rx="5"/>
+          <rect class="bx-r" x="3" y="134" width="354" height="70" rx="4"/>
+          <text class="tr" x="16" y="154">the window closes on the first candidate</text>
+          <text class="tf" x="16" y="174">whatever the answer was — one attempt per</text>
+          <text class="tf" x="16" y="190">session, not one per message</text>
+        </g>
+
+        <text class="tf" x="0" y="232">a session that opens with "hi" still gets its shot on the message that opens the work</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a stage.</span></figcaption>
+    <div class="anns">
+      <div id="an-cp-gate"><b>Deliberately dumb</b>This gate does not try to classify "is this a real request" — that is the extraction call's own job, and its prompt is explicitly told to return null for quick questions, chat and vague asks. All the gate does is stop the one shot being spent on something too short to plausibly state a criterion: "hi", "thanks", a bare <code>/goal</code>.</div>
+      <div id="an-cp-extract"><b>A different question, the same machinery</b>Not a variant of the evaluator sharing its retry path — it reads one message rather than a budgeted transcript, because the whole point is to run <em>before</em> there is a transcript worth reading. Model selection, auth and the abort/parse/overflow read order are shared on purpose: same judge concept, smaller question.</div>
+      <div id="an-cp-yes"><b>Registered, and announced</b>Set exactly the way a typed <code>/goal</code> would, and the same visible instruction message follows — so the agent knows it is now being held to something, and you can see what.</div>
+      <div id="an-cp-no"><b>Err toward null</b>The load-bearing instruction in the extractor's prompt. A false negative costs nothing pi did not already cost before this existed: the agent works unchecked, as it always has. A false positive installs a stop-gate on a chat message, and every reply after it pays a judge call before the agent may stop — a tax nobody asked for, on a condition nobody stated. Criteria longer than the 4,000-character limit are treated as unusable rather than truncated, for the same reason a typed goal is.</div>
+      <div id="an-cp-once"><b>One shot, spent on sight</b>The latch closes the moment a candidate prompt is seen, whether or not it becomes a goal — including when a goal is already active, because that was the session's one work-opening prompt. Without it, a session that opens with small talk would get one attempt per message instead of one attempt, period.</div>
+    </div>
+  </figure>
+</section>
+
+<section id="cost">
+  <p class="eyebrow">08 · Living with it</p>
+  <h2>What it costs</h2>
+  <p class="lede">
+    Every stop attempt while a goal is active costs <b>one extra LLM call carrying up to half the context window</b>.
+    That is inherent to the design — there is no way to judge a transcript without reading it.
+  </p>
+  <div class="grid g2">
+    <div class="card">
+      <h3><code>goal.model</code> is how you make it cheap</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        Judging is a single yes/no read that runs on every stop attempt, so it is worth doing on a small fast model
+        rather than the session's frontier one. pi has no small-model concept to inherit, so this names one
+        explicitly. Unset, the session model judges its own work — which is both expensive and the least
+        independent option available.
+      </p>
+    </div>
+    <div class="card">
+      <h3><code>maxIterations</code> is how you bound it</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        20 by default. A runaway loop spends real money unattended, so the cap is finite unless you say otherwise;
+        <code>0</code> lets a goal run until you interrupt it. Note it counts over the goal's <em>whole life</em>,
+        not as a consecutive run — nothing resets it.
+      </p>
+    </div>
+  </div>
+  <p>
+    The spend is announced on the same <code>usage:spend</code> channel every billing extension uses, so judge calls
+    show up in <code>/usage</code> instead of being money nothing can see. Every branch is announced, including the
+    aborted and errored ones — they were billed too.
+  </p>
+  <div class="callout note">
+    <span class="lbl">A typo is caught at load, not at the first stop</span>
+    <p>
+      If <code>goal.model</code> names nothing resolvable, the warning fires when the session starts and when the
+      goal is set — not on the first stop attempt. Left to evaluation time, a typo would turn every stop into a
+      failed check: the goal would never block, never cap and never clear, and the only signal would arrive once
+      per stop, long after the file was edited. Credentials still cannot be checked without an async call, so an
+      auth failure remains an evaluation-time error.
+    </p>
+  </div>
+</section>
+
+<section id="edges">
+  <p class="eyebrow">09 · Living with it</p>
+  <h2>Sharp edges</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3>A broken evaluator makes a goal that never ends</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        An <code>error</code> verdict does not block, does not clear, and does not count as an iteration — so it
+        cannot reach the cap either. A goal whose evaluator fails every time therefore stays active indefinitely,
+        across resumes, costing one failed call per stop attempt and warning each time. That is the correct
+        behaviour for a transient failure and an awkward one for a permanent one; the warning is the only signal.
+      </p>
+    </div>
+    <div class="card">
+      <h3>The cap counts a lifetime, not a streak</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        Twenty not-met verdicts end the goal however they were spread out — including across resumes, since the
+        count is persisted. A long-lived goal that made real progress between misses is capped on the same
+        arithmetic as one that never moved.
+      </p>
+    </div>
+    <div class="card">
+      <h3>It grades the transcript, not the repo</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        No tools, no shell, no filesystem. Conditions that name observable artefacts in the conversation hold up;
+        conditions that name a state of the world depend on the agent having put evidence of that state into the
+        transcript.
+      </p>
+    </div>
+    <div class="card">
+      <h3>autoCapture spends its shot on a miss</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        By design, but worth knowing: if the first substantial message of a session is a question rather than a
+        request, the extraction call runs, returns null, and the session gets no further attempts even when the
+        real request arrives two messages later.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="settings">
+  <p class="eyebrow">10 · Reference</p>
+  <h2>Settings</h2>
+  <p class="lede">
+    Under a top-level <code>goal</code> key in <code>~/.pi/agent/settings.json</code>, or
+    <code>&lt;project&gt;/.pi/settings.json</code> when the project is trusted.
+  </p>
+  <pre class="code">{
+  <span class="k">"goal"</span>: {
+    <span class="k">"model"</span>: <span class="s">"&lt;provider&gt;/&lt;small-fast-model&gt;"</span>,  <span class="c">// unset = the session model judges itself</span>
+    <span class="k">"maxIterations"</span>: <span class="s">20</span>,                       <span class="c">// 0 = no cap</span>
+    <span class="k">"autoCapture"</span>: <span class="s">false</span>                       <span class="c">// opt-in</span>
+  }
+}</pre>
+  <table class="kv">
+    <thead><tr><th>key</th><th>default</th><th>notes</th></tr></thead>
+    <tbody>
+      <tr><td class="k">model</td><td class="d">unset</td><td class="x">Names an already-registered model, so a project cannot register a provider or supply a key through this block. Warned about at load if unresolvable.</td></tr>
+      <tr><td class="k">maxIterations</td><td class="d">20</td><td class="x">Whole number ≥ 0, validated as an integer on purpose: flooring 0.5 would turn the tightest cap anyone could ask for into "no cap at all".</td></tr>
+      <tr><td class="k">autoCapture</td><td class="d">false</td><td class="x">The one setting that changes behaviour and spend with no explicit command, which is why it is opt-in and why an untrusted project cannot switch it on.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Project trust</h3>
+  <p>
+    Project settings are honoured only when the project is trusted, and when they are ignored <b>every dropped key
+    is named</b> — reporting only <code>model</code> once left a project's <code>maxIterations</code> silently
+    ignored, so a cap the repo asked for looked like a cap the user chose.
+  </p>
+
+  <h3>Files</h3>
+  <table class="kv">
+    <thead><tr><th>file</th><th></th><th>role</th></tr></thead>
+    <tbody>
+      <tr><td class="k">index.ts</td><td class="d"></td><td class="x">The command, the <code>agent_end</code> hook, the capture one-shot, the renderers.</td></tr>
+      <tr><td class="k">judge.ts</td><td class="d"></td><td class="x">Both LLM calls, model selection, JSON extraction and verdict validation.</td></tr>
+      <tr><td class="k">prompts.ts</td><td class="d"></td><td class="x">Every prompt. The wording is behaviour — treat edits as behaviour changes, not copy edits.</td></tr>
+      <tr><td class="k">state.ts</td><td class="d"></td><td class="x">Active goal, iteration count, persistence, the reassertion flag, the evaluation latch.</td></tr>
+      <tr><td class="k">transcript.ts</td><td class="d">pure</td><td class="x">Session branch → budgeted plain text, tool calls included.</td></tr>
+      <tr><td class="k">capture.ts</td><td class="d">pure</td><td class="x">Whether an input event is worth the one-shot extraction attempt.</td></tr>
+      <tr><td class="k">render.ts</td><td class="d">pure</td><td class="x">The panels and the outcome line.</td></tr>
+      <tr><td class="k">settings.ts</td><td class="d"></td><td class="x">The settings block, its validation and its trust rules.</td></tr>
+      <tr><td class="k">model.ts</td><td class="d"></td><td class="x">Resolving <code>goal.model</code> the way pi resolves <code>--model</code>.</td></tr>
+      <tr><td class="k">config.ts</td><td class="d"></td><td class="x">Limits and timeouts, each with the reason it is that number.</td></tr>
+      <tr><td class="k">goal.test.ts</td><td class="d"></td><td class="x">802 lines covering the parse, the verdicts, the budget, the state machine and the capture gate.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+</div>
+
+<script>
+(function () {
+  var R = document.documentElement;
+  var K = 'pi-ext-theme';
+  function get(d) { try { return localStorage.getItem(K) || d; } catch (e) { return d; } }
+  function setTheme(v) {
+    if (v === 'dark') R.setAttribute('data-theme', 'dark'); else R.removeAttribute('data-theme');
+    try { localStorage.setItem(K, v); } catch (e) {}
+    document.querySelectorAll('button[data-theme]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.theme === v));
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('button[data-theme]');
+    if (b) setTheme(b.dataset.theme);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    if (e.key === 't' || e.key === 'T') setTheme(R.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+  setTheme(get('light'));
+
+  var bar = document.getElementById('bar');
+  function progress() {
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + '%';
+  }
+  addEventListener('scroll', progress, { passive: true });
+  addEventListener('resize', progress);
+  progress();
+
+  var links = [].slice.call(document.querySelectorAll('nav.toc a[href^="#"]'));
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      links.forEach(function (a) { a.classList.remove('on'); });
+      var a = map[en.target.id]; if (a) a.classList.add('on');
+    });
+  }, { rootMargin: '0px 0px -72% 0px', threshold: 0 });
+  document.querySelectorAll('section[id]').forEach(function (s) { io.observe(s); });
+})();
+</script>
+<script>
+(function () {
+  var figs = [].slice.call(document.querySelectorAll('.iann'));
+  figs.forEach(function (f) {
+    var box = f.querySelector('.ann');
+    if (box) f._hint = box.innerHTML;
+  });
+  function render(f, id) {
+    var box = f.querySelector('.ann'); if (!box) return;
+    var src = id ? f.querySelector('#an-' + id) : null;
+    box.innerHTML = src ? src.innerHTML : f._hint;
+  }
+  function mark(f, id) {
+    f.querySelectorAll('.np').forEach(function (g) {
+      if (id && g.getAttribute('data-a') === id) g.setAttribute('data-on', '');
+      else g.removeAttribute('data-on');
+    });
+  }
+  function pick(g, pin) {
+    var f = g.closest('.iann'); if (!f) return;
+    var id = g.getAttribute('data-a');
+    if (pin) { if (f._pin === id) id = null; f._pin = id || null; }
+    render(f, id); mark(f, id);
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target; if (!t || !t.closest) return;
+    var g = t.closest('.iann .np'); if (g) pick(g, true);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target; if (!t || !t.closest) return;
+    var g = t.closest('.iann .np');
+    if (g) { e.preventDefault(); pick(g, true); }
+  });
+  if (window.matchMedia && matchMedia('(hover:hover) and (pointer:fine)').matches) {
+    document.addEventListener('mouseover', function (e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var g = t.closest('.iann .np'); if (g) pick(g, false);
+    });
+    document.addEventListener('mouseout', function (e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var g = t.closest('.iann .np'); if (!g) return;
+      var f = g.closest('.iann'); if (!f) return;
+      render(f, f._pin); mark(f, f._pin);
+    });
+  }
+})();
+</script>
+</body>
+</html>
