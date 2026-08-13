@@ -1,0 +1,1222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi config — memory &amp; context-diet: the flow</title>
+<script>
+document.documentElement.className="js";
+try{ if(localStorage.getItem("pi-ext-theme")==="dark") document.documentElement.setAttribute("data-theme","dark"); }catch(e){}
+</script>
+<style>
+:root{
+  --bg:#fdfcfa; --bg-1:#f8f6f1; --bg-2:#f3f0e9; --bg-3:#ece8df; --bg-4:#e3ded2;
+  --line:#e6e2da; --line-2:#d3ccbf; --line-3:#b2aa99;
+  --fg:#1c1a17; --fg-2:#5a554b; --fg-3:#635d52; --fg-4:#70695c;
+  --teal:#10695f; --amber:#8f6109; --blue:#1f4c96; --violet:#7a3ea8; --red:#b3261e; --green:#3a7429;
+  --teal-rgb:16,105,95; --amber-rgb:143,97,9; --blue-rgb:31,76,150;
+  --violet-rgb:122,62,168; --red-rgb:179,38,30; --green-rgb:58,116,41; --fg2-rgb:90,85,75;
+  --fg-strong:#0f0e0c; --code-inline-fg:#0f6257; --link-hover:#16386f;
+  --hero-grad-2:#6f6759; --on-accent:#ffffff;
+  --nav-bg:rgba(253,252,250,.82); --overlay-1:rgba(28,26,23,.028); --overlay-2:rgba(28,26,23,.045); --row-hover:rgba(28,26,23,.032);
+  --shadow-lg:0 18px 44px -26px rgba(70,58,40,.34); --shadow-md:0 10px 26px -18px rgba(70,58,40,.30); --glow:.055;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --r:14px;
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#0a0c11; --bg-1:#0f131b; --bg-2:#141924; --bg-3:#1a2130; --bg-4:#212a3c;
+  --line:#232b3a; --line-2:#2e3849; --line-3:#3a4559;
+  --fg:#e8ecf5; --fg-2:#9ba5ba; --fg-3:#8891a4; --fg-4:#76839d;
+  --teal:#5eead4; --amber:#fbbf24; --blue:#7aa2f7; --violet:#c4b5fd; --red:#f87171; --green:#86efac;
+  --teal-rgb:94,234,212; --amber-rgb:251,191,36; --blue-rgb:122,162,247;
+  --violet-rgb:196,181,253; --red-rgb:248,113,113; --green-rgb:134,239,172; --fg2-rgb:155,165,186;
+  --fg-strong:#ffffff; --code-inline-fg:#7fe7d5; --link-hover:#a9c4ff;
+  --hero-grad-2:#b6c2d8; --on-accent:#08131a;
+  --nav-bg:rgba(10,12,17,.72); --overlay-1:rgba(0,0,0,.16); --overlay-2:rgba(0,0,0,.24); --row-hover:rgba(255,255,255,.028);
+  --shadow-lg:0 20px 50px -22px rgba(0,0,0,.85); --shadow-md:0 14px 36px -20px rgba(0,0,0,.9); --glow:.09;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:30px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:16px;line-height:1.82;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(900px 520px at 12% -6%, rgba(var(--teal-rgb),var(--glow)), transparent 62%),
+    radial-gradient(760px 460px at 92% 4%, rgba(var(--blue-rgb),var(--glow)), transparent 60%),
+    radial-gradient(700px 700px at 50% 108%, rgba(var(--violet-rgb),var(--glow)), transparent 66%)}
+h1,h2,h3,h4{color:var(--fg-strong);font-weight:650;margin:0}
+a{color:var(--blue);text-decoration:none;border-bottom:1px solid rgba(var(--blue-rgb),.28);transition:border-color .18s,color .18s}
+a:hover{color:var(--link-hover);border-bottom-color:var(--link-hover)}
+p{margin:0 0 16px;max-width:80ch}
+ul,ol{margin:0 0 16px;padding-left:24px}
+li{margin-bottom:9px;max-width:78ch}
+li::marker{color:var(--fg-4)}
+code{font-family:var(--mono);font-size:.855em;background:rgba(var(--teal-rgb),.07);color:var(--code-inline-fg);
+  padding:.14em .42em;border-radius:5px;border:1px solid rgba(var(--teal-rgb),.16);word-break:break-word}
+
+#bar{position:fixed;top:0;left:0;height:2px;z-index:99;background:linear-gradient(90deg,var(--teal),var(--blue),var(--violet));width:0;transition:width .1s linear}
+.wrap{display:grid;grid-template-columns:284px minmax(0,1fr);max-width:1560px;margin:0 auto;position:relative;z-index:1}
+nav.toc{position:sticky;top:0;height:100vh;overflow-y:auto;overscroll-behavior:contain;padding:34px 20px 80px;border-right:1px solid var(--line);background:var(--nav-bg);backdrop-filter:blur(14px)}
+nav.toc::-webkit-scrollbar{width:7px}
+nav.toc::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:4px}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:8px}
+.brand-mark{width:34px;height:34px;flex:none;border-radius:9px;display:grid;place-items:center;font-family:var(--mono);font-size:15px;color:var(--on-accent);background:linear-gradient(150deg,var(--teal),var(--blue));box-shadow:var(--shadow-md)}
+.brand-t{font-size:14.6px;font-weight:650;color:var(--fg-strong);line-height:1.35}
+.brand-s{font-family:var(--mono);font-size:10.8px;color:var(--fg-4);line-height:1.7;margin-bottom:18px}
+.tgl{display:flex;gap:6px;margin:0 0 22px;padding:4px;background:var(--bg-2);border:1px solid var(--line);border-radius:10px}
+.tgl button{flex:1;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:var(--fg-3);
+  font-family:var(--sans);font-size:12px;cursor:pointer;transition:background .16s,color .16s}
+.tgl button:hover{color:var(--fg)}
+.tgl button[aria-pressed="true"]{background:var(--bg-4);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+nav.toc ul{list-style:none;margin:0;padding:0}
+nav.toc a{display:flex;gap:9px;padding:6px 10px;border-radius:8px;color:var(--fg-2);font-size:13.2px;border:0;line-height:1.55;transition:background .16s,color .16s}
+nav.toc a .num{font-family:var(--mono);font-size:10.5px;color:var(--fg-4);padding-top:3px;flex:none;width:15px}
+nav.toc a:hover{background:var(--bg-2);color:var(--fg)}
+nav.toc a.on{background:linear-gradient(90deg,rgba(var(--teal-rgb),.14),rgba(var(--teal-rgb),.02));color:var(--teal);box-shadow:inset 2px 0 0 var(--teal)}
+nav.toc a.on .num{color:var(--teal)}
+nav.toc .grp{padding:18px 10px 5px;font-family:var(--mono);font-size:10.2px;letter-spacing:1.5px;text-transform:uppercase;color:var(--fg-4)}
+main{padding:0 58px 160px;min-width:0}
+
+.hero{padding:92px 0 44px}
+.hero h1{font-size:clamp(32px,3.7vw,50px);line-height:1.16;margin:0 0 22px;letter-spacing:-1.3px;font-weight:700;
+  background:linear-gradient(170deg,var(--fg-strong) 12%,var(--hero-grad-2) 92%);-webkit-background-clip:text;background-clip:text;color:transparent;max-width:20ch}
+.hero .sub{font-size:18px;color:var(--fg-2);max-width:78ch;line-height:1.82;margin-bottom:26px}
+.hero .sub b{color:var(--fg);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:9px}
+.chip{font-size:11.8px;font-family:var(--mono);background:var(--bg-2);border:1px solid var(--line-2);padding:6px 13px;border-radius:24px;color:var(--fg-2)}
+.chip b{color:var(--teal);font-weight:600}
+section{margin:98px 0 0;scroll-margin-top:24px}
+section:first-of-type{margin-top:0}
+h2{font-size:clamp(25px,2.4vw,33px);margin:0 0 12px;letter-spacing:-.7px;font-weight:680}
+h3{font-size:21px;margin:48px 0 14px;font-weight:650;letter-spacing:-.3px;display:flex;align-items:center;gap:12px}
+h3::before{content:"";width:3px;height:19px;background:linear-gradient(180deg,var(--teal),transparent);border-radius:2px;flex:none}
+.card h3,.stat h3{margin:0 0 10px;font-size:16.5px}
+.card h3::before,.stat h3::before{display:none}
+.eyebrow{font-size:11.5px;text-transform:uppercase;letter-spacing:1.7px;color:var(--teal);margin:0 0 14px;font-weight:680;font-family:var(--mono)}
+.lede{font-size:17px;color:var(--fg-2);max-width:80ch;line-height:1.85;margin:0 0 20px}
+
+.card{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;box-shadow:var(--shadow-md)}
+.grid{display:grid;gap:15px;margin:26px 0}
+.g2{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.g3{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.callout{margin:22px 0;padding:16px 19px;border-radius:10px;background:linear-gradient(120deg,rgba(var(--teal-rgb),.09),rgba(var(--teal-rgb),.02));border:1px solid rgba(var(--teal-rgb),.24);border-left:3px solid var(--teal);font-size:14.6px;line-height:1.8}
+.callout .lbl{font-family:var(--mono);font-size:9.8px;letter-spacing:1.5px;text-transform:uppercase;color:var(--teal);font-weight:700;display:block;margin-bottom:7px}
+.callout p{margin:0;max-width:76ch}
+.callout p+p{margin-top:11px}
+.callout.warn{background:linear-gradient(150deg,rgba(var(--red-rgb),.06),transparent);border-color:rgba(var(--red-rgb),.24);border-left-color:var(--red)}
+.callout.warn .lbl{color:var(--red)}
+.callout.note{background:linear-gradient(150deg,rgba(var(--amber-rgb),.07),transparent);border-color:rgba(var(--amber-rgb),.24);border-left-color:var(--amber)}
+.callout.note .lbl{color:var(--amber)}
+.stat{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r);padding:20px;box-shadow:var(--shadow-md)}
+.stat .n{font-family:var(--mono);font-size:28px;line-height:1.1;color:var(--fg-strong);letter-spacing:-1px;font-weight:650;display:block}
+.stat .n.g{color:var(--green)} .stat .n.r{color:var(--red)}
+.stat .k{font-size:13.2px;color:var(--fg-3);margin-top:10px;display:block;line-height:1.65}
+ul.tight{list-style:none;padding:0;margin:0}
+ul.tight li{margin-bottom:13px;padding-left:20px;position:relative;font-size:14.6px;color:var(--fg-2);line-height:1.8}
+ul.tight li:last-child{margin-bottom:0}
+ul.tight li::before{content:"";position:absolute;left:2px;top:12px;width:5px;height:5px;border-radius:50%;background:var(--teal)}
+ol.steps{counter-reset:s;list-style:none;padding:0;margin:22px 0}
+ol.steps li{counter-increment:s;position:relative;padding-left:44px;margin-bottom:18px;max-width:80ch;font-size:14.8px;line-height:1.82;color:var(--fg-2)}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:2px;width:27px;height:27px;border-radius:8px;
+  display:grid;place-items:center;font:650 12px var(--mono);color:var(--on-accent);background:linear-gradient(150deg,var(--teal),var(--blue))}
+ol.steps li b{color:var(--fg-strong)}
+
+pre.code{margin:18px 0;padding:18px 20px;border:1px solid var(--line);border-radius:12px;background:var(--bg-2);
+  box-shadow:var(--shadow-md);overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.75;color:var(--fg);tab-size:2}
+pre.code .c{color:var(--fg-4)}
+pre.code .k{color:var(--blue)}
+pre.code .s{color:var(--green)}
+pre.code b{color:var(--teal);font-weight:600}
+.kv{width:100%;border-collapse:collapse;font-size:13.8px;line-height:1.7;margin:14px 0 0}
+.kv th,.kv td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.kv thead th{font-family:var(--mono);font-size:10.2px;letter-spacing:1.5px;text-transform:uppercase;color:var(--fg-4);font-weight:700;border-bottom:1px solid var(--line-2)}
+.kv tbody tr:hover td{background:var(--row-hover)}
+.kv td.k{font-family:var(--mono);font-size:12.4px;color:var(--teal);white-space:nowrap;width:1%}
+.kv td.d{font-family:var(--mono);font-size:12.2px;color:var(--fg-3);white-space:nowrap;width:1%}
+.kv td.x{color:var(--fg-2)}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr} nav.toc{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+  main{padding:0 22px 100px}
+  .kv,.kv tbody,.kv tr,.kv td,.kv th{display:block;width:auto}
+  .kv thead{display:none}
+  .kv tbody tr{border-bottom:1px solid var(--line-2);padding:8px 0}
+  .kv td{border:0;padding:3px 0}
+  .kv td.k,.kv td.d{white-space:normal;width:auto}
+}
+
+figure{margin:28px 0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg-1);box-shadow:var(--shadow-lg)}
+figure .dg-top{display:flex;align-items:center;gap:10px;padding:13px 20px;border-bottom:1px solid var(--line);background:var(--overlay-2)}
+figure .dg-top .ic{font-family:var(--mono);font-size:10px;letter-spacing:1.4px;color:var(--fg-4);border:1px solid var(--line-2);padding:3px 8px;border-radius:5px;flex:none}
+figure .dg-top .tt{font-size:14.5px;color:var(--fg-strong);font-weight:600}
+figure .svgbox{padding:26px 24px;overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;min-width:660px}
+figcaption{padding:15px 22px;border-top:1px solid var(--line);font-size:13.5px;color:var(--fg-3);background:var(--overlay-1);line-height:1.75}
+svg .bx{fill:var(--bg-2);stroke:var(--line-2);stroke-width:1}
+svg .bx-a{fill:rgba(var(--teal-rgb),.10);stroke:var(--teal);stroke-width:1}
+svg .bx-g{fill:rgba(var(--green-rgb),.11);stroke:var(--green);stroke-width:1}
+svg .bx-r{fill:rgba(var(--red-rgb),.10);stroke:var(--red);stroke-width:1}
+svg .bx-y{fill:rgba(var(--amber-rgb),.11);stroke:var(--amber);stroke-width:1}
+svg .bx-v{fill:rgba(var(--violet-rgb),.10);stroke:var(--violet);stroke-width:1}
+svg .t{fill:var(--fg-strong);font:650 12px var(--sans)}
+svg .tb{fill:var(--fg-strong);font:650 12.5px var(--sans)}
+svg .ts{fill:var(--fg-2);font:400 10.5px var(--sans)}
+svg .tm{fill:var(--fg-2);font:400 10px var(--mono)}
+svg .ta{fill:var(--teal);font:600 10px var(--mono)}
+svg .tg{fill:var(--green);font:600 10.5px var(--mono)}
+svg .tr{fill:var(--red);font:600 10.5px var(--mono)}
+svg .tv{fill:var(--violet);font:600 10px var(--mono)}
+svg .tf{fill:var(--fg-3);font:400 9.5px var(--mono)}
+svg .ln{stroke:var(--line-3);stroke-width:1;fill:none}
+svg .lna{stroke:var(--teal);stroke-width:1.25;fill:none}
+svg .lnd{stroke:var(--fg-4);stroke-width:1;fill:none;stroke-dasharray:3 3}
+svg .lnr{stroke:var(--red);stroke-width:1.25;fill:none}
+svg .fa{fill:var(--teal)} svg .ff{fill:var(--fg-4)} svg .fr{fill:var(--red)}
+.iann .np{cursor:pointer}
+.iann .np:focus{outline:none}
+.iann .np:focus-visible>rect{stroke:var(--teal);stroke-width:2}
+.iann .np:hover rect.hit,.iann .np[data-on] rect.hit{fill:rgba(var(--teal-rgb),.10);stroke:var(--teal)}
+.iann rect.hit{fill:transparent;stroke:transparent;stroke-width:1}
+figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
+.ann b{display:block;font:600 10px var(--mono);letter-spacing:.04em;color:var(--teal);margin-bottom:4px}
+.ann .hint{color:var(--fg-4);font-size:12px}
+.anns{display:none}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+
+<nav class="toc">
+  <div class="brand">
+    <div class="brand-mark">⇅</div>
+    <div class="brand-t">memory &amp; context-diet</div>
+  </div>
+  <div class="brand-s">~/.pi · agent/extensions<br>what the model reads, both ends</div>
+  <div class="tgl" role="group" aria-label="Theme">
+    <button type="button" data-theme="light" aria-pressed="true">Light</button>
+    <button type="button" data-theme="dark" aria-pressed="false">Dark</button>
+  </div>
+  <ul>
+    <li><a href="#top"><span class="num">00</span><span>The two edits</span></a></li>
+    <li class="grp">Shared spine</li>
+    <li><a href="#anatomy"><span class="num">01</span><span>Anatomy of one request</span></a></li>
+    <li><a href="#hooks"><span class="num">02</span><span>Where each one hooks</span></a></li>
+    <li class="grp">memory</li>
+    <li><a href="#mem-read"><span class="num">03</span><span>The read path</span></a></li>
+    <li><a href="#mem-assemble"><span class="num">04</span><span>Assembly and the budget</span></a></li>
+    <li><a href="#mem-fork"><span class="num">05</span><span>The fork</span></a></li>
+    <li><a href="#mem-write"><span class="num">06</span><span>The write path</span></a></li>
+    <li class="grp">context-diet</li>
+    <li><a href="#diet-why"><span class="num">07</span><span>The gap it fills</span></a></li>
+    <li><a href="#diet-round"><span class="num">08</span><span>A round</span></a></li>
+    <li><a href="#diet-pick"><span class="num">09</span><span>What gets dropped</span></a></li>
+    <li><a href="#diet-stick"><span class="num">10</span><span>Stickiness, two invariants</span></a></li>
+    <li><a href="#diet-extra"><span class="num">11</span><span>Reasoning, escalation, resets</span></a></li>
+    <li class="grp">Together</li>
+    <li><a href="#meet"><span class="num">12</span><span>Where they meet</span></a></li>
+    <li><a href="#edges"><span class="num">13</span><span>Sharp edges</span></a></li>
+    <li><a href="#settings"><span class="num">14</span><span>Settings reference</span></a></li>
+  </ul>
+</nav>
+
+<main>
+
+<section id="top">
+  <div class="hero">
+    <h1>Two extensions edit what the model reads. In opposite directions.</h1>
+    <p class="sub">
+      <b>memory</b> adds. Once per turn it appends a block to the system prompt — an index, a set of facts,
+      and the user's global file — so the session starts knowing things no transcript carries.
+      <b>context-diet</b> subtracts. On every LLM call inside a turn it rewrites the message array bound for
+      the provider, replacing old tool-result bodies with one-line stubs, so a turn that runs for hours never
+      pays the over-window surcharge on output nobody is reading any more.
+    </p>
+    <p class="sub">
+      They never touch the same bytes: memory owns the <b>system prompt</b>, the diet owns the <b>messages</b>.
+      But they share one cost model — the prompt cache invalidates from the first byte that differs — and that
+      is what makes them one story rather than two.
+    </p>
+    <div class="chips">
+      <span class="chip">hooks: <b>before_agent_start</b> · <b>context</b></span>
+      <span class="chip">memory budget <b>24,000 chars</b></span>
+      <span class="chip">diet trigger <b>80% → 55%</b></span>
+      <span class="chip">measured saving <b>$107 → $52.71</b></span>
+    </div>
+  </div>
+</section>
+
+<section id="anatomy">
+  <p class="eyebrow">01 · Shared spine</p>
+  <h2>Anatomy of one request</h2>
+  <p class="lede">
+    Every call to the provider is one system prompt plus an array of messages. Each extension owns exactly one
+    of those two, and neither can reach into the other's half.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">REQUEST</span><span class="tt">One LLM call, and who wrote which part of it</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 246" role="img" aria-label="A request split into system prompt and messages, showing which extension edits each">
+        <text class="tb" x="0" y="14">what goes over the wire</text>
+
+        <text class="ts" x="0" y="48">system prompt</text>
+        <g class="np" data-a="an-sys" tabindex="0" role="button">
+          <rect class="hit" x="120" y="30" width="250" height="26" rx="4"/>
+          <rect class="bx" x="124" y="32" width="242" height="22" rx="4"/>
+          <text class="tm" x="134" y="47">pi base + AGENTS.md + skills</text>
+        </g>
+        <g class="np" data-a="an-mem" tabindex="0" role="button">
+          <rect class="hit" x="372" y="30" width="384" height="26" rx="4"/>
+          <rect class="bx-a" x="376" y="32" width="376" height="22" rx="4"/>
+          <text class="ta" x="386" y="47">memory block — appended by before_agent_start</text>
+        </g>
+
+        <line class="lnd" x1="0" y1="72" x2="760" y2="72"/>
+
+        <text class="ts" x="0" y="98">messages</text>
+        <g class="np" data-a="an-old" tabindex="0" role="button">
+          <rect class="hit" x="120" y="80" width="300" height="26" rx="4"/>
+          <rect class="bx-y" x="124" y="82" width="292" height="22" rx="4"/>
+          <text class="tm" x="134" y="97">older tool results → stubbed</text>
+        </g>
+        <g class="np" data-a="an-keep" tabindex="0" role="button">
+          <rect class="hit" x="422" y="80" width="334" height="26" rx="4"/>
+          <rect class="bx" x="426" y="82" width="326" height="22" rx="4"/>
+          <text class="tm" x="436" y="97">newest 24 results + every error — untouched</text>
+        </g>
+
+        <text class="ts" x="0" y="140">on disk</text>
+        <g class="np" data-a="an-disk" tabindex="0" role="button">
+          <rect class="hit" x="120" y="122" width="636" height="26" rx="4"/>
+          <rect class="bx-g" x="124" y="124" width="628" height="22" rx="4"/>
+          <text class="tg" x="134" y="139">session JSONL — full history, never edited by either extension</text>
+        </g>
+
+        <line class="lnd" x1="0" y1="166" x2="760" y2="166"/>
+        <text class="tf" x="0" y="188">memory persists across sessions · the diet's decisions live and die with one session</text>
+
+        <g class="np" data-a="an-cache" tabindex="0" role="button">
+          <rect class="hit" x="0" y="202" width="360" height="30" rx="4"/>
+          <rect class="bx-r" x="4" y="204" width="352" height="26" rx="4"/>
+          <text class="tr" x="14" y="221">both are prompt-cache events ›</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap any block for what it is and who put it there.</span></figcaption>
+    <div class="anns">
+      <div id="an-an-sys"><b>pi's own</b>The base coding-assistant prompt, the project's AGENTS.md / CLAUDE.md context files, and any loaded skills. Neither extension writes here.</div>
+      <div id="an-an-mem"><b>memory · before_agent_start</b>The assembled block, appended with two newlines to whatever pi built. Up to <code>memory.maxChars</code> (24,000 by default, roughly 6k tokens). It is part of the system prompt, so it is cached across the whole turn rather than resent as a message — and the diet can never trim it.</div>
+      <div id="an-an-old"><b>context-diet · context hook</b>Bodies of old tool results, replaced by one line each naming the call and its size. The message itself stays: removing it would leave a tool call with no result, and every later request would be rejected.</div>
+      <div id="an-an-keep"><b>Protected</b>The newest 24 results are the live working set. Errors are never dropped — a failure the model has not reacted to yet is the last thing to take away.</div>
+      <div id="an-an-disk"><b>Untouched</b>The diet rewrites only the copy bound for the provider. <code>context.messages</code>, the session and the JSONL are left alone, so /compact, /rewind, fork and tree navigation all still see the full history.</div>
+      <div id="an-an-cache"><b>The shared cost</b>The prompt cache invalidates from the first byte that differs. A memory write changes the system prompt — the very first bytes — so it re-bills the entire context uncached. A diet round changes the oldest message it touches, which is deliberately far along. Both are managed the same way: rarely, and stickily.</div>
+    </div>
+  </figure>
+</section>
+
+<section id="hooks">
+  <p class="eyebrow">02 · Shared spine</p>
+  <h2>Where each one hooks</h2>
+  <p class="lede">
+    The difference in frequency is the whole design. memory fires <b>once per turn</b>, before the loop starts.
+    The diet fires <b>once per LLM call</b>, inside it — which is the only place that can see a turn growing.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">LIFECYCLE</span><span class="tt">One turn, from prompt to settled</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Event timeline of a turn with the two extension hooks marked">
+        <line class="ln" x1="16" y1="40" x2="744" y2="40"/>
+
+        <g class="np" data-a="hk-start" tabindex="0" role="button">
+          <rect class="hit" x="8" y="20" width="126" height="40" rx="4"/>
+          <circle class="fa" cx="24" cy="40" r="4.5"/>
+          <text class="ta" x="16" y="72">session_start</text>
+          <text class="tf" x="16" y="88">memory: load</text>
+        </g>
+
+        <g class="np" data-a="hk-before" tabindex="0" role="button">
+          <rect class="hit" x="150" y="20" width="176" height="40" rx="4"/>
+          <circle class="fa" cx="170" cy="40" r="4.5"/>
+          <text class="ta" x="158" y="72">before_agent_start</text>
+          <text class="tf" x="158" y="88">memory: inject</text>
+        </g>
+
+        <g class="np" data-a="hk-agent" tabindex="0" role="button">
+          <rect class="hit" x="336" y="20" width="120" height="40" rx="4"/>
+          <circle class="ff" cx="352" cy="40" r="4.5"/>
+          <text class="tm" x="342" y="72">agent_start</text>
+          <text class="tf" x="342" y="88">diet: turn boundary</text>
+        </g>
+
+        <g class="np" data-a="hk-settled" tabindex="0" role="button">
+          <rect class="hit" x="640" y="20" width="112" height="40" rx="4"/>
+          <circle class="ff" cx="726" cy="40" r="4.5"/>
+          <text class="tm" x="648" y="72">agent_settled</text>
+          <text class="tf" x="648" y="88">diet: counters clear</text>
+        </g>
+
+        <rect class="bx-a" x="470" y="112" width="272" height="112" rx="8"/>
+        <text class="t" x="486" y="134">the tool loop — N times</text>
+        <g class="np" data-a="hk-ctx" tabindex="0" role="button">
+          <rect class="hit" x="480" y="144" width="252" height="26" rx="4"/>
+          <rect class="bx" x="484" y="146" width="244" height="22" rx="4"/>
+          <text class="ta" x="494" y="161">context hook → diet.step()</text>
+        </g>
+        <text class="tm" x="494" y="188">→ provider call</text>
+        <text class="tm" x="494" y="208">→ tools run, results appended</text>
+        <path class="lna" d="M470 180 L 440 180 L 440 118 L 470 118" />
+        <path class="lna" d="M400 60 L 400 168 L 470 168"/>
+
+        <g class="np" data-a="hk-gap" tabindex="0" role="button">
+          <rect class="hit" x="8" y="112" width="440" height="112" rx="8"/>
+          <rect class="bx-r" x="12" y="114" width="432" height="108" rx="8"/>
+          <text class="tr" x="28" y="138">pi's own compaction check</text>
+          <text class="tm" x="28" y="160">after agent_end  ·  before the next prompt</text>
+          <text class="tm" x="28" y="180">both are turn BOUNDARIES</text>
+          <text class="tf" x="28" y="204">inside the loop it is unreachable, however long the loop runs</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a stage.</span></figcaption>
+    <div class="anns">
+      <div id="an-hk-start"><b>session_start</b>memory re-reads <code>agent/settings.json</code>, resolves which store this cwd reads from, reads MEMORY.md and every fact file, and assembles the block. The diet clears its eviction set here too — a toolCallId from the previous session means nothing in this one.</div>
+      <div id="an-hk-before"><b>before_agent_start</b>memory returns <code>{ systemPrompt: event.systemPrompt + "\n\n" + block }</code>. Once per turn, not once per call: the system prompt is cached, so a per-call injection would buy nothing and cost a cache break.</div>
+      <div id="an-hk-agent"><b>agent_start</b>The diet calls <code>turnBoundary()</code> — zeroing rounds-this-turn and the escalation latch. Guarded by a <code>turnActive</code> flag, because a retry or a queued continuation re-enters the same run and emits its own agent_start; only the first one starts a turn.</div>
+      <div id="an-hk-ctx"><b>context — the only hook inside the loop</b>Fires on every LLM call inside <code>streamAssistantResponse</code>. This is where <code>diet.step()</code> decides whether a round is due, and where the trimmed message array is returned. Returning nothing leaves the request exactly as pi built it.</div>
+      <div id="an-hk-settled"><b>agent_settled</b>Fires after the run has settled with no retry, compaction or queued continuation to come. The diet drops its turnActive flag here, so the next genuine agent_start counts as a new turn.</div>
+      <div id="an-hk-gap"><b>The gap the diet exists for</b>pi decides whether to compact in exactly two places, and both are turn boundaries. Inside <code>_runAgentPrompt</code> the whole tool loop is awaited before the check is reached, so <code>shouldCompact()</code> is unreachable for the duration — however many hundred calls that is. Its own docstring says so: "Called after agent_end and before prompt submission."</div>
+    </div>
+  </figure>
+
+  <div class="callout">
+    <span class="lbl">Why not just call compact()</span>
+    <p>
+      <code>ctx.compact()</code> exists and can be called mid-turn. It opens with <code>await this.abort()</code>.
+      Killing a 2.7-hour harness run to save tokens is not a trade worth making, so the diet trims what is
+      <em>sent</em> and leaves the turn running.
+    </p>
+  </div>
+</section>
+
+<section id="mem-read">
+  <p class="eyebrow">03 · memory</p>
+  <h2>The read path</h2>
+  <p class="lede">
+    Memory is per project, keyed by cwd. The first question every session asks is which directory on this
+    machine holds this project's memory — and the answer can be another agent's.
+  </p>
+
+  <ol class="steps">
+    <li><b>Resolve the source.</b> <code>piMemoryDir(cwd, piHome)</code> is
+      <code>&lt;XDG_CONFIG_HOME or ~/.config&gt;/pi/memory/&lt;slug&gt;</code>, where the slug replaces every
+      non-alphanumeric character in the cwd with <code>-</code>. If that directory <em>exists</em>, it wins and
+      the store is pi's own. Otherwise memory reads the other agent's:
+      <code>~/.claude/projects/&lt;slug&gt;/memory</code>.</li>
+    <li><b>Probe for the foreign slug.</b> pi's own path is written and read by one deterministic encoder, so it
+      needs no probing. The other agent's encoder is not ours and has been observed to disagree with itself over
+      underscores, so two candidates are tried — the plain one, and one that preserves <code>_</code> — and
+      whichever directory actually exists wins.</li>
+    <li><b>Read the files.</b> Every <code>*.md</code> in that directory, sorted. <code>MEMORY.md</code> is kept
+      aside as the index; every other file is a fact, parsed for <code>name</code>, <code>description</code> and
+      <code>type</code> out of its YAML frontmatter. The parse is deliberately lenient — the store has written
+      both a flat <code>type:</code> and a nested <code>metadata:</code> block, and older files have no
+      frontmatter at all — so anything unrecognised falls back to the filename and the raw body.</li>
+    <li><b>Read the global file.</b> <code>~/.claude/CLAUDE.md</code>, if it exists, is read where it lies. It is
+      never cloned and never written: it is the user's, and it is not project memory.</li>
+    <li><b>Assemble within the budget</b> (next section), then hold the result until something changes it.</li>
+  </ol>
+
+  <div class="callout">
+    <span class="lbl">Nothing found</span>
+    <p>
+      If there is no index, no facts and no global file, <code>loadMemoryFor</code> returns undefined and
+      <code>before_agent_start</code> adds nothing at all. An empty memory costs zero tokens, not an empty heading.
+    </p>
+  </div>
+</section>
+
+<section id="mem-assemble">
+  <p class="eyebrow">04 · memory</p>
+  <h2>Assembly and the budget</h2>
+  <p class="lede">
+    <code>assemble()</code> is pure, and it is where the shape of the injected block is decided. It fills a
+    character budget in a fixed order, and what does not fit is dropped rather than truncated mid-fact.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">BUDGET</span><span class="tt">Filling memory.maxChars, in order</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 214" role="img" aria-label="The assembly order of the memory block within its character budget">
+        <text class="tb" x="0" y="14">maxChars — 24,000 by default</text>
+        <rect class="bx" x="0" y="28" width="756" height="34" rx="5"/>
+
+        <g class="np" data-a="as-head" tabindex="0" role="button">
+          <rect class="hit" x="0" y="26" width="96" height="38" rx="5"/>
+          <rect class="bx-a" x="3" y="29" width="90" height="32" rx="4"/>
+          <text class="ta" x="13" y="49">header</text>
+        </g>
+        <g class="np" data-a="as-global" tabindex="0" role="button">
+          <rect class="hit" x="98" y="26" width="184" height="38" rx="5"/>
+          <rect class="bx-v" x="101" y="29" width="178" height="32" rx="4"/>
+          <text class="tv" x="111" y="49">Global (CLAUDE.md)</text>
+        </g>
+        <g class="np" data-a="as-index" tabindex="0" role="button">
+          <rect class="hit" x="284" y="26" width="170" height="38" rx="5"/>
+          <rect class="bx-g" x="287" y="29" width="164" height="32" rx="4"/>
+          <text class="tg" x="297" y="49">Index (MEMORY.md)</text>
+        </g>
+        <g class="np" data-a="as-facts" tabindex="0" role="button">
+          <rect class="hit" x="456" y="26" width="300" height="38" rx="5"/>
+          <rect class="bx-y" x="459" y="29" width="294" height="32" rx="4"/>
+          <text class="tm" x="469" y="49">## Facts — one ### block each</text>
+        </g>
+
+        <path class="lnd" d="M0 78 L 756 78"/>
+        <text class="tf" x="0" y="98">order is fixed · each block is charged its own length + 2 for the join</text>
+
+        <g class="np" data-a="as-drop" tabindex="0" role="button">
+          <rect class="hit" x="0" y="112" width="368" height="46" rx="5"/>
+          <rect class="bx-r" x="3" y="115" width="362" height="40" rx="4"/>
+          <text class="tr" x="15" y="132">a fact that does not fit is SKIPPED</text>
+          <text class="tf" x="15" y="148">the loop continues — a later, smaller fact may still fit</text>
+        </g>
+        <g class="np" data-a="as-note" tabindex="0" role="button">
+          <rect class="hit" x="380" y="112" width="376" height="46" rx="5"/>
+          <rect class="bx" x="383" y="115" width="370" height="40" rx="4"/>
+          <text class="tm" x="395" y="132">then one line is appended saying so</text>
+          <text class="tf" x="395" y="148">"(Some memory was omitted to fit the context budget…)"</text>
+        </g>
+
+        <text class="tf" x="0" y="188">the heading "## Facts" is charged once, just before the first fact that fits</text>
+        <text class="tf" x="0" y="206">/memory reports the same state: N facts, N chars, index, global, truncated</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a stage of the fill.</span></figcaption>
+    <div class="anns">
+      <div id="an-as-head"><b>The header</b>Short on purpose: it is paid for on every request of the session, so it carries only what changes behaviour — that this is memory, that it can be stale, and that a tool exists to change it. The format rules and the what-to-save judgement live in the tool description, read at the moment they are needed.</div>
+      <div id="an-as-global"><b>Global CLAUDE.md — first in line</b>Added before the index and the facts, which means a large global file crowds out project memory rather than the other way round. It is also the one block whose failure to fit is <em>silent</em> — see Sharp edges.</div>
+      <div id="an-as-index"><b>MEMORY.md — the index</b>One line per fact (<code>- [Title](file.md) — hook</code>). This is what makes recall possible when the bodies have been dropped for budget: the model can still see that a fact exists and read it with the tool.</div>
+      <div id="an-as-facts"><b>The facts</b><code>### name [type]</code> followed by the body, in filename order. Included only when <code>memory.includeFacts</code> is on; turning it off leaves the index alone, which is the cheap mode for a project with a lot of memory.</div>
+      <div id="an-as-drop"><b>Skipped, not truncated</b>A fact that would overflow is skipped whole and the loop keeps going, so a big fact does not block the small ones behind it. No fact is ever cut in half — half a fact is a fact that says something the file does not.</div>
+      <div id="an-as-note"><b>Said out loud</b>When anything was skipped, a closing line tells the model the block is partial and names the two settings that change it. Without this, a model reading a short memory block would reasonably conclude that is all there is.</div>
+    </div>
+  </figure>
+
+  <div class="callout note">
+    <span class="lbl">Why the tool has a read action</span>
+    <p>
+      Because assembly drops facts. A model asked to update a fact that was dropped for budget would otherwise
+      rewrite it from memory of a file it never saw. <code>memory(action:"read")</code> is the escape hatch, and the
+      tool description says to use it before rewriting anything.
+    </p>
+  </div>
+</section>
+
+<section id="mem-fork">
+  <p class="eyebrow">05 · memory</p>
+  <h2>The fork</h2>
+  <p class="lede">
+    pi does not edit another agent's memory. It reads it until the moment it has something of its own to say,
+    and then it takes a copy. That is copy-on-write, and the copy is a fork, not a sync.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">COPY-ON-WRITE</span><span class="tt">The first write, and why the clone is atomic</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 230" role="img" aria-label="The memory store fork from the other agent's directory into pi's own">
+        <g class="np" data-a="fk-src" tabindex="0" role="button">
+          <rect class="hit" x="0" y="16" width="220" height="72" rx="6"/>
+          <rect class="bx" x="3" y="19" width="214" height="66" rx="5"/>
+          <text class="t" x="16" y="40">~/.claude/projects/…/memory</text>
+          <text class="tf" x="16" y="58">MEMORY.md + *.md</text>
+          <text class="tf" x="16" y="74">read in place · never written</text>
+        </g>
+
+        <path class="lna" d="M220 52 L 286 52"/>
+        <polygon class="fa" points="286,52 278,48 278,56"/>
+        <text class="ta" x="228" y="44">clone</text>
+
+        <g class="np" data-a="fk-stage" tabindex="0" role="button">
+          <rect class="hit" x="292" y="16" width="182" height="72" rx="6"/>
+          <rect class="bx-y" x="295" y="19" width="176" height="66" rx="5"/>
+          <text class="t" x="308" y="40">.tmp-clone-XXXX/</text>
+          <text class="tf" x="308" y="58">every *.md copied</text>
+          <text class="tf" x="308" y="74">+ .origin.json written</text>
+        </g>
+
+        <path class="lna" d="M474 52 L 540 52"/>
+        <polygon class="fa" points="540,52 532,48 532,56"/>
+        <text class="ta" x="482" y="44">rename</text>
+
+        <g class="np" data-a="fk-dst" tabindex="0" role="button">
+          <rect class="hit" x="546" y="16" width="212" height="72" rx="6"/>
+          <rect class="bx-g" x="549" y="19" width="206" height="66" rx="5"/>
+          <text class="t" x="562" y="40">~/.config/pi/memory/&lt;slug&gt;</text>
+          <text class="tf" x="562" y="58">pi's own store</text>
+          <text class="tf" x="562" y="74">read from here from now on</text>
+        </g>
+
+        <g class="np" data-a="fk-why" tabindex="0" role="button">
+          <rect class="hit" x="0" y="106" width="368" height="60" rx="6"/>
+          <rect class="bx-r" x="3" y="109" width="362" height="54" rx="5"/>
+          <text class="tr" x="16" y="130">precedence: pi's directory exists → pi's store wins</text>
+          <text class="tf" x="16" y="148">so a half-copied directory would hide the files that never arrived</text>
+        </g>
+        <g class="np" data-a="fk-nomerge" tabindex="0" role="button">
+          <rect class="hit" x="384" y="106" width="374" height="60" rx="6"/>
+          <rect class="bx" x="387" y="109" width="368" height="54" rx="5"/>
+          <text class="t" x="400" y="130">a fork, not a sync</text>
+          <text class="tf" x="400" y="148">facts the other agent adds afterwards are never seen here</text>
+        </g>
+
+        <text class="tf" x="0" y="196">.origin.json records what was forked and when, so /memory can say it out loud</text>
+        <text class="tf" x="0" y="214">it is not a *.md file, so it can never be read back as a fact</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a step.</span></figcaption>
+    <div class="anns">
+      <div id="an-fk-src"><b>The inherited store</b>Read, never written. pi keeps its own memory; it does not edit someone else's. Before the fork, <code>list</code> and <code>read</code> both come from here — and say "inherited" when they do.</div>
+      <div id="an-fk-stage"><b>Staging</b>A temp sibling directory, built complete before anything claims the real name. Every <code>*.md</code> is copied across and <code>.origin.json</code> is written with the source path and an ISO timestamp.</div>
+      <div id="an-fk-dst"><b>The rename</b>One atomic operation: the destination either does not exist or is complete. It is re-checked immediately before the rename too, because another pi may have forked the same project in between — and renaming onto a non-empty directory fails anyway.</div>
+      <div id="an-fk-why"><b>Why atomic matters here specifically</b>Precedence is "pi's directory exists → pi's store wins". A clone that copied three files of twelve and then crashed would leave a directory that exists, wins, and hides the nine facts that never made it. Memory loss with no error anywhere.</div>
+      <div id="an-fk-nomerge"><b>No merge back</b>That is the honest reading of "clone it and mutate it". After the fork the two stores are independent: nothing pi writes reaches the other agent, and nothing the other agent adds reaches pi. <code>/memory</code> prints the fork date so the divergence is visible rather than assumed.</div>
+    </div>
+  </figure>
+</section>
+
+<section id="mem-write">
+  <p class="eyebrow">06 · memory</p>
+  <h2>The write path</h2>
+  <p class="lede">
+    One tool, four actions. Two of them read, two of them mutate — and the mutating pair is the only place the
+    fork can happen.
+  </p>
+
+  <table class="kv">
+    <thead><tr><th>action</th><th>reads from</th><th>what it does</th></tr></thead>
+    <tbody>
+      <tr><td class="k">list</td><td class="d">resolved source</td><td class="x">Names every <code>*.md</code>, and says whether the store is pi's own or inherited.</td></tr>
+      <tr><td class="k">read</td><td class="d">resolved source</td><td class="x">Returns one file whole. The escape hatch for a fact the budget dropped.</td></tr>
+      <tr><td class="k">write</td><td class="d">pi's store</td><td class="x">Replaces a whole file. Forks first if pi has no store yet.</td></tr>
+      <tr><td class="k">delete</td><td class="d">pi's store</td><td class="x">Removes one file. A file that was not there is reported, not an error.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Three guards worth naming</h3>
+  <ul class="tight">
+    <li><b>The filename is model-supplied, so it is validated, not trusted.</b>
+      <code>safeFileName</code> takes one path component, markdown only:
+      <code>^[A-Za-z0-9][A-Za-z0-9._-]*\.md$</code>, no separators, no leading dot, no <code>..</code> anywhere,
+      128 characters at most. <code>../../.ssh/config</code> and <code>notes.md/../../x</code> both fail before
+      any path is joined.</li>
+    <li><b>Enabled is re-checked at execute time, not only at registration.</b> Settings reload on every
+      session_start, and writing to a store that <code>before_agent_start</code> will never inject would report
+      success for memory the model is not going to see.</li>
+    <li><b>Every write is temp-then-rename,</b> the same as the clone and for the same reason: a reader must never
+      see half a file. A trailing newline is added if the model did not write one.</li>
+  </ul>
+
+  <h3>What a write costs</h3>
+  <p>
+    After a successful write or delete, <code>refresh()</code> re-reads the store and re-assembles the block, so the
+    <em>next</em> request carries the change. The tool says so in its result: <em>"Memory now holds N fact(s) and is
+    in your next request."</em>
+  </p>
+  <div class="callout warn">
+    <span class="lbl">The cache bill</span>
+    <p>
+      That next request has a different system prompt, and the system prompt is the first bytes of the cached
+      prefix. So a memory write invalidates the <em>entire</em> cache for that call — the most expensive
+      invalidation available in the whole request. It is the price of memory that is actually current, and it is
+      why memory is a write-rarely store rather than a scratchpad.
+    </p>
+  </div>
+
+  <pre class="code"><span class="c">// the whole read-inject cycle, in the order it happens</span>
+session_start   <span class="k">→</span> loadSettings() <span class="k">→</span> resolveSource() <span class="k">→</span> readMemory() <span class="k">→</span> assemble()
+before_agent_start <span class="k">→</span> systemPrompt + <span class="s">"\n\n"</span> + block        <span class="c">// once per turn</span>
+memory(write)   <span class="k">→</span> ensureStore() <span class="c">[forks once]</span> <span class="k">→</span> writeFile() <span class="k">→</span> refresh()
+/memory         <span class="k">→</span> status | show | reload</pre>
+</section>
+
+<section id="diet-why">
+  <p class="eyebrow">07 · context-diet</p>
+  <h2>The gap it fills</h2>
+  <p class="lede">
+    One measured session, <code>019fcad1</code>, is the entire argument. One prompt, one turn, and the compaction
+    threshold that was supposed to prevent this was set correctly the whole time — it was simply never evaluated.
+  </p>
+
+  <div class="grid g3">
+    <div class="stat"><span class="n">2h44m</span><span class="k">one turn · 399 model calls · 530 tool calls</span></div>
+    <div class="stat"><span class="n r">375k</span><span class="k">peak context, against a 272k window</span></div>
+    <div class="stat"><span class="n r">219</span><span class="k">calls billed above the window</span></div>
+    <div class="stat"><span class="n r">$125.86</span><span class="k">the session</span></div>
+  </div>
+
+  <p>
+    The cost is not the compaction. It is the cliff: the gpt-5.6 family <b>doubles every rate</b> above 272k —
+    input $5→$10 per Mtok, cached $0.50→$1.00, output $30→$45 — so those 219 calls turned into $81.85 of the
+    $107 main-loop spend. The split is exactly clean: the largest 1× call carried 269,836 tokens, the smallest
+    2× call 273,729.
+  </p>
+  <p>
+    Compaction did eventually fire. First as <em>overflow recovery</em>, after the API had already returned
+    "your input exceeds the context window"; then again at <code>agent_end</code>, 51 seconds after the final
+    answer — 347k summarised and then never read. Together, $7.47, cache disabled by design, billed at the
+    over-window rate.
+  </p>
+
+  <h3>Replayed through the diet</h3>
+  <table class="kv">
+    <thead><tr><th></th><th>real</th><th>with the diet</th></tr></thead>
+    <tbody>
+      <tr><td class="x">peak context</td><td class="d">375k</td><td class="d">218k</td></tr>
+      <tr><td class="x">calls above the cliff</td><td class="d">219</td><td class="d">0</td></tr>
+      <tr><td class="x">main-loop cost</td><td class="d">$107.00</td><td class="d">$52.71</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:16px">
+    Five rounds across the session, 180 results stubbed, each round's cache break charged in full. Peak never
+    reaches 255,616 either, so the overflow that forced the first compaction does not happen and the unread
+    second one does not fire — the $7.47 goes with it.
+  </p>
+  <div class="callout">
+    <span class="lbl">Main session only</span>
+    <p>
+      Workflow and <code>task</code> subagents spawn with <code>--no-extensions</code>, so the diet is not loaded
+      there. They were never the problem: 270 subagent calls cost $5.35 between them, because each one starts empty.
+    </p>
+  </div>
+</section>
+
+<section id="diet-round">
+  <p class="eyebrow">08 · context-diet</p>
+  <h2>A round</h2>
+  <p class="lede">
+    A round is rare on purpose. It fires at a high-water mark, trims well past it, and the gap between the two is
+    the hysteresis that keeps the prompt cache stable in between.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">HYSTERESIS</span><span class="tt">Context over one long turn</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 250" role="img" aria-label="Context growing over a turn, with diet rounds cutting it back at the high-water mark">
+        <line class="ln" x1="54" y1="212" x2="748" y2="212"/>
+        <line class="ln" x1="54" y1="24" x2="54" y2="212"/>
+
+        <g class="np" data-a="rd-cliff" tabindex="0" role="button">
+          <rect class="hit" x="54" y="26" width="694" height="20" rx="3"/>
+          <line class="lnr" x1="54" y1="36" x2="748" y2="36"/>
+          <text class="tr" x="600" y="32">window · 272k · the cliff</text>
+        </g>
+        <g class="np" data-a="rd-high" tabindex="0" role="button">
+          <rect class="hit" x="54" y="62" width="694" height="20" rx="3"/>
+          <line class="lnd" x1="54" y1="72" x2="748" y2="72"/>
+          <text class="ta" x="600" y="68">high water · 80% · 217.6k</text>
+        </g>
+        <g class="np" data-a="rd-target" tabindex="0" role="button">
+          <rect class="hit" x="54" y="136" width="694" height="20" rx="3"/>
+          <line class="lnd" x1="54" y1="146" x2="748" y2="146"/>
+          <text class="tm" x="600" y="142">target · 55% · 149.6k</text>
+        </g>
+
+        <path class="lna" d="M54 206 L 150 72 L 150 146 L 250 72 L 250 146 L 350 72 L 350 146 L 470 72 L 470 146 L 620 72 L 620 146 L 720 96"/>
+
+        <g class="np" data-a="rd-drop" tabindex="0" role="button">
+          <rect class="hit" x="138" y="66" width="24" height="86" rx="3"/>
+        </g>
+        <text class="tf" x="120" y="170">round 1</text>
+        <text class="tf" x="220" y="170">round 2</text>
+        <text class="tf" x="320" y="170">round 3</text>
+        <text class="tf" x="440" y="170">round 4</text>
+        <text class="tf" x="590" y="170">round 5</text>
+
+        <text class="ts" x="0" y="76">tokens</text>
+        <text class="tf" x="54" y="230">one turn, hundreds of calls →</text>
+
+        <g class="np" data-a="rd-gap" tabindex="0" role="button">
+          <rect class="hit" x="380" y="186" width="368" height="24" rx="3"/>
+          <rect class="bx-a" x="384" y="188" width="360" height="20" rx="4"/>
+          <text class="ta" x="394" y="202">the 25% gap is the whole design ›</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a line.</span></figcaption>
+    <div class="anns">
+      <div id="an-rd-cliff"><b>The cliff</b>Not a hard limit but a price change: above the window every rate doubles. The threshold pi would have used, <code>272000 − 16384 = 255,616</code>, sits below it and was never wrong — it was simply never evaluated inside the turn.</div>
+      <div id="an-rd-high"><b>highWaterRatio · 0.8</b>Above this a round runs. Deliberately below pi's own compaction threshold: the point is to keep a long turn from ever arriving there, since within a turn pi never checks.</div>
+      <div id="an-rd-target"><b>targetRatio · 0.55</b>What a round trims down to. <code>resolveBounds</code> clamps the target to at most 90% of the high-water mark even if you configure them inverted, because a target at or above the mark would re-trigger a round on every single call — the one failure mode that costs more than it saves.</div>
+      <div id="an-rd-drop"><b>One round</b>Evictions are chosen oldest-first and applied in one go. The context drops to the target and then grows again from there; nothing happens in between, which is exactly what the prompt cache wants.</div>
+      <div id="an-rd-gap"><b>Why the gap is load-bearing</b>Context must grow by the whole 25% before another round can fire. Each round breaks the cache from its oldest eviction, so rounds are the expensive event — the gap is what makes them rare. Narrowing it is the one change here that can cost more than it saves.</div>
+    </div>
+  </figure>
+
+  <h3>How the current size is known</h3>
+  <p>
+    <code>step()</code> prefers <code>ctx.getContextUsage()?.tokens</code> — pi's own figure, anchored on the last
+    usage the provider actually billed and extended with a local estimate for whatever arrived since. Once a round
+    has run, that anchor is the <em>trimmed</em> size, so the number self-corrects on every response and never
+    drifts against the real context. It is null only between a compaction and the next response; the local
+    fallback used there reads low by the system prompt and the tool schemas, which is harmless at a point in the
+    session nowhere near the threshold.
+  </p>
+</section>
+
+<section id="diet-pick">
+  <p class="eyebrow">09 · context-diet</p>
+  <h2>What gets dropped</h2>
+  <p class="lede">
+    Candidates are collected oldest-first, and a ladder of protections decides what is off limits. Two of the
+    rungs reach <em>inside</em> the protected recent window, because they mark content that is stale now
+    regardless of its age.
+  </p>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">DECISION</span><span class="tt">One tool result, walked through collectCandidates</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 300" role="img" aria-label="The decision ladder that decides whether one tool result can be dropped">
+        <g class="np" data-a="pk-evicted" tabindex="0" role="button">
+          <rect class="hit" x="0" y="8" width="470" height="30" rx="4"/>
+          <rect class="bx" x="3" y="10" width="464" height="26" rx="4"/>
+          <text class="tm" x="14" y="27">already evicted?</text>
+        </g>
+        <text class="tf" x="480" y="27">→ skip, it is already a stub</text>
+
+        <g class="np" data-a="pk-error" tabindex="0" role="button">
+          <rect class="hit" x="0" y="44" width="470" height="30" rx="4"/>
+          <rect class="bx-r" x="3" y="46" width="464" height="26" rx="4"/>
+          <text class="tr" x="14" y="63">isError?</text>
+        </g>
+        <text class="tf" x="480" y="63">→ PROTECTED, always</text>
+
+        <g class="np" data-a="pk-pin" tabindex="0" role="button">
+          <rect class="hit" x="0" y="80" width="470" height="30" rx="4"/>
+          <rect class="bx-v" x="3" y="82" width="464" height="26" rx="4"/>
+          <text class="tv" x="14" y="99">pinned by another extension?</text>
+        </g>
+        <text class="tf" x="480" y="99">→ PROTECTED, beats every rule below</text>
+
+        <g class="np" data-a="pk-recent" tabindex="0" role="button">
+          <rect class="hit" x="0" y="116" width="470" height="30" rx="4"/>
+          <rect class="bx-g" x="3" y="118" width="464" height="26" rx="4"/>
+          <text class="tg" x="14" y="135">in the newest 24 results?</text>
+        </g>
+        <text class="tf" x="480" y="135">→ PROTECTED, unless one of the two below</text>
+
+        <g class="np" data-a="pk-img" tabindex="0" role="button">
+          <rect class="hit" x="24" y="152" width="446" height="30" rx="4"/>
+          <rect class="bx-y" x="27" y="154" width="440" height="26" rx="4"/>
+          <text class="tm" x="38" y="171">…an image, and not one of the newest 3?</text>
+        </g>
+        <text class="tf" x="480" y="171">→ droppable anyway</text>
+
+        <g class="np" data-a="pk-super" tabindex="0" role="button">
+          <rect class="hit" x="24" y="188" width="446" height="30" rx="4"/>
+          <rect class="bx-y" x="27" y="190" width="440" height="26" rx="4"/>
+          <text class="tm" x="38" y="207">…a read a later read superseded?</text>
+        </g>
+        <text class="tf" x="480" y="207">→ droppable anyway</text>
+
+        <g class="np" data-a="pk-small" tabindex="0" role="button">
+          <rect class="hit" x="0" y="224" width="470" height="30" rx="4"/>
+          <rect class="bx" x="3" y="226" width="464" height="26" rx="4"/>
+          <text class="tm" x="14" y="243">smaller than 512 bytes, or the stub saves ≤ 0?</text>
+        </g>
+        <text class="tf" x="480" y="243">→ skip, the stub would not pay for itself</text>
+
+        <g class="np" data-a="pk-out" tabindex="0" role="button">
+          <rect class="hit" x="0" y="260" width="470" height="32" rx="4"/>
+          <rect class="bx-a" x="3" y="262" width="464" height="28" rx="4"/>
+          <text class="ta" x="14" y="281">candidate — dropped oldest-first until the target is met</text>
+        </g>
+        <text class="tf" x="480" y="281">superseded reads are swept even past it</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a rung.</span></figcaption>
+    <div class="anns">
+      <div id="an-pk-evicted"><b>Already evicted</b>Evictions are permanent for the session. Once a result is a stub it is never reconsidered — which is what keeps the stub text identical on every later call.</div>
+      <div id="an-pk-error"><b>Errors are never dropped</b>A failure the model has not yet reacted to is the last thing to take away. There is no size or age at which this changes.</div>
+      <div id="an-pk-pin"><b>Pins</b>A toolCallId published on the <code>context-diet:pin</code> channel is protected by an outside decision rather than by recency — checked first, so it beats the image sweep and the supersession rule both. Capped at 8; past the cap the oldest pin becomes evictable again, which never removes anything already in context.</div>
+      <div id="an-pk-recent"><b>keepRecentResults · 24</b>The live working set. Whatever the model is doing right now is in here, and taking it away would be taking away the turn.</div>
+      <div id="an-pk-img"><b>Images age differently</b>A screenshot goes stale the moment the next one is taken, and costs roughly 1,200 tokens to keep saying so. Only the newest 3 image-bearing results survive. In practice this only bites during a visual-iteration burst — which is exactly when it should.</div>
+      <div id="an-pk-super"><b>Superseded reads</b>A later whole-file read of the same path covers any earlier read of it; an identical (path, offset, limit) covers its exact duplicate; a later <em>partial</em> read covers nothing, because the model may still be using the rest. What is protected otherwise would be a stale version of a file the model is probably editing. The measured session read three of its own source files three times each.</div>
+      <div id="an-pk-small"><b>The floor</b>Below 512 bytes the stub is not meaningfully smaller than the body. The saving is also computed for real — content tokens minus stub tokens — and a non-positive saving drops the candidate.</div>
+      <div id="an-pk-out"><b>Oldest first, and why</b>A round invalidates the prompt cache from the earliest message it touches, so the cost of a round is set by its oldest eviction no matter how many follow. Given that, the right move is to take everything old in one go and buy a long stable run, rather than trim a little on every call and pay the same penalty each time.</div>
+    </div>
+  </figure>
+
+  <h3>What the model sees instead</h3>
+  <pre class="code"><span class="c">// an ordinary drop</span>
+[older output dropped to keep this session inside its context window — <b>read(src/app.ts)</b>, <b>41.2 KB</b>. Re-run the tool if you still need it.]
+
+<span class="c">// a superseded read — pointed at the fresh copy instead of a pointless re-run</span>
+[stale copy dropped — <b>read(src/app.ts)</b>, <b>41.2 KB</b>. A newer read of this file appears later in the conversation.]</pre>
+  <p>
+    The label is the call and its arguments, clipped to 64 characters, indexed from the assistant message that made
+    the call — so the stub names what the model asked for, not just the tool it used.
+  </p>
+</section>
+
+<section id="diet-stick">
+  <p class="eyebrow">10 · context-diet</p>
+  <h2>Stickiness, and the two invariants</h2>
+  <p class="lede">
+    Everything above describes one round. What makes the extension safe is what happens on the hundreds of calls
+    that are not a round.
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>A dropped result is replaced, never removed</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        Delete the message and every later request is rejected for carrying a tool call with no result — which
+        reads as a provider outage, not as a bug in an extension. The stub takes the message's place, keeping the
+        call/result pairing intact.
+      </p>
+    </div>
+    <div class="card">
+      <h3>A stub renders byte-identically forever</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        Evictions are permanent for the session and built from facts fixed when they were made. The prompt cache
+        invalidates from the first byte that differs; a diet that re-decided each call would move that byte every
+        call and re-bill the whole context uncached — ten times the cached rate, and strictly worse than doing
+        nothing.
+      </p>
+    </div>
+  </div>
+
+  <p>
+    The consequence is in the last two lines of <code>step()</code>: once the eviction set is non-empty,
+    <em>every</em> subsequent call gets the stubbed view — even if context later sits far below the target. The
+    decision is not revisited, only extended.
+  </p>
+
+  <pre class="code"><span class="c">// session.ts, the tail of step()</span>
+<span class="k">if</span> (evicted.size === 0 &amp;&amp; reasoningDropped.size === 0) <span class="k">return</span> {};   <span class="c">// nothing to do, leave the request alone</span>
+<span class="k">return</span> { messages: applyDiet(messages, evicted, reasoningDropped), entry, escalation };</pre>
+
+  <h3>When the set is thrown away</h3>
+  <p>
+    A toolCallId only means something against one message list, so the whole diet resets whenever that list is
+    replaced wholesale: <code>session_start</code>, <code>session_before_switch</code>,
+    <code>session_before_fork</code>, <code>session_before_tree</code>, and <code>session_compact</code>. After a
+    compaction the dropped results are gone from context outright and the summary that replaced them is small, so
+    the counters and the pin set start over there too.
+  </p>
+</section>
+
+<section id="diet-extra">
+  <p class="eyebrow">11 · context-diet</p>
+  <h2>Reasoning, escalation, resets</h2>
+
+  <h3>dropOldReasoning — experimental, and on in this config</h3>
+  <p>
+    When enabled, a round also strips thinking blocks from all but the newest 10 assistant messages. The measured
+    session carried 1MB of encrypted reasoning signatures across 455 messages — on the order of 10–25% of peak
+    context, re-read on every call. Reasoning rides along on any round, and can carry a round alone when the
+    results have nothing left to give: over the mark with every old body already stubbed, stripping reasoning is
+    the only lever remaining.
+  </p>
+  <div class="callout warn">
+    <span class="lbl">Why it is off by default</span>
+    <p>
+      The failure mode is a hard 400, not a quality dip. The OpenAI Responses API can reject a replayed
+      <code>function_call</code> whose paired reasoning item is missing — <em>"was provided without its required
+      reasoning item"</em> — and whether that check reaches long-completed rounds is undocumented.
+    </p>
+    <p>
+      <b>This machine has <code>contextDiet.dropOldReasoning: true</code> in <code>agent/settings.json</code></b>,
+      which is the documented validation plan: run it on real sessions, and if a turn dies with that error, turn it
+      back off. Nothing else changes and the session is intact.
+    </p>
+  </div>
+
+  <h3>Escalation — the one time it breaks silence</h3>
+  <p>
+    A stub is deliberately silent, because it must render identically forever. That is fine for one round. It stops
+    being fine when a turn re-reads its way through several: every stub ends with <em>"re-run the tool if you still
+    need it"</em>, which reads as permission to read straight back into a window that is about to fill up again.
+    The measured session hit six rounds, roughly 100k tokens apiece, and never knew it — then hit the provider's own
+    "input exceeds the context window" error, which is the failure <code>highWaterRatio</code> exists to pre-empt.
+  </p>
+  <p>
+    So past <code>escalateAfterRounds</code> rounds in one turn, once and only once, the model is told directly and
+    an attended user gets the same news as a <code>ctx.ui.notify</code> warning rather than a muted transcript line.
+  </p>
+  <div class="callout">
+    <span class="lbl">steer, not followUp</span>
+    <p>
+      <code>followUp</code> only drains once the model stops calling tools on its own — which is exactly the
+      behaviour this reminder exists to interrupt, so a runaway turn would never see it. <code>steer</code> is
+      polled every round, right after the current round's tool results and before the next LLM call: the earliest
+      the model can act on it, and where the round that triggered it just landed.
+    </p>
+  </div>
+
+  <h3>The transcript line</h3>
+  <p>
+    Every round appends a custom <em>entry</em> — not a message, so it costs no context — recording how many
+    results were dropped, the tokens before and after, and how many reasoning blocks went with them.
+  </p>
+</section>
+
+<section id="meet">
+  <p class="eyebrow">12 · Together</p>
+  <h2>Where they meet</h2>
+  <p class="lede">
+    They never edit the same bytes, but they are coupled twice: through the cache, and through the threshold.
+  </p>
+
+  <ol class="steps">
+    <li><b>Memory is a floor the diet cannot lower.</b> The diet rewrites messages; the memory block lives in the
+      system prompt. So the block is a fixed cost on every call of every turn, and no round can trim a byte of it.
+      At the default 24,000-character budget that is roughly 6k tokens standing on every request. If context is
+      tight, the lever is <code>memory.maxChars</code> or <code>memory.includeFacts</code> — never the diet.</li>
+    <li><b>Memory makes rounds fire sooner.</b> The diet's trigger is measured against
+      <code>getContextUsage()</code>, which counts the whole request — system prompt included. A larger memory
+      block therefore reaches the 80% mark earlier and buys fewer messages of headroom before the first round.</li>
+    <li><b>Both are cache events, at opposite ends of the prefix.</b> A memory write invalidates from byte zero,
+      the worst possible position. A diet round invalidates from its oldest eviction, which is deliberately far
+      along and deliberately infrequent. Neither is free, and both are designed to happen rarely for the same
+      reason.</li>
+    <li><b>Their lifetimes are opposites.</b> Memory is the thing that survives the session and is meant to be
+      re-read next week. The diet's eviction set is thrown away the moment the message list is replaced — a new
+      session, a fork, a compaction — because a toolCallId means nothing outside the branch it was made on.</li>
+  </ol>
+
+  <figure>
+    <div class="dg-top"><span class="ic">SHAPE</span><span class="tt">Same request, over a long turn</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 176" role="img" aria-label="Memory as a fixed block and messages growing and being trimmed">
+        <text class="ts" x="0" y="20">call 1</text>
+        <rect class="bx-a" x="70" y="8" width="88" height="18" rx="3"/>
+        <text class="ta" x="80" y="21">memory</text>
+        <rect class="bx" x="162" y="8" width="120" height="18" rx="3"/>
+        <text class="tf" x="290" y="21">small</text>
+
+        <text class="ts" x="0" y="62">call 180</text>
+        <rect class="bx-a" x="70" y="50" width="88" height="18" rx="3"/>
+        <text class="ta" x="80" y="63">memory</text>
+        <rect class="bx" x="162" y="50" width="520" height="18" rx="3"/>
+        <text class="tf" x="690" y="63">at the mark</text>
+
+        <text class="ts" x="0" y="104">call 181</text>
+        <rect class="bx-a" x="70" y="92" width="88" height="18" rx="3"/>
+        <text class="ta" x="80" y="105">memory</text>
+        <rect class="bx-y" x="162" y="92" width="150" height="18" rx="3"/>
+        <text class="tm" x="172" y="105">stubs</text>
+        <rect class="bx" x="316" y="92" width="200" height="18" rx="3"/>
+        <text class="tf" x="524" y="105">a round has run</text>
+
+        <line class="lnd" x1="70" y1="128" x2="70" y2="150"/>
+        <text class="tf" x="70" y="166">the memory block never moves, and never shrinks</text>
+        <line class="lnr" x1="682" y1="34" x2="682" y2="86"/>
+        <text class="tr" x="560" y="150">the diet works only to the right of this line</text>
+      </svg>
+    </div>
+    <figcaption>The block on the left is paid on every call of the session. Everything the diet can reach is on the right.</figcaption>
+  </figure>
+</section>
+
+<section id="edges">
+  <p class="eyebrow">13 · Together</p>
+  <h2>Sharp edges</h2>
+  <p class="lede">
+    Four things that are true of the code as it stands, and are not obvious from reading either extension's
+    header comment.
+  </p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>A global CLAUDE.md that does not fit is dropped silently</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        <code>assemble()</code> adds the global block first and ignores whether it fit. The index and the facts both
+        set the <code>truncated</code> flag when they overflow, and that flag is what appends the "some memory was
+        omitted" line and what <code>/memory</code> reports. The global block sets nothing — so a
+        <code>~/.claude/CLAUDE.md</code> larger than <code>memory.maxChars</code> vanishes with no note anywhere.
+      </p>
+    </div>
+    <div class="card">
+      <h3>The pin channel has no publisher</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        <code>context-diet:pin</code> was built for the <code>visual-reference</code> extension — a reference mockup
+        that must outlive the agent's own newer screenshots. That extension was removed in <code>898261e</code>, and
+        nothing else emits on the channel. The consumer, the cap and the protection rung are all still there and all
+        currently unreachable. Harmless: the set defaults to empty.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Once anything is evicted, the view is always rewritten</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        Not a bug — it is the byte-identical invariant doing its job — but worth knowing when reading a transcript:
+        after the first round, no call in that session sends the original bodies again, however far context later
+        falls.
+      </p>
+    </div>
+    <div class="card">
+      <h3>dropOldReasoning is on here</h3>
+      <p style="font-size:14.6px;color:var(--fg-2)">
+        The experimental flag, whose documented failure is a hard 400 from the Responses API rather than a quality
+        dip. That is the deliberate validation plan, but it is a live setting on this machine and the symptom to
+        watch for is specific: <em>"was provided without its required reasoning item"</em>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="settings">
+  <p class="eyebrow">14 · Reference</p>
+  <h2>Settings</h2>
+  <p class="lede">Both blocks live in <code>agent/settings.json</code>, and both are re-read on every session start.</p>
+
+  <h3>memory</h3>
+  <table class="kv">
+    <thead><tr><th>key</th><th>default</th><th>what it does</th></tr></thead>
+    <tbody>
+      <tr><td class="k">enabled</td><td class="d">true</td><td class="x">Master switch. Off means nothing is loaded, nothing is injected, and the tool refuses rather than pretending.</td></tr>
+      <tr><td class="k">includeFacts</td><td class="d">true</td><td class="x">Include full fact bodies. Off leaves only the MEMORY.md index — the cheap mode for a project with a lot of memory.</td></tr>
+      <tr><td class="k">maxChars</td><td class="d">24000</td><td class="x">Budget for the whole injected block. Roughly 6k tokens at pi's 4-chars-per-token estimate, paid on every request.</td></tr>
+      <tr><td class="k">claudeHome</td><td class="d">~/.claude</td><td class="x">The store forked from, and where the global CLAUDE.md is read.</td></tr>
+      <tr><td class="k">piHome</td><td class="d">$XDG_CONFIG_HOME or ~/.config, + /pi</td><td class="x">Root of pi's own store. Machine-local and private on purpose — this is not something a <code>git add -A</code> should publish.</td></tr>
+      <tr><td class="k">writable</td><td class="d">true</td><td class="x">Whether the <code>memory</code> tool is offered at all.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>contextDiet</h3>
+  <table class="kv">
+    <thead><tr><th>key</th><th>default</th><th>what it does</th></tr></thead>
+    <tbody>
+      <tr><td class="k">enabled</td><td class="d">true</td><td class="x">Off returns before anything is registered — no hook, no renderer, no cost.</td></tr>
+      <tr><td class="k">highWaterRatio</td><td class="d">0.8</td><td class="x">Fraction of the window that triggers a round.</td></tr>
+      <tr><td class="k">targetRatio</td><td class="d">0.55</td><td class="x">Fraction a round trims to. Clamped to at most 90% of the high-water mark; an inverted pair is rejected together rather than clamped into something the file does not say.</td></tr>
+      <tr><td class="k">highWaterTokens</td><td class="d">0</td><td class="x">Absolute override. 0 means "use the ratio".</td></tr>
+      <tr><td class="k">targetTokens</td><td class="d">0</td><td class="x">Absolute override for the target.</td></tr>
+      <tr><td class="k">keepRecentResults</td><td class="d">24</td><td class="x">Newest results never touched — the live working set.</td></tr>
+      <tr><td class="k">keepImages</td><td class="d">3</td><td class="x">Newest image-bearing results that survive. 0 is spelled out explicitly in the code, because <code>slice(-0)</code> would otherwise keep every one.</td></tr>
+      <tr><td class="k">minResultBytes</td><td class="d">512</td><td class="x">Below this the stub would not pay for itself.</td></tr>
+      <tr><td class="k">dropOldReasoning</td><td class="d">false</td><td class="x">Experimental. Strips old thinking blocks. <b>Set to true on this machine.</b></td></tr>
+      <tr><td class="k">keepRecentReasoning</td><td class="d">10</td><td class="x">Newest assistant messages that keep their reasoning. Floored at 1: keeping zero would strip the message the model is mid-thought on.</td></tr>
+      <tr><td class="k">escalateAfterRounds</td><td class="d">3</td><td class="x">Rounds in one turn before the model is told to change strategy. 0 disables the reminder.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Files</h3>
+  <table class="kv">
+    <thead><tr><th>file</th><th></th><th>role</th></tr></thead>
+    <tbody>
+      <tr><td class="k">memory/index.ts</td><td class="d"></td><td class="x">Settings, source resolution, the session_start / before_agent_start hooks, the tool, and <code>/memory</code>.</td></tr>
+      <tr><td class="k">memory/load.ts</td><td class="d">pure</td><td class="x">Frontmatter parsing and <code>assemble()</code> — the budget and the order.</td></tr>
+      <tr><td class="k">memory/locate.ts</td><td class="d">pure-ish</td><td class="x">cwd → slug candidates for the inherited store, and the global CLAUDE.md path.</td></tr>
+      <tr><td class="k">memory/store.ts</td><td class="d"></td><td class="x">pi's own store: the atomic fork, the filename guard, temp-then-rename writes.</td></tr>
+      <tr><td class="k">context-diet/index.ts</td><td class="d"></td><td class="x">The <code>context</code> hook, the turn guard, the resets, escalation delivery, the pin channel.</td></tr>
+      <tr><td class="k">context-diet/diet.ts</td><td class="d">pure</td><td class="x">What gets dropped and what the model reads instead.</td></tr>
+      <tr><td class="k">context-diet/session.ts</td><td class="d">pure</td><td class="x">Per-session eviction sets, round counters, the escalation latch.</td></tr>
+      <tr><td class="k">context-diet/config.ts</td><td class="d"></td><td class="x">Settings, defaults, and the validation that rejects an inverted pair.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+</div>
+
+<script>
+(function () {
+  var R = document.documentElement;
+  var K = 'pi-ext-theme';
+  function get(d) { try { return localStorage.getItem(K) || d; } catch (e) { return d; } }
+  function setTheme(v) {
+    if (v === 'dark') R.setAttribute('data-theme', 'dark'); else R.removeAttribute('data-theme');
+    try { localStorage.setItem(K, v); } catch (e) {}
+    document.querySelectorAll('button[data-theme]').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.theme === v));
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('button[data-theme]');
+    if (b) setTheme(b.dataset.theme);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    if (e.key === 't' || e.key === 'T') setTheme(R.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+  setTheme(get('light'));
+
+  var bar = document.getElementById('bar');
+  function progress() {
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + '%';
+  }
+  addEventListener('scroll', progress, { passive: true });
+  addEventListener('resize', progress);
+  progress();
+
+  var links = [].slice.call(document.querySelectorAll('nav.toc a[href^="#"]'));
+  var map = {};
+  links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      links.forEach(function (a) { a.classList.remove('on'); });
+      var a = map[en.target.id]; if (a) a.classList.add('on');
+    });
+  }, { rootMargin: '0px 0px -72% 0px', threshold: 0 });
+  document.querySelectorAll('section[id]').forEach(function (s) { io.observe(s); });
+})();
+</script>
+<script>
+(function () {
+  var figs = [].slice.call(document.querySelectorAll('.iann'));
+  figs.forEach(function (f) {
+    var box = f.querySelector('.ann');
+    if (box) f._hint = box.innerHTML;
+  });
+  function render(f, id) {
+    var box = f.querySelector('.ann'); if (!box) return;
+    var src = id ? f.querySelector('#an-' + id) : null;
+    box.innerHTML = src ? src.innerHTML : f._hint;
+  }
+  function mark(f, id) {
+    f.querySelectorAll('.np').forEach(function (g) {
+      if (id && g.getAttribute('data-a') === id) g.setAttribute('data-on', '');
+      else g.removeAttribute('data-on');
+    });
+  }
+  function pick(g, pin) {
+    var f = g.closest('.iann'); if (!f) return;
+    var id = g.getAttribute('data-a');
+    if (pin) { if (f._pin === id) id = null; f._pin = id || null; }
+    render(f, id); mark(f, id);
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target; if (!t || !t.closest) return;
+    var g = t.closest('.iann .np'); if (g) pick(g, true);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target; if (!t || !t.closest) return;
+    var g = t.closest('.iann .np');
+    if (g) { e.preventDefault(); pick(g, true); }
+  });
+  if (window.matchMedia && matchMedia('(hover:hover) and (pointer:fine)').matches) {
+    document.addEventListener('mouseover', function (e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var g = t.closest('.iann .np'); if (g) pick(g, false);
+    });
+    document.addEventListener('mouseout', function (e) {
+      var t = e.target; if (!t || !t.closest) return;
+      var g = t.closest('.iann .np'); if (!g) return;
+      var f = g.closest('.iann'); if (!f) return;
+      render(f, f._pin); mark(f, f._pin);
+    });
+  }
+})();
+</script>
+</body>
+</html>
