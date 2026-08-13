@@ -309,7 +309,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
     </div>
     <figcaption class="ann"><span class="hint">Hover or tap any block for what it is and who put it there.</span></figcaption>
     <div class="anns">
-      <div id="an-an-sys"><b>pi's own</b>The base coding-assistant prompt, the project's AGENTS.md / CLAUDE.md context files, and any loaded skills. Neither extension writes here.</div>
+      <div id="an-an-sys"><b>pi's own</b>The base coding-assistant prompt, the project's AGENTS.md context files, and any loaded skills. Neither extension writes here.</div>
       <div id="an-an-mem"><b>memory · before_agent_start</b>The assembled block, appended with two newlines to whatever pi built. Up to <code>memory.maxChars</code> (24,000 by default, roughly 6k tokens). It is part of the system prompt, so it is cached across the whole turn rather than resent as a message — and the diet can never trim it.</div>
       <div id="an-an-old"><b>context-diet · context hook</b>Bodies of old tool results, replaced by one line each naming the call and its size. The message itself stays: removing it would leave a tool call with no result, and every later request would be rejected.</div>
       <div id="an-an-keep"><b>Protected</b>The newest 24 results are the live working set. Errors are never dropped — a failure the model has not reacted to yet is the last thing to take away.</div>
@@ -409,17 +409,17 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
   <h2>The read path</h2>
   <p class="lede">
     Memory is per project, keyed by cwd. The first question every session asks is which directory on this
-    machine holds this project's memory — and the answer can be another agent's.
+    machine holds this project's memory — and it is not always a store pi wrote.
   </p>
 
   <ol class="steps">
     <li><b>Resolve the source.</b> <code>piMemoryDir(cwd, piHome)</code> is
       <code>&lt;XDG_CONFIG_HOME or ~/.config&gt;/pi/memory/&lt;slug&gt;</code>, where the slug replaces every
       non-alphanumeric character in the cwd with <code>-</code>. If that directory <em>exists</em>, it wins and
-      the store is pi's own. Otherwise memory reads the other agent's:
-      <code>~/.claude/projects/&lt;slug&gt;/memory</code>.</li>
+      the store is pi's own. Otherwise memory reads the inherited store:
+      <code>&lt;inheritedHome&gt;/projects/&lt;slug&gt;/memory</code>.</li>
     <li><b>Probe for the foreign slug.</b> pi's own path is written and read by one deterministic encoder, so it
-      needs no probing. The other agent's encoder is not ours and has been observed to disagree with itself over
+      needs no probing. The inherited store's encoder is not pi's and has been observed to disagree with itself over
       underscores, so two candidates are tried — the plain one, and one that preserves <code>_</code> — and
       whichever directory actually exists wins.</li>
     <li><b>Read the files.</b> Every <code>*.md</code> in that directory, sorted. <code>MEMORY.md</code> is kept
@@ -427,7 +427,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
       <code>type</code> out of its YAML frontmatter. The parse is deliberately lenient — the store has written
       both a flat <code>type:</code> and a nested <code>metadata:</code> block, and older files have no
       frontmatter at all — so anything unrecognised falls back to the filename and the raw body.</li>
-    <li><b>Read the global file.</b> <code>~/.claude/CLAUDE.md</code>, if it exists, is read where it lies. It is
+    <li><b>Read the global file.</b> A global user file, if one exists, is read where it lies. It is
       never cloned and never written: it is the user's, and it is not project memory.</li>
     <li><b>Assemble within the budget</b> (next section), then hold the result until something changes it.</li>
   </ol>
@@ -464,7 +464,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
         <g class="np" data-a="as-global" tabindex="0" role="button">
           <rect class="hit" x="98" y="26" width="184" height="38" rx="5"/>
           <rect class="bx-v" x="101" y="29" width="178" height="32" rx="4"/>
-          <text class="tv" x="111" y="49">Global (CLAUDE.md)</text>
+          <text class="tv" x="111" y="49">Global (user file)</text>
         </g>
         <g class="np" data-a="as-index" tabindex="0" role="button">
           <rect class="hit" x="284" y="26" width="170" height="38" rx="5"/>
@@ -500,7 +500,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
     <figcaption class="ann"><span class="hint">Hover or tap a stage of the fill.</span></figcaption>
     <div class="anns">
       <div id="an-as-head"><b>The header</b>Short on purpose: it is paid for on every request of the session, so it carries only what changes behaviour — that this is memory, that it can be stale, and that a tool exists to change it. The format rules and the what-to-save judgement live in the tool description, read at the moment they are needed.</div>
-      <div id="an-as-global"><b>Global CLAUDE.md — first in line</b>Added before the index and the facts, which means a large global file crowds out project memory rather than the other way round. It is also the one block whose failure to fit is <em>silent</em> — see Sharp edges.</div>
+      <div id="an-as-global"><b>The global user file — first in line</b>Added before the index and the facts, which means a large global file crowds out project memory rather than the other way round. It is also the one block whose failure to fit is <em>silent</em> — see Sharp edges.</div>
       <div id="an-as-index"><b>MEMORY.md — the index</b>One line per fact (<code>- [Title](file.md) — hook</code>). This is what makes recall possible when the bodies have been dropped for budget: the model can still see that a fact exists and read it with the tool.</div>
       <div id="an-as-facts"><b>The facts</b><code>### name [type]</code> followed by the body, in filename order. Included only when <code>memory.includeFacts</code> is on; turning it off leaves the index alone, which is the cheap mode for a project with a lot of memory.</div>
       <div id="an-as-drop"><b>Skipped, not truncated</b>A fact that would overflow is skipped whole and the loop keeps going, so a big fact does not block the small ones behind it. No fact is ever cut in half — half a fact is a fact that says something the file does not.</div>
@@ -522,18 +522,18 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
   <p class="eyebrow">05 · memory</p>
   <h2>The fork</h2>
   <p class="lede">
-    pi does not edit another agent's memory. It reads it until the moment it has something of its own to say,
+    pi does not edit a store it did not write. It reads one until the moment it has something of its own to say,
     and then it takes a copy. That is copy-on-write, and the copy is a fork, not a sync.
   </p>
 
   <figure class="iann">
     <div class="dg-top"><span class="ic">COPY-ON-WRITE</span><span class="tt">The first write, and why the clone is atomic</span></div>
     <div class="svgbox">
-      <svg viewBox="0 0 760 230" role="img" aria-label="The memory store fork from the other agent's directory into pi's own">
+      <svg viewBox="0 0 760 230" role="img" aria-label="The memory store fork from an inherited directory into pi's own">
         <g class="np" data-a="fk-src" tabindex="0" role="button">
           <rect class="hit" x="0" y="16" width="220" height="72" rx="6"/>
           <rect class="bx" x="3" y="19" width="214" height="66" rx="5"/>
-          <text class="t" x="16" y="40">~/.claude/projects/…/memory</text>
+          <text class="t" x="16" y="40">inheritedHome/projects/…/memory</text>
           <text class="tf" x="16" y="58">MEMORY.md + *.md</text>
           <text class="tf" x="16" y="74">read in place · never written</text>
         </g>
@@ -572,7 +572,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
           <rect class="hit" x="384" y="106" width="374" height="60" rx="6"/>
           <rect class="bx" x="387" y="109" width="368" height="54" rx="5"/>
           <text class="t" x="400" y="130">a fork, not a sync</text>
-          <text class="tf" x="400" y="148">facts the other agent adds afterwards are never seen here</text>
+          <text class="tf" x="400" y="148">facts added to the inherited store later are never seen here</text>
         </g>
 
         <text class="tf" x="0" y="196">.origin.json records what was forked and when, so /memory can say it out loud</text>
@@ -585,7 +585,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
       <div id="an-fk-stage"><b>Staging</b>A temp sibling directory, built complete before anything claims the real name. Every <code>*.md</code> is copied across and <code>.origin.json</code> is written with the source path and an ISO timestamp.</div>
       <div id="an-fk-dst"><b>The rename</b>One atomic operation: the destination either does not exist or is complete. It is re-checked immediately before the rename too, because another pi may have forked the same project in between — and renaming onto a non-empty directory fails anyway.</div>
       <div id="an-fk-why"><b>Why atomic matters here specifically</b>Precedence is "pi's directory exists → pi's store wins". A clone that copied three files of twelve and then crashed would leave a directory that exists, wins, and hides the nine facts that never made it. Memory loss with no error anywhere.</div>
-      <div id="an-fk-nomerge"><b>No merge back</b>That is the honest reading of "clone it and mutate it". After the fork the two stores are independent: nothing pi writes reaches the other agent, and nothing the other agent adds reaches pi. <code>/memory</code> prints the fork date so the divergence is visible rather than assumed.</div>
+      <div id="an-fk-nomerge"><b>No merge back</b>That is the honest reading of "clone it and mutate it". After the fork the two stores are independent: nothing pi writes reaches the inherited store, and nothing added there later reaches pi. <code>/memory</code> prints the fork date so the divergence is visible rather than assumed.</div>
     </div>
   </figure>
 </section>
@@ -801,7 +801,7 @@ that only matters to this conversation.</pre>
   </div>
   <p>
     That last number is the trigger gap from the previous section, measured rather than argued. Every one of the 83
-    was written by the other agent on this machine, which nudges for it. pi's memory extension has been loaded the
+    was written by a different tool on this machine — one that nudges for it. pi's memory extension has been loaded the
     whole time, its tool offered on every turn, and it has never once written a fact — so the fork described in §05
     has never happened.
   </p>
@@ -1364,12 +1364,12 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
 
   <div class="grid g2">
     <div class="card">
-      <h3>A global CLAUDE.md that does not fit is dropped silently</h3>
+      <h3>A global user file that does not fit is dropped silently</h3>
       <p style="font-size:14.6px;color:var(--fg-2)">
         <code>assemble()</code> adds the global block first and ignores whether it fit. The index and the facts both
         set the <code>truncated</code> flag when they overflow, and that flag is what appends the "some memory was
         omitted" line and what <code>/memory</code> reports. The global block sets nothing — so a
-        <code>~/.claude/CLAUDE.md</code> larger than <code>memory.maxChars</code> vanishes with no note anywhere.
+        a global file larger than <code>memory.maxChars</code> vanishes with no note anywhere.
       </p>
     </div>
     <div class="card">
@@ -1412,11 +1412,21 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
       <tr><td class="k">enabled</td><td class="d">true</td><td class="x">Master switch. Off means nothing is loaded, nothing is injected, and the tool refuses rather than pretending.</td></tr>
       <tr><td class="k">includeFacts</td><td class="d">true</td><td class="x">Include full fact bodies. Off leaves only the MEMORY.md index — the cheap mode for a project with a lot of memory.</td></tr>
       <tr><td class="k">maxChars</td><td class="d">24000</td><td class="x">Budget for the whole injected block. Roughly 6k tokens at pi's 4-chars-per-token estimate, paid on every request.</td></tr>
-      <tr><td class="k">claudeHome</td><td class="d">~/.claude</td><td class="x">The store forked from, and where the global CLAUDE.md is read.</td></tr>
+      <tr><td class="k">claudeHome</td><td class="d">see note</td><td class="x">Root of the store pi inherits from on a machine that already has one, and where the global user file is read. Point it anywhere, or at nothing.</td></tr>
       <tr><td class="k">piHome</td><td class="d">$XDG_CONFIG_HOME or ~/.config, + /pi</td><td class="x">Root of pi's own store. Machine-local and private on purpose — this is not something a <code>git add -A</code> should publish.</td></tr>
       <tr><td class="k">writable</td><td class="d">true</td><td class="x">Whether the <code>memory</code> tool is offered at all.</td></tr>
     </tbody>
   </table>
+  <div class="callout note">
+    <span class="lbl">One name to know</span>
+    <p>
+      <code>claudeHome</code> is the settings key exactly as it appears in the code, and its default points at the
+      agent store this extension was first built to import from. It is only ever a <b>source</b> — nothing is written
+      there, ever. Point it at whatever store a machine already has, or at a path that does not exist, in which case
+      the first write simply creates an empty store of pi's own. The rest of this document calls it the
+      <em>inherited store</em>, which is all it is.
+    </p>
+  </div>
 
   <h3>contextDiet</h3>
   <table class="kv">
@@ -1442,7 +1452,7 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
     <tbody>
       <tr><td class="k">memory/index.ts</td><td class="d"></td><td class="x">Settings, source resolution, the session_start / before_agent_start hooks, the tool, and <code>/memory</code>.</td></tr>
       <tr><td class="k">memory/load.ts</td><td class="d">pure</td><td class="x">Frontmatter parsing and <code>assemble()</code> — the budget and the order.</td></tr>
-      <tr><td class="k">memory/locate.ts</td><td class="d">pure-ish</td><td class="x">cwd → slug candidates for the inherited store, and the global CLAUDE.md path.</td></tr>
+      <tr><td class="k">memory/locate.ts</td><td class="d">pure-ish</td><td class="x">cwd → slug candidates for the inherited store, and the global user file path.</td></tr>
       <tr><td class="k">memory/store.ts</td><td class="d"></td><td class="x">pi's own store: the atomic fork, the filename guard, temp-then-rename writes.</td></tr>
       <tr><td class="k">context-diet/index.ts</td><td class="d"></td><td class="x">The <code>context</code> hook, the turn guard, the resets, escalation delivery, the pin channel.</td></tr>
       <tr><td class="k">context-diet/diet.ts</td><td class="d">pure</td><td class="x">What gets dropped and what the model reads instead.</td></tr>
