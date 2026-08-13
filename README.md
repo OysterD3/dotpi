@@ -328,11 +328,23 @@ permissions block intact.
 legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, and a bare `Bash`
 matches every use of the tool.
 
-**Rules can name extension tools too**, which is how `Workflow`, `Advisor` and `Ask_user` are
-allowed outright here. Unknown names pass through lower-cased (`resolveToolName`), so `Workflow` resolves to the
-`workflow` tool; the capital is required by the rule syntax.
+**Rules can name extension tools too**, and every tool the extensions in here register is allowed
+outright: `Workflow`, `Advisor`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
+`Bash_output`, `Kill_shell`, and the three `Intercom_*`. Unknown names pass through lower-cased
+(`resolveToolName`), so `Workflow` resolves to the `workflow` tool; the capital is required by the
+rule syntax. In `auto` mode an unlisted tool goes to a model that has never heard of it, and the
+verdicts read accordingly — `intercom_send` came back as "may send workspace data off the machine",
+which it cannot: it writes a file under `agent/intercom/`.
 
-Those two are in `allow` for a reason worth writing down. In `auto` mode any tool without a matching
+The one deliberate omission is **`Bash`**. background-shell's tool *is* pi's shell, so a bare `Bash`
+rule would not be "trusting our own extension" — it would retire the gate on every command this
+agent runs. The prefix rules above (`Bash(git status *)` and friends) stay the way in.
+
+Nothing here reaches the destructive table, which is checked *ahead* of `allow` and which no allow
+rule can override — `corpus.test.ts` pins that with a blanket `Bash` rule against a tunnel-expose
+command, in both precedence orders.
+
+`Workflow` and `Advisor` are in `allow` for a further reason worth writing down. In `auto` mode any tool without a matching
 rule goes to the classifier, which can turn it into a prompt — and for these two the prompt never
 stops coming. The remembered-approval grain that would normally silence it is `exact:<tool>:<target>`,
 where `target` for a custom tool is `JSON.stringify(input)`. For `advisor` that input is the free-text
@@ -346,7 +358,8 @@ with no destructive gate: `rm -rf`, `git push --force` and `curl | sh` are not c
 prompted, and not denied. (`--approve` does not help; pi maps it to project *trust*, not tool
 approval.) `advisor` is a different case only because it also passes `--no-tools`, so it has no
 `bash` to gate. Allowing `workflow` therefore means trusting the scripts this agent writes to run
-unsupervised in your project. `deny` rules still outrank everything in the PARENT session, which is
+unsupervised in your project — and `Task` is the same bargain by the same mechanism, since subagents
+spawn the same way. `deny` rules still outrank everything in the PARENT session, which is
 where you and the agent share a shell.
 
 **The default mode is `askDestructive`** — exactly the "only ask me about destructive things" case.
