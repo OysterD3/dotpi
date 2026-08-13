@@ -618,8 +618,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <p><span class="le">Injects review prompts as turns: /simplify for quality, /code-review for correctness. Scales to live fan-out: workflow fleet, task agents, inline.</span><span class="lz">组装评审提示词并作为一轮注入：/simplify 管质量，/code-review 管正确性；按当前扇出伸缩：工作流集群、task agent 或内联。</span></p>
       <div class="why"><span class="le">Two commands, not one flag: a reviewer asked for both trades a real defect against a style nit.</span><span class="lz">两个命令而非一个开关：同时要两样的评审者，会拿真缺陷去换风格挑刺。</span></div>
       <div class="mfig iann" data-ext="review"><svg viewBox="0 0 300 88" role="img" aria-label="review: hooks, state, tradeoff and limit"><g class="np k-c" data-a="review-h0" tabindex="0" role="button"><rect class="pill" x="0" y="0" width="300" height="21" rx="4"/><rect class="tg" x="5" y="4.5" width="13" height="12" rx="2.5"/><text class="tgt" x="11.5" y="13.4">/</text><text class="pl" x="24" y="14.4" style="font-size:9.5px">simplify</text></g><g class="np k-c" data-a="review-h1" tabindex="0" role="button"><rect class="pill" x="0" y="26" width="300" height="21" rx="4"/><rect class="tg" x="5" y="30.5" width="13" height="12" rx="2.5"/><text class="tgt" x="11.5" y="39.4">/</text><text class="pl" x="24" y="40.4" style="font-size:9.5px">code-review</text></g><line class="sep" x1="0" y1="57" x2="300" y2="57"/><g class="np ch-s" data-a="review-s" tabindex="0" role="button"><rect class="chip" x="0" y="66" width="96" height="22" rx="4"/><text class="cg" x="8" y="81.2">▪</text><text class="cl le-t" x="19" y="80.8">state</text><text class="cl lz-t" x="19" y="80.8">状态</text></g><g class="np ch-d" data-a="review-d" tabindex="0" role="button"><rect class="chip" x="102" y="66" width="96" height="22" rx="4"/><text class="cg" x="110" y="81.2">◆</text><text class="cl le-t" x="121" y="80.8">tradeoff</text><text class="cl lz-t" x="121" y="80.8">取舍</text></g><g class="np ch-l" data-a="review-l" tabindex="0" role="button"><rect class="chip" x="204" y="66" width="96" height="22" rx="4"/><text class="cg" x="212" y="81.2">!</text><text class="cl le-t" x="223" y="80.8">limit</text><text class="cl lz-t" x="223" y="80.8">局限</text></g></svg><div class="ann"><span class="hint le">tap a row ›</span><span class="hint lz">点一行 ›</span></div><div class="anns" hidden><div id="an-review-h0"><b>simplify</b><span class="le">Quality pass (reuse, simplification, efficiency, altitude); always applies fixes</span><span class="lz">质量清理（复用/简化/效率/抽象层级），并且总是直接应用修复</span></div><div id="an-review-h1"><b>code-review</b><span class="le">Correctness pass at [low|medium|high|xhigh|max], with --fix and &lt;target&gt;</span><span class="lz">按 [low|medium|high|xhigh|max] 查正确性缺陷，支持 --fix 和 &lt;target&gt;</span></div><div id="an-review-s"><b class="le">state · none — pure per call</b><b class="lz">状态 · 无 —— 每次调用即用即弃</b><span class="le">None; pure per-call. Each handler parses args and injects one prompt</span><span class="lz">无状态，纯按次调用：每个 handler 解析参数并注入一段 prompt</span></div><div id="an-review-d"><b class="le">the tradeoff</b><b class="lz">关键取舍</b><span class="le">Two commands, not a flag, so a style nit cannot displace a real defect</span><span class="lz">拆成两个命令而非 flag，风格小毛病挤不掉真正的缺陷</span></div><div id="an-review-l"><b class="le">limit</b><b class="lz">局限</b><span class="le">Path targets and repos without upstream fall back to 4 finders (unmeasurableFinders).</span><span class="lz">路径型 target 和没有 upstream 的仓库退回 4 个 finder（unmeasurableFinders）</span></div></div></div></div>
-    <div class="feat"><h4>visual-reference</h4><div class="cmd">passive · tool_result + before_agent_start + agent_end</div>
-      <p><span class="le">Three legs: rewrites pi's oversized-line read refusal for must-render documents, adds a look-before-you-build rule, blocks agent_end on unrendered UI edits.</span><span class="lz">三条腿：改写 pi 对必须渲染文档的超长行读取拒绝提示、追加「先看再动手」规则、UI 改动未渲染时拦下 agent_end。</span></p>
+    <div class="feat"><h4>visual-reference</h4><div class="cmd">passive · tool_result + before_agent_start</div>
+      <p><span class="le">Two legs: rewrites pi's oversized-line read refusal for must-render documents, and adds a look-before-you-build rule. A third — a gate on unrendered UI edits — was removed for firing on file extension alone.</span><span class="lz">两条腿：改写 pi 对必须渲染文档的超长行读取拒绝提示、追加「先看再动手」规则。第三条——UI 改动未渲染时的闸门——因只凭文件扩展名触发而移除。</span></p>
       <div class="why"><span class="le">One measured session: own app opened 23 times, reference 6; first render 12 tool calls into writing UI.</span><span class="lz">一次实测：自己的应用打开 23 次，参考稿 6 次；开始写 UI 后 12 个工具调用才首次渲染。</span></div>
       <a class="dd-link" href="#verify"><span class="le">Full deep dive ↓</span><span class="lz">完整深潜 ↓</span></a></div>
     <div class="feat"><h4>lsp</h4><div class="cmd">lsp_diagnostics tool</div>
@@ -1100,12 +1100,12 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <div class="eyebrow"><span class="le">Deep dive · Quality</span><span class="lz">深入 · 质量</span></div>
   <h2><span class="le">Forced verification: advice is not a gate</span><span class="lz">强制验证：建议不是闸门</span></h2>
   <p class="lede">
-    <span class="le">Three extensions share one finding: a system-prompt rule that sits in every request and changes nothing is not a control. A control has to sit on <code>agent_end</code> and refuse to let the turn finish.</span>
-    <span class="lz">三个扩展指向同一个结论：一条出现在每次请求里、却什么都没改变的系统提示规则，不是控制手段。真正的控制必须挂在 <code>agent_end</code> 上，拒绝让这一轮结束。</span>
+    <span class="le">A system-prompt rule that sits in every request and changes nothing is not a control. A control has to sit on <code>agent_end</code> and refuse to let the turn finish — and it inherits everything from the signal it fires on. Two of these three still gate. The third was removed for firing on the wrong signal.</span>
+    <span class="lz">一条出现在每次请求里、却什么都没改变的系统提示规则，不是控制手段。真正的控制必须挂在 <code>agent_end</code> 上，拒绝让这一轮结束——而它的全部好坏，取决于它凭什么信号触发。这三者中有两个仍是闸门，第三个因信号选错而被移除。</span>
   </p>
 
   <figure>
-  <div class="dg-top"><span class="ic">SCHEMA</span><span class="tt"><span class="lz">三道闸门，同一个结论</span><span class="le">Three gates, one finding</span></span></div>
+  <div class="dg-top"><span class="ic">SCHEMA</span><span class="tt"><span class="lz">两道闸门，和一道被移除的</span><span class="le">Two gates, and one that was removed</span></span></div>
   <div class="svgbox">
   <svg viewBox="0 0 760 250" role="img" aria-label="Verification gates">
     <rect class="bx" x="6" y="26" width="240" height="132" rx="5"/>
@@ -1121,8 +1121,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <text class="ts" x="18" y="82">line and suggests sed; for a 662KB bundled</text>
       <text class="ts" x="18" y="96">mockup that is a dead end. Rewrites it.</text>
       <text class="ts" x="18" y="118">2 · guideline — look before you copy</text>
-      <text class="ts" x="18" y="140">3 · verify gate — counts unrendered edits</text>
-      <text class="ts" x="18" y="152">and refuses to let the turn end</text>
+      <text class="ts" x="18" y="140">3 · verify gate — REMOVED. It fired on the</text>
+      <text class="ts" x="18" y="152">file extension of an edit, not on a reference.</text>
       <text class="ts" x="270" y="68">Counts consecutive suite runs with NO edit</text>
       <text class="ts" x="270" y="82">between them. At four, one reminder.</text>
       <text class="ts" x="270" y="104">The discriminator is not the command —</text>
@@ -1135,17 +1135,17 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <text class="tf" x="522" y="118">half the context window — goal.model</text>
       <text class="tf" x="522" y="132">is how you make that cheap.</text>
       <text class="tf" x="522" y="150">maxIterations 20 by default.</text>
-      <text class="tr" x="6" y="202">The measurement behind the verify gate: one session opened its OWN app 23 times and the reference 6 times,</text>
-      <text class="ts" x="6" y="222">made its last twelve UI edits in its final five minutes, and stopped without ever rebuilding, rendering or screenshotting the result.</text>
-      <text class="ts" x="6" y="240">The guideline was in every request that whole time — and changed nothing. That is the difference between advice and a gate.</text>
+      <text class="tr" x="6" y="202">The measurement that removed it: in the session that exposed it, EVERY agent-browser call came after the gate's follow-up and none before.</text>
+      <text class="ts" x="6" y="222">A one-line money-format fix in a .tsx read as unverified UI work, and sent an agent with no reference into a browser. The GUI-copy sessions</text>
+      <text class="ts" x="6" y="240">it was built for never reached it — they opened the reference in their first few tool calls, on the guideline alone.</text>
     </g>
     <g class="lz">
       <text class="ts" x="18" y="68">1 · 读取建议 —— pi 会拒绝超长行并建议用</text>
       <text class="ts" x="18" y="82">sed；对 662KB 的打包稿这是死路。</text>
       <text class="ts" x="18" y="96">于是改写这条建议。</text>
       <text class="ts" x="18" y="118">2 · 准则 —— 抄之前先看一眼</text>
-      <text class="ts" x="18" y="140">3 · 验证闸门 —— 统计未渲染的改动，</text>
-      <text class="ts" x="18" y="152">并拒绝让这一轮结束</text>
+      <text class="ts" x="18" y="140">3 · 验证闸门 —— 已移除。它凭改动的文件</text>
+      <text class="ts" x="18" y="152">扩展名触发，而不是凭「有没有参考稿」。</text>
       <text class="ts" x="270" y="68">统计中间「没有任何编辑」的连续</text>
       <text class="ts" x="270" y="82">测试运行次数。到第四次，提醒一次。</text>
       <text class="ts" x="270" y="104">判据不是命令本身 ——</text>
@@ -1158,15 +1158,15 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <text class="ts" x="522" y="118">上下文窗口 —— goal.model 就是</text>
       <text class="ts" x="522" y="132">让它变便宜的办法。</text>
       <text class="ts" x="522" y="150">maxIterations 默认 20。</text>
-      <text class="tr" x="6" y="202">造出验证闸门的那次实测：一个会话打开自己的应用 23 次，打开参考稿 6 次，</text>
-      <text class="ts" x="6" y="222">最后十二次 UI 修改集中在收尾的五分钟里，然后就停了 —— 从未重新构建、渲染或截图看过结果。</text>
-      <text class="ts" x="6" y="240">那条准则全程都在每一次请求里，什么也没改变。这就是「建议」和「闸门」的区别。</text>
+      <text class="tr" x="6" y="202">让它被移除的那次实测：在暴露问题的那个会话里，所有 agent-browser 调用都发生在闸门追问之后，之前一次也没有。</text>
+      <text class="ts" x="6" y="222">一处 .tsx 里的单行金额格式修复，被读成「未验证的 UI 改动」，把一个手头没有任何参考稿的 agent 推进了浏览器。而它本为之而造的</text>
+      <text class="ts" x="6" y="240">仿稿会话根本走不到它 —— 那些会话在最初几次工具调用里就打开了参考稿，靠的只是那条准则。</text>
     </g>
   </svg>
   </div>
   <figcaption>
-    <span class="le">The gate caps itself at 2 follow-ups per session, mirroring <code>goal.maxIterations</code>: a model that ignores two direct, evidence-bearing instructions is not one a third will reach, and nagging forever spends your money on a lost cause.</span>
-    <span class="lz">闸门自限每会话 2 次追问，与 <code>goal.maxIterations</code> 同理：连着无视两条直接、带证据的指令的模型，第三条也够不着它，而无休止的唠叨只是在为一件必败的事花你的钱。</span>
+    <span class="le">The two that remain fire on evidence of the failure itself: <code>goal</code> judges the stated condition, <code>test-streak</code> counts suite runs with no edit between them. A file extension is not that evidence, which is why the third is gone — its cost landed on the sessions that had nothing to look at, and the sessions it was written for never needed it.</span>
+    <span class="lz">留下的两个都凭失败本身的证据触发：<code>goal</code> 裁判写明的条件，<code>test-streak</code> 统计中间没有任何编辑的连续测试运行。文件扩展名不是这种证据，所以第三个被移除了——它的代价落在了根本没有东西可看的会话上，而它本为之而写的那些会话从来不需要它。</span>
   </figcaption>
   </figure>
 </section>
@@ -1211,7 +1211,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <tr><td class="k">context-diet</td><td class="d"><span class="le">every LLM call</span><span class="lz">每次模型调用</span></td><td class="x"><span class="le">Rewrites the provider-bound copy only. One transcript line per dropped result.</span><span class="lz">只重写发往服务商的副本。每条被丢弃的结果留下一行记录。</span></td></tr>
       <tr><td class="k">tool-batching</td><td class="d"><span class="le">every request</span><span class="lz">每次请求</span></td><td class="x"><span class="le">Six lines appended to the system prompt. No output at all.</span><span class="lz">向系统提示词追加六行。完全没有输出。</span></td></tr>
       <tr><td class="k">test-streak</td><td class="d"><span class="le">4th suite re-run</span><span class="lz">第 4 次重跑</span></td><td class="x"><span class="le">A steer plus a warning when the suite is re-run with no edit between; max 3 per turn.</span><span class="lz">测试在没有编辑的情况下被重跑时，发送一次引导并显示警告；每轮最多 3 次。</span></td></tr>
-      <tr><td class="k">visual-reference</td><td class="d"><span class="le">agent tries to stop</span><span class="lz">agent 试图停止时</span></td><td class="x"><span class="le">Resumes the turn when edited UI files were never rendered. Capped at 2 per session; skipped after Escape.</span><span class="lz">被改的 UI 文件从未渲染时，恢复这一轮。每会话上限 2 次；按过 Esc 则跳过。</span></td></tr>
+      <tr><td class="k">visual-reference</td><td class="d"><span class="le">oversized read</span><span class="lz">超长行读取时</span></td><td class="x"><span class="le">Rewrites pi's <code>sed</code> advice for a document that must be rendered. Its <code>agent_end</code> gate was removed and nothing replaced it.</span><span class="lz">改写 pi 对「必须渲染的文档」给出的 <code>sed</code> 建议。它原有的 <code>agent_end</code> 闸门已移除，且没有替代品。</span></td></tr>
       <tr><td class="k">cmux-notify</td><td class="d"><span class="le">blocked on you</span><span class="lz">卡住等你时</span></td><td class="x"><span class="le">Nothing in pi — it raises cmux's "needs input" chip. Gated by <code>CMUX_SURFACE_ID</code>.</span><span class="lz">在 pi 内没有任何显示——它点亮 cmux 的「需要输入」标记。由 <code>CMUX_SURFACE_ID</code> 控制。</span></td></tr>
     </tbody>
   </table>
@@ -1340,7 +1340,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <b>"recap"</b>:          { <span class="k">"model"</span>: <span class="s">"cheap"</span>, <span class="k">"autoOnReturn"</span>: <span class="n">true</span>, <span class="k">"idleThresholdMs"</span>: <span class="n">300000</span> },
   <b>"scratchpad"</b>:     { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"root"</span>: <span class="s">""</span> },
   <b>"visualReference"</b>:{ <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"readAdvice"</span>: <span class="n">true</span>,
-                    <span class="k">"guideline"</span>: <span class="n">true</span>, <span class="k">"verifyGate"</span>: <span class="n">true</span> },
+                    <span class="k">"guideline"</span>: <span class="n">true</span> },
   <b>"elapsed"</b>:        { <span class="k">"workingTimer"</span>: <span class="n">true</span>, <span class="k">"showTurnDuration"</span>: <span class="n">true</span>, <span class="k">"minTurnMs"</span>: <span class="n">0</span> },
   <b>"memory"</b>:         { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"includeFacts"</span>: <span class="n">true</span>, <span class="k">"maxChars"</span>: <span class="n">24000</span> },
   <b>"dynamicWorkflow"</b>: { <span class="k">"keywordTrigger"</span>: <span class="n">true</span>, <span class="k">"model"</span>: <span class="s">"frontier"</span> },
@@ -1364,7 +1364,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <tr><td class="k">recap.autoOnReturn</td><td class="d">true</td><td class="x"><span class="le">On by default on purpose: a recap you must configure first is one nobody ever sees.</span><span class="lz">刻意默认开启：需要先配置的 recap，等于没人会看到的 recap。</span></td></tr>
       <tr><td class="k">recap.idleThresholdMs</td><td class="d">300000</td><td class="x"><span class="le">How long away counts as away. Floored at 30s.</span><span class="lz">离开多久算「离开」。下限 30 秒。</span></td></tr>
       <tr><td class="k">scratchpad.root</td><td class="d"><span class="le">system temp</span><span class="lz">系统临时目录</span></td><td class="x"><span class="le">Must be absolute or start with <code>~/</code>. Validated, not trusted: the announcement channel is a trust boundary.</span><span class="lz">必须是绝对路径或以 <code>~/</code> 开头。只校验，不信任：广播通道本身就是信任边界。</span></td></tr>
-      <tr><td class="k">visualReference.verifyGate</td><td class="d">true</td><td class="x"><span class="le">A gate, not advice: blocks the turn from ending with unrendered UI edits. Capped at 2 nudges.</span><span class="lz">这部分是闸门而非建议：不允许带着未渲染的 UI 改动结束本轮。自限 2 次提醒。</span></td></tr>
+      <tr><td class="k">visualReference.guideline</td><td class="d">true</td><td class="x"><span class="le">The look-before-you-build rule, appended to the system prompt. Advice only — the gate that used to enforce it is gone. A leftover <code>verifyGate</code> key is ignored.</span><span class="lz">追加到系统提示词的「先看再动手」规则。只是建议——过去强制执行它的闸门已移除。settings 里遗留的 <code>verifyGate</code> 键会被忽略。</span></td></tr>
       <tr><td class="k">memory.maxChars</td><td class="d">24000</td><td class="x"><span class="le">Oldest facts are dropped past this. <code>memory.claudeHome</code> (<code>~/.claude</code>) is read until the first write; <code>memory.piHome</code> (<code>~/.config/pi</code>) is where pi's own store lives. <code>memory.writable</code> false keeps it read-only.</span><span class="lz">超出后丢弃最旧的事实。首次写入前读 <code>memory.claudeHome</code>（<code>~/.claude</code>）；<code>memory.piHome</code>（<code>~/.config/pi</code>）是 pi 自己 store 的位置。<code>memory.writable</code> 设为 false 即保持只读。</span></td></tr>
       <tr><td class="k">dynamicWorkflow.keywordTrigger</td><td class="d">true</td><td class="x"><span class="le">Whether a whole-word <code>ultracode</code> in a prompt opts that turn in. <code>dynamicWorkflow.limits</code> is inert — nothing reads it.</span><span class="lz">提示词中出现完整单词 <code>ultracode</code> 是否让该轮启用。<code>dynamicWorkflow.limits</code> 已失效——没有任何代码读取它。</span></td></tr>
       <tr><td class="k">elapsed.minTurnMs</td><td class="d">0</td><td class="x"><span class="le">Skip the end-of-turn duration line for turns shorter than this.</span><span class="lz">短于此时长的轮次不显示耗时行。</span></td></tr>

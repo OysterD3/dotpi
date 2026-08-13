@@ -108,7 +108,9 @@ check("it asks rather than guessing when the reference is unusable", VISUAL_REFE
 console.log("\n--- settings ---");
 check("absent -> defaults", resolveSettings(undefined), DEFAULT_SETTINGS);
 check("halves switch independently", resolveSettings({ readAdvice: false }), { ...DEFAULT_SETTINGS, readAdvice: false });
-check("verifyGate switches independently too", resolveSettings({ verifyGate: false }), { ...DEFAULT_SETTINGS, verifyGate: false });
+// The removed gate's key must not come back as a field just because an old
+// settings.json still carries it — every machine that ran the gate has one.
+check("a leftover verifyGate key is ignored", resolveSettings({ verifyGate: false }), DEFAULT_SETTINGS);
 writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ visualReference: { guideline: false } }));
 check("read from disk", loadSettings(AGENT).guideline, false);
 writeFileSync(join(AGENT, "settings.json"), "{ not json");
@@ -119,12 +121,12 @@ type Handler = (event: unknown) => any;
 
 /**
  * A minimal stand-in for pi's real ExtensionAPI. `on` collects handlers into
- * arrays, not a single slot — index.ts now registers TWO `tool_result`
- * handlers (readAdvice's and the verify gate's), and pi's real runner chains
- * every handler registered for an event rather than letting the last one
- * clobber the rest (see runner.js's emitToolResult). A Map<string, Handler>
- * that overwrote on a second registration would silently test the wrong
- * handler.
+ * arrays, not a single slot: pi's real runner chains every handler registered
+ * for an event rather than letting the last one clobber the rest (see
+ * runner.js's emitToolResult), and a Map<string, Handler> that overwrote on a
+ * second registration would silently test the wrong handler. Only readAdvice
+ * registers on `tool_result` today — the shape is kept because the assertions
+ * below are about which handlers exist at all.
  */
 function install(block: Record<string, unknown>) {
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ visualReference: block }));
@@ -166,13 +168,14 @@ function runToolResult(handlers: Map<string, Handler[]>, event: Record<string, u
 }
 
 check("disabled registers nothing", [...install({ enabled: false }).handlers.keys()], []);
-check("readAdvice registers alone", [...install({ guideline: false, verifyGate: false }).handlers.keys()], ["tool_result"]);
-check("guideline registers alone", [...install({ readAdvice: false, verifyGate: false }).handlers.keys()], ["before_agent_start"]);
-check(
-	"verifyGate registers alone",
-	[...install({ readAdvice: false, guideline: false }).handlers.keys()].sort(),
-	["agent_end", "tool_result"],
-);
+check("readAdvice registers alone", [...install({ guideline: false }).handlers.keys()], ["tool_result"]);
+check("guideline registers alone", [...install({ readAdvice: false }).handlers.keys()], ["before_agent_start"]);
+// Both model-facing flags off leaves nothing at all: the pin producer that used
+// to run regardless went with the gate it was extracted from.
+check("both flags off registers nothing", [...install({ readAdvice: false, guideline: false }).handlers.keys()], []);
+// THE REMOVAL, at the wiring level: agent_end is where the gate resumed the
+// agent, and nothing registers there any more.
+check("nothing hooks agent_end", [...install({}).handlers.keys()].includes("agent_end"), false);
 
 const { handlers, sent, emitted } = install({});
 const readEvent = {
@@ -202,77 +205,22 @@ const before = handlers.get("before_agent_start")![0]!({ systemPrompt: "BASE PRO
 check("the guideline is appended to the prompt", before.systemPrompt.startsWith("BASE PROMPT"), true);
 check("and the guideline is in there", before.systemPrompt.includes("Working from a reference"), true);
 
-console.log("\n--- the verify gate end to end ---");
-// Only `messages` matters to the handler — a natural stop's last assistant
-// message names the reason it actually stopped for; an abort's says "aborted",
-// mirroring how pi dist's agent-loop.js shapes a real agent_end event.
-const naturalStop = (): Record<string, unknown> => ({ messages: [{ role: "assistant", stopReason: "stop" }] });
-const userAborted = (): Record<string, unknown> => ({ messages: [{ role: "assistant", stopReason: "aborted" }] });
+console.log("\n--- the removed gate stays removed ---");
 {
+	// The measured false positive, replayed: UI-extension edits with no render
+	// used to resume the agent at agent_end with "screenshot your app AND the
+	// reference", and that is how an agent with no reference at all ended up
+	// driving a browser. The extension now says nothing about them.
 	const { handlers: h, sent: s } = install({});
-	// Two dirty edits, no render evidence: agent_end should deliver a follow-up
-	// that resumes the agent, mirroring goal's notMetInstruction delivery.
 	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
 	runToolResult(h, { toolName: "write", input: { path: "/app/Header.tsx" }, isError: false, content: [] });
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("agent_end fires exactly one follow-up", s.length, 1);
-	const [message, options] = s[0] as [Record<string, unknown>, Record<string, unknown>];
-	check("it resumes the agent like goal's notMetInstruction", options, { deliverAs: "followUp", triggerTurn: true });
-	check("it names both files", String(message.content).includes("/app/Button.css") && String(message.content).includes("/app/Header.tsx"), true);
-	check("it states the count", String(message.content).includes("You changed 2 UI files"), true);
+	check("UI edits send no follow-up", s.length, 0);
+	check("and there is no agent_end handler to fire one", h.get("agent_end"), undefined);
 }
 {
-	// Render evidence — a screenshot-shaped bash command — clears the dirt
-	// before agent_end ever sees it, so nothing fires.
-	const { handlers: h, sent: s } = install({});
-	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
-	runToolResult(h, { toolName: "bash", input: { command: "agent-browser --session app screenshot /tmp/out.png" }, isError: false, content: [] });
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("a render before agent_end suppresses the follow-up", s.length, 0);
-}
-{
-	// A non-UI edit (e.g. a .ts store) must not count as dirty at all.
-	const { handlers: h, sent: s } = install({});
-	runToolResult(h, { toolName: "edit", input: { path: "/app/store.ts" }, isError: false, content: [] });
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("a non-UI-extension edit never arms the gate", s.length, 0);
-}
-{
-	// A failed edit changed nothing on disk and must not count as dirty.
-	const { handlers: h, sent: s } = install({});
-	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: true, content: [] });
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("a failed edit is not dirty", s.length, 0);
-}
-{
-	// The firing cap: two follow-ups per session (config.ts's maxFollowUps), then
-	// the gate goes quiet even though the dirt never got cleared.
-	const { handlers: h, sent: s } = install({});
-	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
-	h.get("agent_end")![0]!(naturalStop(), {});
-	h.get("agent_end")![0]!(naturalStop(), {});
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("only two firings, then silence", s.length, 2);
-}
-{
-	// THE GUARD: agent_end fires when the user presses Escape too, and a
-	// follow-up queued from here resumes the agent through agent.continue()
-	// regardless of why the run ended — so an aborted run must get no
-	// follow-up, and the dirt it left behind must survive for the next NATURAL
-	// stop rather than being lost or double-reported.
-	const { handlers: h, sent: s } = install({});
-	runToolResult(h, { toolName: "edit", input: { path: "/app/Button.css" }, isError: false, content: [] });
-	h.get("agent_end")![0]!(userAborted(), {});
-	check("an aborted run gets no follow-up", s.length, 0);
-	h.get("agent_end")![0]!(naturalStop(), {});
-	check("the dirt from before the abort survives to the next natural stop", s.length, 1);
-	const [message] = s[0] as [Record<string, unknown>];
-	check("and still names the pre-abort edit", String(message.content).includes("/app/Button.css"), true);
-}
-{
-	// PIN CONTRACT: a bash command opens a renderable file:// reference, then a
-	// read comes back with an image — that image is presumed to be the
-	// reference screenshot, so its toolCallId is announced on the pin channel.
+	// The pin producer went with it. A reference opened in a browser and read
+	// back as an image used to announce that image's toolCallId on
+	// "context-diet:pin"; nothing publishes on that channel from here now.
 	const { handlers: h, emitted: e } = install({});
 	runToolResult(h, {
 		toolName: "bash",
@@ -281,17 +229,7 @@ const userAborted = (): Record<string, unknown> => ({ messages: [{ role: "assist
 		content: [],
 	});
 	runToolResult(h, { toolName: "read", toolCallId: "call-42", input: {}, isError: false, content: [{ type: "image" }] });
-	check("exactly one pin is emitted", e.length, 1);
-	check("on the context-diet:pin channel", e[0]!.channel, "context-diet:pin");
-	check("carrying the image read's toolCallId", e[0]!.data, { toolCallId: "call-42" });
-}
-{
-	// Without a preceding reference open, an ordinary image read (e.g. the
-	// agent's own app) must not be pinned — the whole point is to protect
-	// reference screenshots specifically, not every image in the session.
-	const { handlers: h, emitted: e } = install({});
-	runToolResult(h, { toolName: "read", toolCallId: "call-1", input: {}, isError: false, content: [{ type: "image" }] });
-	check("an unarmed image read is not pinned", e.length, 0);
+	check("no pin is emitted for a reference screenshot", e.length, 0);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

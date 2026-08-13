@@ -1,7 +1,7 @@
 /**
  * visual-reference — look at the thing you are copying, before you copy it.
  *
- * Three parts of one failure, all measured in real GUI builds:
+ * Two parts of one failure, both measured in real GUI builds:
  *
  *   detect.ts     pi's read tool refuses an oversized line and suggests `sed`.
  *                 For a bundled HTML document that advice is a dead end, and
@@ -9,19 +9,30 @@
  *   guideline.ts  the reference was rendered 12 tool calls AFTER the agent
  *                 started writing its own UI, and looked at a quarter as often
  *                 as the agent's own app.
- *   verify.ts     a separate session made its last twelve UI edits in its
- *                 final five minutes and stopped without ever rebuilding,
- *                 rendering, or screenshotting the result — the guideline
- *                 above was in every request that whole time and changed
- *                 nothing, because it is advice, not a gate. verify.ts is the
- *                 gate: it counts unrendered edits from tool_result and, on
- *                 agent_end, resumes the agent instead of letting it stop.
+ *
+ * There was a third part, verify.ts: a gate that counted unrendered UI edits
+ * and, on agent_end, resumed the agent until it screenshotted something. It is
+ * REMOVED, because its evidence for "this is UI work" was the file extension
+ * of an edit and nothing else. A one-line money-format fix in a .tsx read as
+ * twelve unverified UI edits, and the gate sent an agent with no reference and
+ * nothing to look at into a browser: in that session every single agent-browser
+ * call came after the gate's follow-up, and none before it. The GUI-copy
+ * sessions the gate was built for never reached it — they opened the reference
+ * in their first handful of tool calls, hundreds of calls before the gate ever
+ * spoke, on the guideline alone. It cost the browser trips it was meant to
+ * order, and bought none of them.
+ *
+ * Nothing of it is kept. A pin producer briefly survived — it marked the
+ * reference screenshot on the "context-diet:pin" channel so that image
+ * outlived context-diet's eviction pass — and went with the rest: half a
+ * removed feature, watching every bash command for a file:// URL, is not worth
+ * the handler it takes. context-diet's own pin support stands and is simply
+ * unused; anything wanting a result protected publishes on that channel.
  *
  * Settings (agent settings.json — per-machine):
  *   visualReference.enabled     boolean, default true
  *   visualReference.readAdvice  boolean, default true (rewrite read refusals)
  *   visualReference.guideline   boolean, default true (system-prompt rule)
- *   visualReference.verifyGate  boolean, default true (block stopping on unrendered UI edits)
  */
 
 import { readFileSync } from "node:fs";
@@ -29,14 +40,6 @@ import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { adviseOnReadResult } from "./detect.ts";
 import { VISUAL_REFERENCE_GUIDELINE } from "./guideline.ts";
-import {
-	isDirtyUiPath,
-	isRenderEvidenceCommand,
-	referencesRenderableFileUrl,
-	resultReturnsImage,
-	VerifyGate,
-	wasUserAborted,
-} from "./verify.ts";
 
 export const SETTINGS_KEY = "visualReference";
 
@@ -44,14 +47,12 @@ export interface VisualReferenceSettings {
 	enabled: boolean;
 	readAdvice: boolean;
 	guideline: boolean;
-	verifyGate: boolean;
 }
 
 export const DEFAULT_SETTINGS: VisualReferenceSettings = {
 	enabled: true,
 	readAdvice: true,
 	guideline: true,
-	verifyGate: true,
 };
 
 export function resolveSettings(raw: unknown): VisualReferenceSettings {
@@ -62,7 +63,6 @@ export function resolveSettings(raw: unknown): VisualReferenceSettings {
 		enabled: flag(block.enabled, DEFAULT_SETTINGS.enabled),
 		readAdvice: flag(block.readAdvice, DEFAULT_SETTINGS.readAdvice),
 		guideline: flag(block.guideline, DEFAULT_SETTINGS.guideline),
-		verifyGate: flag(block.verifyGate, DEFAULT_SETTINGS.verifyGate),
 	};
 }
 
@@ -74,20 +74,6 @@ export function loadSettings(agentDir: string): VisualReferenceSettings {
 		return { ...DEFAULT_SETTINGS };
 	}
 }
-
-/**
- * pi.events channel asking context-diet to protect a reference screenshot from
- * its image eviction (context-diet keeps only the newest `keepImages` images —
- * see its config.ts). A literal string rather than an import: the two
- * extensions install independently, so they share a channel name, not a
- * module — the same contract goal's SPEND_CHANNEL documents for `usage:spend`.
- * With no subscriber (context-diet's own pin support is a separate change) the
- * event goes nowhere.
- */
-const PIN_CHANNEL = "context-diet:pin";
-
-/** Custom message type for the verify-gate follow-up. */
-const VERIFY_MESSAGE = "verify_gate";
 
 export default function (pi: ExtensionAPI) {
 	const settings = loadSettings(getAgentDir());
@@ -117,61 +103,5 @@ export default function (pi: ExtensionAPI) {
 		pi.on("before_agent_start", (event) => ({
 			systemPrompt: `${event.systemPrompt}\n\n${VISUAL_REFERENCE_GUIDELINE}`,
 		}));
-	}
-
-	if (settings.verifyGate) {
-		// A second, independent `tool_result` registration — pi dispatches every
-		// handler registered for an event and chains their results (see
-		// runner.js's emitToolResult), so this coexists with readAdvice's handler
-		// above without either one seeing the other's return value.
-		const gate = new VerifyGate();
-
-		pi.on("tool_result", (event) => {
-			// A failed call is not evidence of anything: a failed edit changed no
-			// file, and a failed bash/read call did not render or read back an image.
-			if (event.isError) return;
-
-			if (event.toolName === "edit" || event.toolName === "write") {
-				const path = event.input?.path;
-				if (typeof path === "string" && isDirtyUiPath(path)) gate.recordDirtyEdit(path);
-				return;
-			}
-
-			if (event.toolName === "bash") {
-				const command = event.input?.command;
-				if (typeof command !== "string") return;
-				if (isRenderEvidenceCommand(command)) gate.clearDirty();
-				if (referencesRenderableFileUrl(command)) gate.armPin();
-				return;
-			}
-
-			if (event.toolName === "read" && resultReturnsImage(event.content)) {
-				gate.clearDirty();
-				// PIN CONTRACT (producer side): a screenshot of the reference just came
-				// back as an image. Announce it so context-diet can protect this
-				// specific tool result from its image-eviction pass — see PIN_CHANNEL.
-				const toolCallId = gate.consumePin(event.toolCallId);
-				if (toolCallId) pi.events.emit(PIN_CHANNEL, { toolCallId });
-			}
-		});
-
-		pi.on("agent_end", (event) => {
-			// agent_end fires when the user hits Escape too, and a follow-up
-			// queued here resumes the agent via agent.continue() regardless of
-			// why the run ended — so without this check the gate would override
-			// the user's abort with its own "keep going" message. Dirty state is
-			// left exactly as it is: an aborted turn's unrendered edits are still
-			// unrendered, and the next NATURAL stop is what should ask about them.
-			if (wasUserAborted(event.messages)) return;
-
-			const message = gate.takeFollowUp();
-			if (!message) return;
-			// Mirrors goal's notMetInstruction: a follow-up message resumes the
-			// agent, because pi has no hook that can veto agent_end directly.
-			pi.sendMessage(
-				{ customType: VERIFY_MESSAGE, content: message, display: true },
-				{ deliverAs: "followUp", triggerTurn: true },
-			);
-		});
 	}
 }
