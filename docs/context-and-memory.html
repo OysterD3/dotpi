@@ -210,16 +210,17 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
     <li><a href="#mem-fork"><span class="num">05</span><span>The fork</span></a></li>
     <li><a href="#mem-write"><span class="num">06</span><span>The write path</span></a></li>
     <li><a href="#mem-when"><span class="num">07</span><span>When it actually writes</span></a></li>
+    <li><a href="#mem-examples"><span class="num">08</span><span>What a memory looks like</span></a></li>
     <li class="grp">context-diet</li>
-    <li><a href="#diet-why"><span class="num">08</span><span>The gap it fills</span></a></li>
-    <li><a href="#diet-round"><span class="num">09</span><span>A round</span></a></li>
-    <li><a href="#diet-pick"><span class="num">10</span><span>What gets dropped</span></a></li>
-    <li><a href="#diet-stick"><span class="num">11</span><span>Stickiness, two invariants</span></a></li>
-    <li><a href="#diet-extra"><span class="num">12</span><span>Reasoning, escalation, resets</span></a></li>
+    <li><a href="#diet-why"><span class="num">09</span><span>The gap it fills</span></a></li>
+    <li><a href="#diet-round"><span class="num">10</span><span>A round</span></a></li>
+    <li><a href="#diet-pick"><span class="num">11</span><span>What gets dropped</span></a></li>
+    <li><a href="#diet-stick"><span class="num">12</span><span>Stickiness, two invariants</span></a></li>
+    <li><a href="#diet-extra"><span class="num">13</span><span>Reasoning, escalation, resets</span></a></li>
     <li class="grp">Together</li>
-    <li><a href="#meet"><span class="num">13</span><span>Where they meet</span></a></li>
-    <li><a href="#edges"><span class="num">14</span><span>Sharp edges</span></a></li>
-    <li><a href="#settings"><span class="num">15</span><span>Settings reference</span></a></li>
+    <li><a href="#meet"><span class="num">14</span><span>Where they meet</span></a></li>
+    <li><a href="#edges"><span class="num">15</span><span>Sharp edges</span></a></li>
+    <li><a href="#settings"><span class="num">16</span><span>Settings reference</span></a></li>
   </ul>
 </nav>
 
@@ -784,8 +785,197 @@ that only matters to this conversation.</pre>
   </div>
 </section>
 
+<section id="mem-examples">
+  <p class="eyebrow">08 · memory</p>
+  <h2>What a memory looks like</h2>
+  <p class="lede">
+    A store of 83 facts across 16 projects, read for this document. Two shapes account for all of them, and the
+    second one answers a question the policy does not: <b>yes, debugging insight is what memory is best at</b> —
+    but only the part of it that git cannot hold.
+  </p>
+
+  <div class="grid g3">
+    <div class="stat"><span class="n">83</span><span class="k">fact files, across 16 projects</span></div>
+    <div class="stat"><span class="n">2</span><span class="k">shapes: short behavioural, long forensic</span></div>
+    <div class="stat"><span class="n r">0</span><span class="k">written by pi — the store has never been created</span></div>
+  </div>
+  <p>
+    That last number is the trigger gap from the previous section, measured rather than argued. Every one of the 83
+    was written by the other agent on this machine, which nudges for it. pi's memory extension has been loaded the
+    whole time, its tool offered on every turn, and it has never once written a fact — so the fork described in §05
+    has never happened.
+  </p>
+
+  <h3>Shape one — a behavioural fact</h3>
+  <p>
+    Short, about how the team works, and useless without its two closing lines. The <b>Why</b> is what lets the rule
+    be applied to a case it does not literally name; the <b>How to apply</b> is what makes it actionable instead of
+    a complaint on file.
+  </p>
+  <pre class="code"><span class="c">---</span>
+<span class="k">name</span>: no-status-chips
+<span class="k">description</span>: <span class="s">"Team dislikes per-feature status-bar chips; do not add presence markers"</span>
+<span class="k">metadata</span>:
+  <span class="k">type</span>: feedback
+<span class="c">---</span>
+
+The team does not want features to paint status-bar "presence" chips. They
+objected to each one on sight and had them removed.
+
+<b>**Why:**</b> the status bar is limited space, and a static "this feature exists"
+marker is noise, not information. It clutters without helping.
+
+<b>**How to apply:**</b> the shared footer is now the central guard — it deliberately
+does not render the per-feature status list, so no chip shows, present or future.
+Do not re-add that loop. If a chip ever seems warranted it must carry live,
+changing information, and be confirmed first. Related: <span class="s">[[footer-ownership]]</span>.</pre>
+
+  <h3>Shape two — a debugging memory</h3>
+  <p>
+    Long, specific, and organised around the wrong turn rather than the fix. This is the anonymised skeleton of a
+    real one; everything structural is preserved.
+  </p>
+  <pre class="code"><span class="c">---</span>
+<span class="k">name</span>: request-connection-fanout
+<span class="k">description</span>: <span class="s">"Random self-recovering \"failed query\" errors were per-request connection
+              fan-out and unclosed clients, not query bugs"</span>
+<span class="k">metadata</span>:
+  <span class="k">type</span>: project
+<span class="c">---</span>
+
+Intermittent `failed query: select …` on the dashboard — <b>random, self-recovering,
+refresh-only, several unrelated queries failing together</b> — was a CONNECTION
+problem, <b>NOT a SQL or schema error</b>. The browser only ever showed `failed query`
+because the SSR serializer drops the error `.cause`; the real messages, recovered
+by walking the cause chain, were `network connection lost`, then `max clients`.
+
+Two stacked causes:
+1. <b>Per-request fan-out.</b> One page loader fired ~12 server functions, each
+   opening its own client inside ONE request. <b>The platform caps a worker at 6
+   simultaneous outbound connections per request.</b> Refresh-only, because a
+   client-side navigation issues each function as its own request.
+2. <b>Clients were never closed</b>, leaking until idle timeout and exhausting a
+   pooler capped at 15.
+
+<b>**Fix:**</b> one shared client per request via `withDb(fn)`, closed in a finally;
+every query split into a `*Core(db, …)` plus a thin wrapper.
+
+<b>**Invariants — do not regress:**</b> never open a client directly in a handler, use
+`withDb`; never let one request open more than one client; never leave one
+unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
+
+  <h3>The five parts, and why each one earns its tokens</h3>
+
+  <figure class="iann">
+    <div class="dg-top"><span class="ic">ANATOMY</span><span class="tt">What a debugging memory records that git does not</span></div>
+    <div class="svgbox">
+      <svg viewBox="0 0 760 268" role="img" aria-label="The five recurring parts of a debugging memory">
+        <g class="np" data-a="ex-symptom" tabindex="0" role="button">
+          <rect class="hit" x="0" y="8" width="326" height="38" rx="5"/>
+          <rect class="bx-y" x="3" y="10" width="320" height="34" rx="4"/>
+          <text class="t" x="16" y="26">1 · the lying symptom</text>
+          <text class="tf" x="16" y="40">what it looked like, and why that misled</text>
+        </g>
+        <text class="tf" x="342" y="32">a stack trace is in the logs; what it hid is not</text>
+
+        <g class="np" data-a="ex-wrong" tabindex="0" role="button">
+          <rect class="hit" x="0" y="52" width="326" height="38" rx="5"/>
+          <rect class="bx-r" x="3" y="54" width="320" height="34" rx="4"/>
+          <text class="tr" x="16" y="70">2 · the hypothesis that was wrong</text>
+          <text class="tf" x="16" y="84">"NOT a SQL error" · "NOT row volume"</text>
+        </g>
+        <text class="tf" x="342" y="76">the only record of an hour already spent being wrong</text>
+
+        <g class="np" data-a="ex-constraint" tabindex="0" role="button">
+          <rect class="hit" x="0" y="96" width="326" height="38" rx="5"/>
+          <rect class="bx-v" x="3" y="98" width="320" height="34" rx="4"/>
+          <text class="tv" x="16" y="114">3 · the invisible constraint</text>
+          <text class="tf" x="16" y="128">a platform cap, a runtime default, a plan limit</text>
+        </g>
+        <text class="tf" x="342" y="120">nowhere in the repo, and not guessable from the code</text>
+
+        <g class="np" data-a="ex-invariant" tabindex="0" role="button">
+          <rect class="hit" x="0" y="140" width="326" height="38" rx="5"/>
+          <rect class="bx-a" x="3" y="142" width="320" height="34" rx="4"/>
+          <text class="ta" x="16" y="158">4 · the invariant, as a rule</text>
+          <text class="tf" x="16" y="172">"never open a client directly in a handler"</text>
+        </g>
+        <text class="tf" x="342" y="164">the part that stops it happening a second time</text>
+
+        <g class="np" data-a="ex-recur" tabindex="0" role="button">
+          <rect class="hit" x="0" y="184" width="326" height="38" rx="5"/>
+          <rect class="bx-g" x="3" y="186" width="320" height="34" rx="4"/>
+          <text class="tg" x="16" y="202">5 · the recurrence log</text>
+          <text class="tf" x="16" y="216">"came back on DATE, through X, fixed by Y"</text>
+        </g>
+        <text class="tf" x="342" y="208">proof the invariant was not enough, appended not replaced</text>
+
+        <line class="lnd" x1="0" y1="238" x2="756" y2="238"/>
+        <text class="tb" x="0" y="260">the fix itself is the one part that is NOT here — it is in git</text>
+      </svg>
+    </div>
+    <figcaption class="ann"><span class="hint">Hover or tap a part.</span></figcaption>
+    <div class="anns">
+      <div id="an-ex-symptom"><b>1 · the lying symptom</b>Recorded because the next person will meet the symptom, not the cause. The real examples go further and say <em>why</em> the symptom lied — one notes that the SSR serializer drops the error's <code>.cause</code>, so the browser could only ever show the useless outer message.</div>
+      <div id="an-ex-wrong"><b>2 · the hypothesis that was wrong</b>The highest-value line in the file and the one nothing else stores. Git records what was changed; only this records what was investigated and ruled out. One real memory names a diagnosis that assumed the wrong platform tier and was wrong for hours because of it.</div>
+      <div id="an-ex-constraint"><b>3 · the invisible constraint</b>"Six simultaneous outbound connections per request." "About ten milliseconds of CPU on the free tier." "The server runtime's local zone is UTC, the browser's is not." Every one is a fact about the world the code runs in, and none of them appear anywhere in the code.</div>
+      <div id="an-ex-invariant"><b>4 · the invariant</b>Written as a rule for next time, not as a description of the past. This is what makes the memory load-bearing: it is checkable against a diff, so it survives contact with a reviewer who was not there.</div>
+      <div id="an-ex-recur"><b>5 · the recurrence log</b>One real file carries a dated recurrence block: the same class of failure came back through a different code path months later, and the fact was <em>extended</em> rather than replaced. That history is the evidence that the invariant needed widening.</div>
+    </div>
+  </figure>
+
+  <h3>The line worth proposing</h3>
+  <p>
+    The current tool description tells the model not to save "past fixes", and taken literally it forbids every
+    example above. The corpus quietly ignores it, and is right to. The distinction that actually holds:
+  </p>
+  <table class="kv">
+    <thead><tr><th>do not save</th><th></th><th>save</th></tr></thead>
+    <tbody>
+      <tr><td class="x">"Fixed the null check in the parser."</td><td class="d">→</td><td class="x">"Input from this vendor omits the field entirely; treat absent as zero, not as invalid."</td></tr>
+      <tr><td class="x">"Refactored the loader into three functions."</td><td class="d">→</td><td class="x">"One request may open at most one DB client — the platform caps outbound connections at six."</td></tr>
+      <tr><td class="x">"Bumped the dependency to 4.2."</td><td class="d">→</td><td class="x">"4.1 silently drops the error cause, which is why every failure here reads as the same generic message."</td></tr>
+      <tr><td class="x">Anything a reviewer could read off the diff.</td><td class="d">→</td><td class="x">Anything that took an hour to find and leaves no trace once the fix is merged.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <span class="lbl">Proposed wording</span>
+    <p>
+      A drop-in replacement for the "what to save" paragraph, widened to admit what the corpus already contains:
+    </p>
+    <p style="font-family:var(--mono);font-size:12.6px;line-height:1.7;margin-top:11px">
+      Save what stays true and is not already recorded: how the user works; a decision and the reason behind it; a
+      constraint of the environment that the code does not state. After a hard debugging session, save the
+      <em>constraint you found</em> and the <em>invariant that prevents a repeat</em> — not the fix, which is in the
+      diff. Name the symptom it presented as, and the explanation you ruled out. Do not save what the repository
+      already says, or anything that only matters to this conversation. If a fact you already hold turns out to be
+      wrong, delete it; if it recurs in a new form, extend it rather than adding a second copy.
+    </p>
+  </div>
+
+  <h3>The index</h3>
+  <p>
+    <code>MEMORY.md</code> is one line per fact, and the hook after the dash is what a future session actually reads
+    when the bodies have been dropped for budget:
+  </p>
+  <pre class="code"># Memory
+
+- [No status chips](no-status-chips.md) — team dislikes per-feature presence markers; don't add them
+- [Request connection fan-out](request-connection-fanout.md) — random "failed query" was connection
+  fan-out, not SQL; one client per request</pre>
+  <div class="callout note">
+    <span class="lbl">Two conventions, one corpus</span>
+    <p>
+      Filenames in the store are split between <code>feedback_*.md</code> / <code>project_*.md</code> prefixes and
+      plain kebab-case topic names, because the model picks the filename and nothing enforces a convention. Harmless
+      for retrieval — the index and the frontmatter carry the type — but if this is being adopted by a team, pick one
+      and put it in the tool description.
+    </p>
+  </div>
+</section>
+
 <section id="diet-why">
-  <p class="eyebrow">08 · context-diet</p>
+  <p class="eyebrow">09 · context-diet</p>
   <h2>The gap it fills</h2>
   <p class="lede">
     One measured session, <code>019fcad1</code>, is the entire argument. One prompt, one turn, and the compaction
@@ -836,7 +1026,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="diet-round">
-  <p class="eyebrow">09 · context-diet</p>
+  <p class="eyebrow">10 · context-diet</p>
   <h2>A round</h2>
   <p class="lede">
     A round is rare on purpose. It fires at a high-water mark, trims well past it, and the gap between the two is
@@ -909,7 +1099,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="diet-pick">
-  <p class="eyebrow">10 · context-diet</p>
+  <p class="eyebrow">11 · context-diet</p>
   <h2>What gets dropped</h2>
   <p class="lede">
     Candidates are collected oldest-first, and a ladder of protections decides what is off limits. Two of the
@@ -1004,7 +1194,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="diet-stick">
-  <p class="eyebrow">11 · context-diet</p>
+  <p class="eyebrow">12 · context-diet</p>
   <h2>Stickiness, and the two invariants</h2>
   <p class="lede">
     Everything above describes one round. What makes the extension safe is what happens on the hundreds of calls
@@ -1052,7 +1242,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="diet-extra">
-  <p class="eyebrow">12 · context-diet</p>
+  <p class="eyebrow">13 · context-diet</p>
   <h2>Reasoning, escalation, resets</h2>
 
   <h3>dropOldReasoning — experimental, and on in this config</h3>
@@ -1107,7 +1297,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="meet">
-  <p class="eyebrow">13 · Together</p>
+  <p class="eyebrow">14 · Together</p>
   <h2>Where they meet</h2>
   <p class="lede">
     They never edit the same bytes, but they are coupled twice: through the cache, and through the threshold.
@@ -1165,7 +1355,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="edges">
-  <p class="eyebrow">14 · Together</p>
+  <p class="eyebrow">15 · Together</p>
   <h2>Sharp edges</h2>
   <p class="lede">
     Four things that are true of the code as it stands, and are not obvious from reading either extension's
@@ -1211,7 +1401,7 @@ that only matters to this conversation.</pre>
 </section>
 
 <section id="settings">
-  <p class="eyebrow">15 · Reference</p>
+  <p class="eyebrow">16 · Reference</p>
   <h2>Settings</h2>
   <p class="lede">Both blocks live in <code>agent/settings.json</code>, and both are re-read on every session start.</p>
 
