@@ -99,11 +99,6 @@
       }
     }
   },
-  "visualReference": {
-    "enabled": true,
-    "readAdvice": true,
-    "guideline": true
-  },
   "hideThinkingBlock": true,
   "retry": {
     "enabled": true

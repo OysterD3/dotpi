@@ -12,7 +12,7 @@
  *
  * Appended rather than replacing: `systemPrompt` results chain across
  * extensions, so overwriting would silently drop memory's contribution, or
- * visual-reference's, or add-dir's.
+ * add-dir's.
  *
  * Only the main session is reached from here. Workflow subagents and `subagents`
  * tasks spawn with --no-extensions, so they carry their own copy of the rule in

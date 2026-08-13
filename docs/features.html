@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pi config — 25 extensions / 功能深潜</title>
+<title>pi config — 24 extensions / 功能深潜</title>
 <script>
 document.documentElement.className="js";
 try{
@@ -376,7 +376,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
 <nav class="toc">
   <div class="brand">
     <div class="brand-mark">π</div>
-    <div class="brand-t"><span class="lz">25 个扩展</span><span class="le">25 extensions</span></div>
+    <div class="brand-t"><span class="lz">24 个扩展</span><span class="le">24 extensions</span></div>
   </div>
   <div class="brand-s">~/.pi · agent/extensions<br><span class="lz">一份配置仓库</span><span class="le">one config repo</span></div>
   <div class="langtgl" role="group" aria-label="Language">
@@ -414,8 +414,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
 <div class="hero">
   <h1><span class="lz">这份配置给 pi 加了什么</span><span class="le">What this config adds to pi</span></h1>
   <p class="sub">
-    <span class="lz">pi 本身是什么、内部怎么跑，是另一篇的题目。这里只讲一件事：<b>25 个扩展</b> —— 它们各自补上了什么、怎么实现的、以及怎么用和怎么配。几乎每一个都写于一次<b>可量化的失败</b>之后，而不是一个点子之后；全文引用的那些数字，本身就是论据。后半部分是完整的<b>命令、快捷键与配置参考</b>。</span>
-    <span class="le">What pi is, and how it works inside, is another document's job. This one covers exactly one thing: <b>25 extensions</b> — what each adds back, how it works, and how to drive and configure it. Nearly every one was written after a <b>measurable failure</b>, not after an idea; the numbers quoted throughout are the argument. The second half is a complete <b>command, key and settings reference</b>.</span>
+    <span class="lz">pi 本身是什么、内部怎么跑，是另一篇的题目。这里只讲一件事：<b>24 个扩展</b> —— 它们各自补上了什么、怎么实现的、以及怎么用和怎么配。几乎每一个都写于一次<b>可量化的失败</b>之后，而不是一个点子之后；全文引用的那些数字，本身就是论据。后半部分是完整的<b>命令、快捷键与配置参考</b>。</span>
+    <span class="le">What pi is, and how it works inside, is another document's job. This one covers exactly one thing: <b>24 extensions</b> — what each adds back, how it works, and how to drive and configure it. Nearly every one was written after a <b>measurable failure</b>, not after an idea; the numbers quoted throughout are the argument. The second half is a complete <b>command, key and settings reference</b>.</span>
   </p>
   <div class="chips">
     <span class="chip"><b>25</b> <span class="lz">扩展</span><span class="le">extensions</span></span>
@@ -482,7 +482,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
     <rect class="bx" x="612" y="62" width="126" height="34" rx="5"/><text class="tf" x="622" y="90">advisor · review</text>
     <rect class="bx" x="228" y="106" width="120" height="34" rx="5"/><text class="tf" x="238" y="134">rewind · recap</text>
     <rect class="bx" x="356" y="106" width="120" height="34" rx="5"/><text class="tf" x="366" y="134">statusline</text>
-    <rect class="bx" x="484" y="106" width="120" height="34" rx="5"/><text class="tf" x="494" y="134">visual-reference</text>
+    <rect class="bx" x="484" y="106" width="120" height="34" rx="5"/><text class="tf" x="494" y="134">subagents</text>
     <rect class="bx" x="612" y="106" width="126" height="34" rx="5"/><text class="tf" x="622" y="134">scratchpad</text>
 
     <line class="ln" x1="8" y1="250" x2="752" y2="250"/>
@@ -535,8 +535,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   </svg>
   </div>
   <figcaption>
-    <span class="le"><strong>Why the bus matters.</strong> The statusline shows live workflow runs because dynamic-workflow announces them — not because the footer knows what that extension is. Turn a producer off and the consumer just goes quiet. That is what makes 25 extensions independently installable. The dashed arrow back into pi core is an extension <em>replacing</em> a built-in: this config replaces <code>bash</code>, the footer, and (via a pinned package) <code>find</code> and <code>grep</code>.</span>
-    <span class="lz"><strong>总线为什么重要。</strong>状态栏能显示正在跑的工作流，是因为 dynamic-workflow 主动广播，而不是因为页脚认识它。关掉某个生产者，消费者只是安静下来。这正是 25 个扩展能各自独立安装的原因。指回 pi core 的虚线箭头表示扩展<em>替换</em>了内置实现：本配置替换了 <code>bash</code>、页脚，以及（通过一个锁定的包）<code>find</code> 和 <code>grep</code>。</span>
+    <span class="le"><strong>Why the bus matters.</strong> The statusline shows live workflow runs because dynamic-workflow announces them — not because the footer knows what that extension is. Turn a producer off and the consumer just goes quiet. That is what makes 24 extensions independently installable. The dashed arrow back into pi core is an extension <em>replacing</em> a built-in: this config replaces <code>bash</code>, the footer, and (via a pinned package) <code>find</code> and <code>grep</code>.</span>
+    <span class="lz"><strong>总线为什么重要。</strong>状态栏能显示正在跑的工作流，是因为 dynamic-workflow 主动广播，而不是因为页脚认识它。关掉某个生产者，消费者只是安静下来。这正是 24 个扩展能各自独立安装的原因。指回 pi core 的虚线箭头表示扩展<em>替换</em>了内置实现：本配置替换了 <code>bash</code>、页脚，以及（通过一个锁定的包）<code>find</code> 和 <code>grep</code>。</span>
   </figcaption>
   </figure>
 </section>
@@ -618,10 +618,6 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <p><span class="le">Injects review prompts as turns: /simplify for quality, /code-review for correctness. Scales to live fan-out: workflow fleet, task agents, inline.</span><span class="lz">组装评审提示词并作为一轮注入：/simplify 管质量，/code-review 管正确性；按当前扇出伸缩：工作流集群、task agent 或内联。</span></p>
       <div class="why"><span class="le">Two commands, not one flag: a reviewer asked for both trades a real defect against a style nit.</span><span class="lz">两个命令而非一个开关：同时要两样的评审者，会拿真缺陷去换风格挑刺。</span></div>
       <div class="mfig iann" data-ext="review"><svg viewBox="0 0 300 88" role="img" aria-label="review: hooks, state, tradeoff and limit"><g class="np k-c" data-a="review-h0" tabindex="0" role="button"><rect class="pill" x="0" y="0" width="300" height="21" rx="4"/><rect class="tg" x="5" y="4.5" width="13" height="12" rx="2.5"/><text class="tgt" x="11.5" y="13.4">/</text><text class="pl" x="24" y="14.4" style="font-size:9.5px">simplify</text></g><g class="np k-c" data-a="review-h1" tabindex="0" role="button"><rect class="pill" x="0" y="26" width="300" height="21" rx="4"/><rect class="tg" x="5" y="30.5" width="13" height="12" rx="2.5"/><text class="tgt" x="11.5" y="39.4">/</text><text class="pl" x="24" y="40.4" style="font-size:9.5px">code-review</text></g><line class="sep" x1="0" y1="57" x2="300" y2="57"/><g class="np ch-s" data-a="review-s" tabindex="0" role="button"><rect class="chip" x="0" y="66" width="96" height="22" rx="4"/><text class="cg" x="8" y="81.2">▪</text><text class="cl le-t" x="19" y="80.8">state</text><text class="cl lz-t" x="19" y="80.8">状态</text></g><g class="np ch-d" data-a="review-d" tabindex="0" role="button"><rect class="chip" x="102" y="66" width="96" height="22" rx="4"/><text class="cg" x="110" y="81.2">◆</text><text class="cl le-t" x="121" y="80.8">tradeoff</text><text class="cl lz-t" x="121" y="80.8">取舍</text></g><g class="np ch-l" data-a="review-l" tabindex="0" role="button"><rect class="chip" x="204" y="66" width="96" height="22" rx="4"/><text class="cg" x="212" y="81.2">!</text><text class="cl le-t" x="223" y="80.8">limit</text><text class="cl lz-t" x="223" y="80.8">局限</text></g></svg><div class="ann"><span class="hint le">tap a row ›</span><span class="hint lz">点一行 ›</span></div><div class="anns" hidden><div id="an-review-h0"><b>simplify</b><span class="le">Quality pass (reuse, simplification, efficiency, altitude); always applies fixes</span><span class="lz">质量清理（复用/简化/效率/抽象层级），并且总是直接应用修复</span></div><div id="an-review-h1"><b>code-review</b><span class="le">Correctness pass at [low|medium|high|xhigh|max], with --fix and &lt;target&gt;</span><span class="lz">按 [low|medium|high|xhigh|max] 查正确性缺陷，支持 --fix 和 &lt;target&gt;</span></div><div id="an-review-s"><b class="le">state · none — pure per call</b><b class="lz">状态 · 无 —— 每次调用即用即弃</b><span class="le">None; pure per-call. Each handler parses args and injects one prompt</span><span class="lz">无状态，纯按次调用：每个 handler 解析参数并注入一段 prompt</span></div><div id="an-review-d"><b class="le">the tradeoff</b><b class="lz">关键取舍</b><span class="le">Two commands, not a flag, so a style nit cannot displace a real defect</span><span class="lz">拆成两个命令而非 flag，风格小毛病挤不掉真正的缺陷</span></div><div id="an-review-l"><b class="le">limit</b><b class="lz">局限</b><span class="le">Path targets and repos without upstream fall back to 4 finders (unmeasurableFinders).</span><span class="lz">路径型 target 和没有 upstream 的仓库退回 4 个 finder（unmeasurableFinders）</span></div></div></div></div>
-    <div class="feat"><h4>visual-reference</h4><div class="cmd">passive · tool_result + before_agent_start</div>
-      <p><span class="le">Two legs: rewrites pi's oversized-line read refusal for must-render documents, and adds a look-before-you-build rule. A third — a gate on unrendered UI edits — was removed for firing on file extension alone.</span><span class="lz">两条腿：改写 pi 对必须渲染文档的超长行读取拒绝提示、追加「先看再动手」规则。第三条——UI 改动未渲染时的闸门——因只凭文件扩展名触发而移除。</span></p>
-      <div class="why"><span class="le">One measured session: own app opened 23 times, reference 6; first render 12 tool calls into writing UI.</span><span class="lz">一次实测：自己的应用打开 23 次，参考稿 6 次；开始写 UI 后 12 个工具调用才首次渲染。</span></div>
-      <a class="dd-link" href="#verify"><span class="le">Full deep dive ↓</span><span class="lz">完整深潜 ↓</span></a></div>
     <div class="feat"><h4>lsp</h4><div class="cmd">lsp_diagnostics tool</div>
       <p><span class="le">A complete language-server client, so the agent gets real compiler errors without running a build.</span><span class="lz">一个完整的 language server 客户端，让 agent 不跑构建也能拿到真实的编译错误。</span></p>
       <div class="why"><span class="le">pi has no LSP support at all; adding a language is one entry in <code>servers.ts</code>.</span><span class="lz">pi 完全没有 LSP 支持；新增一门语言只是 <code>servers.ts</code> 里加一条。</span></div>
@@ -1100,73 +1096,55 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <div class="eyebrow"><span class="le">Deep dive · Quality</span><span class="lz">深入 · 质量</span></div>
   <h2><span class="le">Forced verification: advice is not a gate</span><span class="lz">强制验证：建议不是闸门</span></h2>
   <p class="lede">
-    <span class="le">A system-prompt rule that sits in every request and changes nothing is not a control. A control has to sit on <code>agent_end</code> and refuse to let the turn finish — and it inherits everything from the signal it fires on. Two of these three still gate. The third was removed for firing on the wrong signal.</span>
-    <span class="lz">一条出现在每次请求里、却什么都没改变的系统提示规则，不是控制手段。真正的控制必须挂在 <code>agent_end</code> 上，拒绝让这一轮结束——而它的全部好坏，取决于它凭什么信号触发。这三者中有两个仍是闸门，第三个因信号选错而被移除。</span>
+    <span class="le">A system-prompt rule that sits in every request and changes nothing is not a control. A control has to sit on <code>agent_end</code> and refuse to let the turn finish — and it inherits everything from the signal it fires on, which is the harder half. Both of these fire on evidence of the failure itself.</span>
+    <span class="lz">一条出现在每次请求里、却什么都没改变的系统提示规则，不是控制手段。真正的控制必须挂在 <code>agent_end</code> 上，拒绝让这一轮结束——而更难的那一半，是它凭什么信号触发。下面这两个都凭失败本身的证据触发。</span>
   </p>
 
   <figure>
-  <div class="dg-top"><span class="ic">SCHEMA</span><span class="tt"><span class="lz">两道闸门，和一道被移除的</span><span class="le">Two gates, and one that was removed</span></span></div>
+  <div class="dg-top"><span class="ic">SCHEMA</span><span class="tt"><span class="lz">两道闸门，各凭什么触发</span><span class="le">Two gates, and what each fires on</span></span></div>
   <div class="svgbox">
-  <svg viewBox="0 0 760 250" role="img" aria-label="Verification gates">
-    <rect class="bx" x="6" y="26" width="240" height="132" rx="5"/>
-    <text class="tb" x="18" y="46">visual-reference</text>
-    <rect class="bx" x="258" y="26" width="240" height="132" rx="5"/>
-    <text class="tb" x="270" y="46">test-streak</text>
-    <rect class="bx" x="510" y="26" width="244" height="132" rx="5"/>
-    <text class="tb" x="522" y="46">goal</text>
+  <svg viewBox="0 0 760 216" role="img" aria-label="Verification gates">
+    <rect class="bx" x="6" y="26" width="370" height="132" rx="5"/>
+    <text class="tb" x="18" y="46">test-streak</text>
+    <rect class="bx" x="386" y="26" width="368" height="132" rx="5"/>
+    <text class="tb" x="398" y="46">goal</text>
     <line class="ln" x1="6" y1="180" x2="754" y2="180"/>
 
     <g class="le">
-      <text class="ts" x="18" y="68">1 · read advice — pi refuses an oversized</text>
-      <text class="ts" x="18" y="82">line and suggests sed; for a 662KB bundled</text>
-      <text class="ts" x="18" y="96">mockup that is a dead end. Rewrites it.</text>
-      <text class="ts" x="18" y="118">2 · guideline — look before you copy</text>
-      <text class="ts" x="18" y="140">3 · verify gate — REMOVED. It fired on the</text>
-      <text class="ts" x="18" y="152">file extension of an edit, not on a reference.</text>
-      <text class="ts" x="270" y="68">Counts consecutive suite runs with NO edit</text>
-      <text class="ts" x="270" y="82">between them. At four, one reminder.</text>
-      <text class="ts" x="270" y="104">The discriminator is not the command —</text>
-      <text class="ts" x="270" y="118">it is what sits between two of them.</text>
-      <text class="tf" x="270" y="140">A reminder, not a block: refusing a</text>
-      <text class="tf" x="270" y="152">suite run on a heuristic is worse.</text>
-      <text class="ts" x="522" y="68">A judged condition, evaluated by a separate</text>
-      <text class="ts" x="522" y="82">LLM call on every stop attempt.</text>
-      <text class="tf" x="522" y="104">Costs an extra call carrying up to</text>
-      <text class="tf" x="522" y="118">half the context window — goal.model</text>
-      <text class="tf" x="522" y="132">is how you make that cheap.</text>
-      <text class="tf" x="522" y="150">maxIterations 20 by default.</text>
-      <text class="tr" x="6" y="202">The measurement that removed it: in the session that exposed it, EVERY agent-browser call came after the gate's follow-up and none before.</text>
-      <text class="ts" x="6" y="222">A one-line money-format fix in a .tsx read as unverified UI work, and sent an agent with no reference into a browser. The GUI-copy sessions</text>
-      <text class="ts" x="6" y="240">it was built for never reached it — they opened the reference in their first few tool calls, on the guideline alone.</text>
+      <text class="ts" x="18" y="68">Counts consecutive suite runs with NO edit</text>
+      <text class="ts" x="18" y="82">between them. At four, one reminder.</text>
+      <text class="ts" x="18" y="104">The discriminator is not the command —</text>
+      <text class="ts" x="18" y="118">it is what sits between two of them.</text>
+      <text class="tf" x="18" y="140">A reminder, not a block: refusing a</text>
+      <text class="tf" x="18" y="152">suite run on a heuristic is worse.</text>
+      <text class="ts" x="398" y="68">A judged condition, evaluated by a separate</text>
+      <text class="ts" x="398" y="82">LLM call on every stop attempt.</text>
+      <text class="tf" x="398" y="104">Costs an extra call carrying up to</text>
+      <text class="tf" x="398" y="118">half the context window — goal.model</text>
+      <text class="tf" x="398" y="132">is how you make that cheap.</text>
+      <text class="tf" x="398" y="150">maxIterations 20 by default.</text>
+      <text class="tr" x="6" y="202">Neither fires on a file's name. A third gate did — it counted edits by extension — and was removed for it: the sessions it cost were the ones with nothing to verify.</text>
     </g>
     <g class="lz">
-      <text class="ts" x="18" y="68">1 · 读取建议 —— pi 会拒绝超长行并建议用</text>
-      <text class="ts" x="18" y="82">sed；对 662KB 的打包稿这是死路。</text>
-      <text class="ts" x="18" y="96">于是改写这条建议。</text>
-      <text class="ts" x="18" y="118">2 · 准则 —— 抄之前先看一眼</text>
-      <text class="ts" x="18" y="140">3 · 验证闸门 —— 已移除。它凭改动的文件</text>
-      <text class="ts" x="18" y="152">扩展名触发，而不是凭「有没有参考稿」。</text>
-      <text class="ts" x="270" y="68">统计中间「没有任何编辑」的连续</text>
-      <text class="ts" x="270" y="82">测试运行次数。到第四次，提醒一次。</text>
-      <text class="ts" x="270" y="104">判据不是命令本身 ——</text>
-      <text class="ts" x="270" y="118">而是两次命令之间有什么。</text>
-      <text class="ts" x="270" y="140">是提醒，不是拦截：凭启发式</text>
-      <text class="ts" x="270" y="152">拒绝一次测试运行更糟。</text>
-      <text class="ts" x="522" y="68">一个被裁判的条件，每次尝试停止时</text>
-      <text class="ts" x="522" y="82">都由一次独立的 LLM 调用来评判。</text>
-      <text class="ts" x="522" y="104">每次多花一次调用，最多携带半个</text>
-      <text class="ts" x="522" y="118">上下文窗口 —— goal.model 就是</text>
-      <text class="ts" x="522" y="132">让它变便宜的办法。</text>
-      <text class="ts" x="522" y="150">maxIterations 默认 20。</text>
-      <text class="tr" x="6" y="202">让它被移除的那次实测：在暴露问题的那个会话里，所有 agent-browser 调用都发生在闸门追问之后，之前一次也没有。</text>
-      <text class="ts" x="6" y="222">一处 .tsx 里的单行金额格式修复，被读成「未验证的 UI 改动」，把一个手头没有任何参考稿的 agent 推进了浏览器。而它本为之而造的</text>
-      <text class="ts" x="6" y="240">仿稿会话根本走不到它 —— 那些会话在最初几次工具调用里就打开了参考稿，靠的只是那条准则。</text>
+      <text class="ts" x="18" y="68">统计中间「没有任何编辑」的连续</text>
+      <text class="ts" x="18" y="82">测试运行次数。到第四次，提醒一次。</text>
+      <text class="ts" x="18" y="104">判据不是命令本身 ——</text>
+      <text class="ts" x="18" y="118">而是两次命令之间有什么。</text>
+      <text class="ts" x="18" y="140">是提醒，不是拦截：凭启发式</text>
+      <text class="ts" x="18" y="152">拒绝一次测试运行更糟。</text>
+      <text class="ts" x="398" y="68">一个被裁判的条件，每次尝试停止时</text>
+      <text class="ts" x="398" y="82">都由一次独立的 LLM 调用来评判。</text>
+      <text class="ts" x="398" y="104">每次多花一次调用，最多携带半个</text>
+      <text class="ts" x="398" y="118">上下文窗口 —— goal.model 就是</text>
+      <text class="ts" x="398" y="132">让它变便宜的办法。</text>
+      <text class="ts" x="398" y="150">maxIterations 默认 20。</text>
+      <text class="tr" x="6" y="202">两者都不凭文件名触发。曾有第三道闸门按扩展名统计改动，正因如此被移除：它的代价落在了根本没有东西要验证的会话上。</text>
     </g>
   </svg>
   </div>
   <figcaption>
-    <span class="le">The two that remain fire on evidence of the failure itself: <code>goal</code> judges the stated condition, <code>test-streak</code> counts suite runs with no edit between them. A file extension is not that evidence, which is why the third is gone — its cost landed on the sessions that had nothing to look at, and the sessions it was written for never needed it.</span>
-    <span class="lz">留下的两个都凭失败本身的证据触发：<code>goal</code> 裁判写明的条件，<code>test-streak</code> 统计中间没有任何编辑的连续测试运行。文件扩展名不是这种证据，所以第三个被移除了——它的代价落在了根本没有东西可看的会话上，而它本为之而写的那些会话从来不需要它。</span>
+    <span class="le">The signal is the whole design. <code>goal</code> judges the condition you stated, and pays an LLM call each time to do it; <code>test-streak</code> counts suite runs with no edit between them, which is a fact about the transcript and costs nothing. A gate reading something cheaper and looser — the extension of an edited file, say — fires hardest on the sessions that had nothing to verify, and that is what retires one.</span>
+    <span class="lz">信号本身就是全部设计。<code>goal</code> 裁判你写明的条件，为此每次都付一次 LLM 调用；<code>test-streak</code> 统计中间没有任何编辑的连续测试运行，那是关于对话记录的事实，不花一分钱。若闸门读的是更便宜、更松的东西——比如被改文件的扩展名——它反而会在根本没有东西要验证的会话上叫得最凶，而这正是让一道闸门下岗的原因。</span>
   </figcaption>
   </figure>
 </section>
@@ -1190,8 +1168,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <div class="eyebrow"><span class="le">Reference</span><span class="lz">参考</span></div>
   <h2><span class="le">Commands, tools and keys</span><span class="lz">命令、工具与快捷键</span></h2>
   <p class="lede">
-    <span class="le">Everything these 25 extensions add to the session, in one place. Most of it is <strong>automatic</strong>. What is left: <strong>slash commands</strong> you type, <strong>tools</strong> the model calls on its own, and <strong>keys</strong> that work at the prompt.</span>
-    <span class="lz">这 25 个扩展为会话新增的全部入口，集中在这里。其中大部分是<strong>自动</strong>的。剩下的是：你输入的<strong>斜杠命令</strong>、模型自行调用的<strong>工具</strong>，以及在输入提示符处生效的<strong>快捷键</strong>。</span>
+    <span class="le">Everything these 24 extensions add to the session, in one place. Most of it is <strong>automatic</strong>. What is left: <strong>slash commands</strong> you type, <strong>tools</strong> the model calls on its own, and <strong>keys</strong> that work at the prompt.</span>
+    <span class="lz">这 24 个扩展为会话新增的全部入口，集中在这里。其中大部分是<strong>自动</strong>的。剩下的是：你输入的<strong>斜杠命令</strong>、模型自行调用的<strong>工具</strong>，以及在输入提示符处生效的<strong>快捷键</strong>。</span>
   </p>
 
   <h3><span class="le">Automatic — nothing to type</span><span class="lz">自动生效 —— 无需输入</span></h3>
@@ -1211,7 +1189,6 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <tr><td class="k">context-diet</td><td class="d"><span class="le">every LLM call</span><span class="lz">每次模型调用</span></td><td class="x"><span class="le">Rewrites the provider-bound copy only. One transcript line per dropped result.</span><span class="lz">只重写发往服务商的副本。每条被丢弃的结果留下一行记录。</span></td></tr>
       <tr><td class="k">tool-batching</td><td class="d"><span class="le">every request</span><span class="lz">每次请求</span></td><td class="x"><span class="le">Six lines appended to the system prompt. No output at all.</span><span class="lz">向系统提示词追加六行。完全没有输出。</span></td></tr>
       <tr><td class="k">test-streak</td><td class="d"><span class="le">4th suite re-run</span><span class="lz">第 4 次重跑</span></td><td class="x"><span class="le">A steer plus a warning when the suite is re-run with no edit between; max 3 per turn.</span><span class="lz">测试在没有编辑的情况下被重跑时，发送一次引导并显示警告；每轮最多 3 次。</span></td></tr>
-      <tr><td class="k">visual-reference</td><td class="d"><span class="le">oversized read</span><span class="lz">超长行读取时</span></td><td class="x"><span class="le">Rewrites pi's <code>sed</code> advice for a document that must be rendered. Its <code>agent_end</code> gate was removed and nothing replaced it.</span><span class="lz">改写 pi 对「必须渲染的文档」给出的 <code>sed</code> 建议。它原有的 <code>agent_end</code> 闸门已移除，且没有替代品。</span></td></tr>
       <tr><td class="k">cmux-notify</td><td class="d"><span class="le">blocked on you</span><span class="lz">卡住等你时</span></td><td class="x"><span class="le">Nothing in pi — it raises cmux's "needs input" chip. Gated by <code>CMUX_SURFACE_ID</code>.</span><span class="lz">在 pi 内没有任何显示——它点亮 cmux 的「需要输入」标记。由 <code>CMUX_SURFACE_ID</code> 控制。</span></td></tr>
     </tbody>
   </table>
@@ -1339,8 +1316,6 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <b>"goal"</b>:           { <span class="k">"model"</span>: <span class="s">"cheap"</span>, <span class="k">"maxIterations"</span>: <span class="n">20</span> },
   <b>"recap"</b>:          { <span class="k">"model"</span>: <span class="s">"cheap"</span>, <span class="k">"autoOnReturn"</span>: <span class="n">true</span>, <span class="k">"idleThresholdMs"</span>: <span class="n">300000</span> },
   <b>"scratchpad"</b>:     { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"root"</span>: <span class="s">""</span> },
-  <b>"visualReference"</b>:{ <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"readAdvice"</span>: <span class="n">true</span>,
-                    <span class="k">"guideline"</span>: <span class="n">true</span> },
   <b>"elapsed"</b>:        { <span class="k">"workingTimer"</span>: <span class="n">true</span>, <span class="k">"showTurnDuration"</span>: <span class="n">true</span>, <span class="k">"minTurnMs"</span>: <span class="n">0</span> },
   <b>"memory"</b>:         { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"includeFacts"</span>: <span class="n">true</span>, <span class="k">"maxChars"</span>: <span class="n">24000</span> },
   <b>"dynamicWorkflow"</b>: { <span class="k">"keywordTrigger"</span>: <span class="n">true</span>, <span class="k">"model"</span>: <span class="s">"frontier"</span> },
@@ -1364,7 +1339,6 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <tr><td class="k">recap.autoOnReturn</td><td class="d">true</td><td class="x"><span class="le">On by default on purpose: a recap you must configure first is one nobody ever sees.</span><span class="lz">刻意默认开启：需要先配置的 recap，等于没人会看到的 recap。</span></td></tr>
       <tr><td class="k">recap.idleThresholdMs</td><td class="d">300000</td><td class="x"><span class="le">How long away counts as away. Floored at 30s.</span><span class="lz">离开多久算「离开」。下限 30 秒。</span></td></tr>
       <tr><td class="k">scratchpad.root</td><td class="d"><span class="le">system temp</span><span class="lz">系统临时目录</span></td><td class="x"><span class="le">Must be absolute or start with <code>~/</code>. Validated, not trusted: the announcement channel is a trust boundary.</span><span class="lz">必须是绝对路径或以 <code>~/</code> 开头。只校验，不信任：广播通道本身就是信任边界。</span></td></tr>
-      <tr><td class="k">visualReference.guideline</td><td class="d">true</td><td class="x"><span class="le">The look-before-you-build rule, appended to the system prompt. Advice only — the gate that used to enforce it is gone. A leftover <code>verifyGate</code> key is ignored.</span><span class="lz">追加到系统提示词的「先看再动手」规则。只是建议——过去强制执行它的闸门已移除。settings 里遗留的 <code>verifyGate</code> 键会被忽略。</span></td></tr>
       <tr><td class="k">memory.maxChars</td><td class="d">24000</td><td class="x"><span class="le">Oldest facts are dropped past this. <code>memory.claudeHome</code> (<code>~/.claude</code>) is read until the first write; <code>memory.piHome</code> (<code>~/.config/pi</code>) is where pi's own store lives. <code>memory.writable</code> false keeps it read-only.</span><span class="lz">超出后丢弃最旧的事实。首次写入前读 <code>memory.claudeHome</code>（<code>~/.claude</code>）；<code>memory.piHome</code>（<code>~/.config/pi</code>）是 pi 自己 store 的位置。<code>memory.writable</code> 设为 false 即保持只读。</span></td></tr>
       <tr><td class="k">dynamicWorkflow.keywordTrigger</td><td class="d">true</td><td class="x"><span class="le">Whether a whole-word <code>ultracode</code> in a prompt opts that turn in. <code>dynamicWorkflow.limits</code> is inert — nothing reads it.</span><span class="lz">提示词中出现完整单词 <code>ultracode</code> 是否让该轮启用。<code>dynamicWorkflow.limits</code> 已失效——没有任何代码读取它。</span></td></tr>
       <tr><td class="k">elapsed.minTurnMs</td><td class="d">0</td><td class="x"><span class="le">Skip the end-of-turn duration line for turns shorter than this.</span><span class="lz">短于此时长的轮次不显示耗时行。</span></td></tr>
@@ -1463,7 +1437,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
       <td data-c="Codex CLI" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">Skills from four search paths; the always-present name + description + path list is capped at 2% of the context window, or 8,000 characters when the window is unknown.</span><span class="lz">技能来自四个搜索路径；常驻的名称+描述+路径列表上限为上下文窗口的 2%；窗口未知时退为 8,000 字符。</span></span></td></tr>
 
     <tr><th><span class="le">MCP</span><span class="lz">MCP</span></th>
-      <td data-c="pi + config" class="qc" tabindex="0" role="button"><span class="v none">none</span><span class="d"><span class="le">pi's philosophy: "No MCP. Build CLI tools with READMEs, or build an extension that adds MCP support." None of these 25 do.</span><span class="lz">pi 的理念页：“没有 MCP。要么把 CLI 工具配上 README，要么自己写个扩展加 MCP 支持。”这 25 个扩展没有一个补上。</span></span></td>
+      <td data-c="pi + config" class="qc" tabindex="0" role="button"><span class="v none">none</span><span class="d"><span class="le">pi's philosophy: "No MCP. Build CLI tools with READMEs, or build an extension that adds MCP support." None of these 25 do.</span><span class="lz">pi 的理念页：“没有 MCP。要么把 CLI 工具配上 README，要么自己写个扩展加 MCP 支持。”这 24 个扩展没有一个补上。</span></span></td>
       <td data-c="Claude Code" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">stdio, HTTP, SSE and WebSocket at local/project/user scope, OAuth for remote servers, tool search deferring schemas, <code>/mcp</code> showing per-server token cost.</span><span class="lz">local/project/user 作用域支持 stdio、HTTP、SSE、WebSocket，远程服务器走 OAuth，工具检索延迟加载 schema，<code>/mcp</code> 显示各服务器 token 开销。</span></span></td>
       <td data-c="Codex CLI" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le"><code>codex mcp add|list|login</code> manages servers, and <code>codex mcp-server</code> runs Codex itself as an MCP server over stdio.</span><span class="lz"><code>codex mcp add|list|login</code> 管理服务器，<code>codex mcp-server</code> 还能把 Codex 自身作为 MCP 服务器通过 stdio 提供。</span></span></td></tr>
 
@@ -1514,7 +1488,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
     <div class="card"><h3 style="margin-top:0">5 · <span class="le">Memory is a piggyback</span><span class="lz">记忆是搭便车</span></h3>
       <p><span class="le">The facts decay the moment you stop running Claude Code in that repo, and the pi agent can never save a fact for its own next session.</span><span class="lz">你一旦不再在那个仓库里跑 Claude Code，事实就开始腐坏，而 pi 自己永远无法为下一次会话存下一条事实。</span></p></div>
     <div class="card"><h3 style="margin-top:0">6 · <span class="le">Bus factor of one</span><span class="lz">巴士系数为一</span></h3>
-      <p><span class="le">25 extensions maintained by one person against an API with known blind spots: no hook removes a skill from the prompt, the event bus does not await handlers, and there is no machine-local settings tier. Every equivalent behaviour opposite has a team and a changelog.</span><span class="lz">25 个扩展由一个人维护，对着一套已知有盲区的 API：没有 hook 能把技能移出提示词，事件总线不会 await 处理函数，也没有机器本地的设置层级。对面每一项同类能力背后都有一个团队和一份变更日志。</span></p></div>
+      <p><span class="le">24 extensions maintained by one person against an API with known blind spots: no hook removes a skill from the prompt, the event bus does not await handlers, and there is no machine-local settings tier. Every equivalent behaviour opposite has a team and a changelog.</span><span class="lz">24 个扩展由一个人维护，对着一套已知有盲区的 API：没有 hook 能把技能移出提示词，事件总线不会 await 处理函数，也没有机器本地的设置层级。对面每一项同类能力背后都有一个团队和一份变更日志。</span></p></div>
   </div>
 </section>
 
@@ -1542,7 +1516,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <div class="callout warn">
     <span class="lbl"><span class="le">The price</span><span class="lz">代价</span></span>
     <p><span class="le">No sandbox, no MCP, no scheduler, no surface but the terminal, memory it can only read, and a 27-extension maintenance load resting on one person. Pick it if owning the harness is itself something you want to do. Do not pick it if you need someone else on the hook when it breaks.</span>
-    <span class="lz">没有沙箱、没有 MCP、没有调度器、除终端外没有任何入口、记忆只能读不能写，还有压在一个人身上的 25 个扩展的维护量。如果“拥有这套机架”本身就是你想做的事，那就选它。如果你需要出问题时有别人来兜底，就别选。</span></p>
+    <span class="lz">没有沙箱、没有 MCP、没有调度器、除终端外没有任何入口、记忆只能读不能写，还有压在一个人身上的 24 个扩展的维护量。如果“拥有这套机架”本身就是你想做的事，那就选它。如果你需要出问题时有别人来兜底，就别选。</span></p>
   </div>
 </section>
 

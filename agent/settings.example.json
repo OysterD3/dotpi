@@ -108,10 +108,5 @@
     "minResultBytes": 512,
     "dropOldReasoning": false,
     "keepRecentReasoning": 10
-  },
-  "visualReference": {
-    "enabled": true,
-    "readAdvice": true,
-    "guideline": true
   }
 }

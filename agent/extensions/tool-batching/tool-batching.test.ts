@@ -2,10 +2,11 @@
  * Tests for tool-batching: the guideline says the two things it has to say, and
  * the hook appends rather than replacing.
  *
- * The chaining assertion is the one that matters. Four extensions return a
- * systemPrompt from before_agent_start (memory, visual-reference, add-dir and
- * this one) and pi threads the result of each into the next, so a handler that
- * returned a bare guideline would silently delete whatever memory had loaded.
+ * The chaining assertion is the one that matters. Five extensions return a
+ * systemPrompt from before_agent_start (memory, add-dir, scratchpad,
+ * skill-loading and this one) and pi threads the result of each into the next,
+ * so a handler that returned a bare guideline would silently delete whatever
+ * memory had loaded.
  * That failure is invisible at runtime — the session just quietly forgets.
  *
  * Run: jiti agent/extensions/tool-batching/tool-batching.test.ts
