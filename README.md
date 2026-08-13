@@ -1208,6 +1208,56 @@ to nothing is left in the prompt exactly as typed rather than silently going mis
 | `config.ts` | Budgets and thresholds |
 | `session-ref.test.ts` | Picker rules, branch loading, budgets, marker and trigger rules, and `#`-to-submit end-to-end |
 
+**`agent/extensions/intercom/`** — the other half of session-ref: two sessions that are both up
+*right now*, talking to each other. session-ref brings a session's record in and that session never
+knows; this reaches a live one and it answers.
+
+```
+intercom_peers                     which other pi sessions are running
+intercom_send(to, message)         say it and carry on
+intercom_ask(to, question)         say it and wait for the answer
+```
+
+There are no commands and no `/`-prefix, because the tools are for the model: you say "ask the API
+session which port it settled on" and it does. A target is named by id prefix or by name; a name two
+live sessions share is refused with the ids that would settle it rather than delivered to whichever
+sorted first.
+
+Delivery follows background-shell's rule exactly, because it is the same problem — something
+arrived from outside the turn. An **idle** session is woken by it, a **busy** one gets it as a
+follow-up on the run it is already doing, and one poll tick's whole drain becomes one message, so
+three peers do not start three turns. That is also the cost, stated in the tool description: a send
+spends the receiver's tokens on a turn its user did not ask for. What arrives is wrapped like a
+referenced session — provenance, and one guard line marking a peer's words as a colleague's request
+rather than an instruction that outranks the receiver's own user.
+
+Everything it can reach is a **live** session. Presence is a heartbeat plus a pid check, not a file
+that exists: a session that is SIGKILLed never runs its shutdown handler, so every session sweeps
+the corpses when it starts. A message to a session that is not up is refused at send time rather
+than stored for a resume that may never come — which is what makes this an intercom and not a
+mailbox. The session id also moves under a live process (`/new`, `/resume`, fork all rebind it), so
+presence is torn down and rewritten on every `session_start`; without that a process keeps draining
+the inbox of a conversation it has already left.
+
+`intercom_ask` is the one call that blocks. It is bounded (120s by default, 600s at most) and it
+gives up early when the peer quits rather than waiting out the clock for a session that is gone.
+Two sessions asking each other at the same moment are both inside a tool call, so neither can reach
+the turn where it would answer — the timeout is the whole of the answer to that, and the tool
+description says so.
+
+The intercom needs an interactive session to be worth anything: a headless `-p` run has no next turn
+to deliver into and is gone before a peer could answer, so there presence is never written and the
+tools say why.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Presence lifecycle, the inbox poller, delivery, and the renderer |
+| `store.ts` | The files two sessions talk through: presence, liveness, inboxes, asks, target resolution |
+| `tools.ts` | The three tools |
+| `prompts.ts` | Tool descriptions and the delivered block (pure) |
+| `config.ts` | Heartbeats, timeouts, limits |
+| `intercom.test.ts` | Liveness and the sweep, resolution, draining, the block, and two whole sessions end to end |
+
 **`agent/extensions/dynamic-workflow/`** — dynamic workflow: a `workflow` tool that orchestrates fleets of
 subagents from a script, and the triggers that opt the model into using it.
 
