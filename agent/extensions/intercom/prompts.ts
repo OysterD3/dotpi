@@ -36,7 +36,7 @@ export const PEERS_SNIPPET = "intercom_peers: list the other pi sessions running
 
 export const SEND_DESCRIPTION = [
 	"Send a message to another live pi session, and continue without waiting.",
-	"It does not interrupt: the message waits for that session's next turn, so it never starts work its user did not ask for.",
+	"It interrupts: an idle peer starts a turn to read it, so it spends that user's tokens on work they did not ask for. Send when the other session needs to know something, not to think out loud.",
 	`Use \`reply_to\` to answer a question a peer asked you with ${TOOL_ASK}; the id to use is stated in the question.`,
 	"There is no delivery receipt beyond this tool's result, and no reply unless that session sends one back.",
 	LAUNDERING_RULE,
@@ -47,7 +47,7 @@ export const SEND_SNIPPET = "intercom_send: send a message to another live pi se
 export const ASK_DESCRIPTION = [
 	"Ask another live pi session a question and wait for its answer.",
 	"This blocks until the peer answers or the timeout runs out, so use it only when you cannot proceed without the answer.",
-	"A question does interrupt, unlike a plain send: an idle peer starts a turn to answer it. If that session is itself blocked waiting on somebody, neither of you moves until one of the timeouts ends.",
+	"An idle peer starts a turn to answer it. If that session is itself blocked waiting on somebody, neither of you moves until one of the timeouts ends.",
 	`When you do not need the answer to carry on, use ${TOOL_SEND} instead.`,
 	LAUNDERING_RULE,
 ].join(" ");

@@ -1244,14 +1244,19 @@ docs [cccccccc]      ·  working  ·  /work/docs  ·  started 5m ago
 The bracketed id is the address, and it is what settles a name two sessions share — an ambiguous
 name is refused with the ids that would answer it rather than delivered to whichever sorted first.
 
-**Only a question may start a turn.** A plain `intercom_send` waits for the next thing the receiving
-user types (`nextTurn`, which is spliced into that prompt unconditionally, so an Escape in between
-cannot lose it): a peer must not be able to spend somebody else's tokens on work they did not ask
-for. An `intercom_ask` does wake an idle peer, because it is the one message that is worthless late
-— somebody is blocked on it. Mid-turn both ride the run already going, which is background-shell's
-rule unchanged, and one poll tick's whole drain becomes one message, so three peers do not become
-three turns. Each message carries a one-line `summary` for the chat row, its own or the first line
-of what was said.
+Delivery follows background-shell's rule exactly, because it is the same problem — something
+arrived from outside the turn. An **idle** session is woken by it, a **busy** one gets it as a
+follow-up on the run it is already doing, and one poll tick's whole drain becomes one message, so
+three peers do not become three turns. Each message carries a one-line `summary` for the chat row,
+its own or the first line of what was said.
+
+Waking is the choice, not the default, and it is the one place this deliberately parts from Claude
+Code — which never wakes a peer, so a message waits for the receiver's next tool round. That
+protects the receiver's tokens and costs the thing an intercom is for: a peer you only reach when
+its user happens to come back is a mailbox. So the price is stated where the sender reads it
+instead — `intercom_send`'s own description opens with *"It interrupts"*. The one loss mode worth
+knowing is the mid-turn case: the follow-up queue is the exact queue an abort clears whole, so a
+message delivered into a running turn dies with an Escape, and nothing re-sends it.
 
 What arrives is wrapped like a referenced session: provenance, one guard line marking a peer's
 words as a colleague's request rather than an instruction that outranks the receiver's own user,

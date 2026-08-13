@@ -125,7 +125,7 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 				sentAt: deps.now(),
 			});
 			return said(
-				`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). It waits for that session's next prompt rather than interrupting it, and it is held in memory there, not on disk — a session that quits before its user types again never reads it. There is no reply unless it sends one.`,
+				`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). An idle session reads it on a turn that starts now; a busy one picks it up on the run it is already doing. There is no reply unless it sends one.`,
 			);
 		},
 	});

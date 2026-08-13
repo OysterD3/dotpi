@@ -9,14 +9,17 @@
  *   intercom_send(to, message)     say it and carry on
  *   intercom_ask(to, question)     say it and wait for the answer
  *
- * Delivery is background-shell's problem — something arrived from outside the
- * turn — with one line drawn through it: only a QUESTION may start a turn. A
- * plain send waits for the next thing the user types, because a peer must not
- * be able to spend somebody else's tokens on work they did not ask for. A
- * question wakes an idle session, because it is the one message that is
- * worthless late: somebody is blocked on it. Mid-turn both ride the run
- * already going, and one tick's whole drain becomes one message, so three
- * peers do not become three turns.
+ * Delivery follows background-shell's rule exactly, because it is the same
+ * problem: something arrived from outside the turn. An idle session is woken by
+ * it, a busy one gets it as a follow-up on the run it is already doing, and one
+ * tick's whole drain becomes one message, so three peers do not become three
+ * turns.
+ *
+ * Waking is the choice, not the default. The quieter option — hold everything
+ * for the next thing the user types — protects the receiver's tokens, and costs
+ * the thing an intercom is for: a peer that only hears you when its user
+ * happens to come back is a mailbox. The price is stated in the tool
+ * description instead, where the sender reads it before spending it.
  *
  * Two facts shape everything else. A session id changes under a live process —
  * `/new`, `/resume` and fork all rebind it — so presence is torn down and
@@ -59,8 +62,8 @@ export type IntercomDetails = {
 	/** One row per message: who sent it, what it is about, and whether it blocks them. */
 	items: { from: string; summary: string; asking: boolean }[];
 	count: number;
-	/** How it landed: a turn of its own, the run already going, or the next prompt. */
-	delivery: "turn" | "followUp" | "nextTurn";
+	/** How it landed: a turn of its own, or the run that was already going. */
+	delivery: "turn" | "followUp";
 };
 
 export type Deps = {
@@ -74,7 +77,7 @@ function renderIntercom(details: IntercomDetails, theme: Theme): Text {
 	for (const item of details.items) {
 		lines.push(theme.fg("muted", `${item.from} — ${item.summary}${item.asking ? " (waiting for an answer)" : ""}`));
 	}
-	if (details.delivery === "nextTurn") lines.push(theme.fg("dim", "waiting for your next message"));
+	if (details.delivery === "followUp") lines.push(theme.fg("dim", "picked up by the turn already running"));
 	return new Text(lines.join("\n"), 0, 0);
 }
 
@@ -112,18 +115,11 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 	/**
 	 * Drain this session's inbox and hand it over.
 	 *
-	 * Only a QUESTION may start a turn. A plain send waits for the next thing
-	 * the user types (`nextTurn` is spliced into that prompt unconditionally, so
-	 * an Escape in between cannot lose it) — a peer must not be able to spend
-	 * this user's tokens on work they did not ask for. A question is the one
-	 * message that is worthless late: somebody is blocked on it, and a reply
-	 * that arrives after they gave up helps nobody. Mid-turn, both ride the run
-	 * already going, which is background-shell's rule unchanged.
-	 *
-	 * A plain message that lands in the same tick as a question rides that turn
-	 * free. The turn's cost was committed by the question, and a peer gains
-	 * nothing by the pairing — anything it wanted acted on now, it could have
-	 * written into the question itself.
+	 * Idle: wake it, the way a shell exit does. Mid-turn: ride the run already
+	 * going as a follow-up. That second case is the one with a loss mode worth
+	 * knowing — the follow-up queue is the exact queue an abort clears whole, so
+	 * a peer's message delivered mid-turn dies with an Escape. Nothing here
+	 * re-sends it: the sender was told it was delivered, and it was.
 	 *
 	 * `drain` removes what it reads, so a throw between here and sendMessage
 	 * loses those messages — the same trade background-shell makes with a
@@ -137,8 +133,7 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		const envelopes = drain(l, me.id, CONFIG.maxDrainPerTick);
 		if (envelopes.length === 0) return;
 		try {
-			const idle = ctx.isIdle();
-			const delivery = !idle ? "followUp" : envelopes.some((envelope) => envelope.askId) ? "turn" : "nextTurn";
+			const delivery = ctx.isIdle() ? "turn" : "followUp";
 			pi.sendMessage<IntercomDetails>(
 				{
 					customType: MESSAGE_TYPE,
