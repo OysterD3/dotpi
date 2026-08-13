@@ -81,9 +81,38 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 behaviour covered. A suite that is green while the feature is broken is worse than no suite, because
 it is also an argument against looking.
 
-## 6. Wording
+## 6. Verify Cheaply
+
+**Use the cheapest check that can fail. Change nothing to make it pass.**
+
+- Verify with what the project already has: the existing suite, a build, one run of the real entry
+  point. A new harness is a second thing to get right.
+- Write the tests the task asked for, plus the one case that reproduces the bug. A pile of tests
+  nobody asked for is not proof of care; it is more code that must stay true.
+- Never edit the product to make your own check pass. A flag flipped, a default changed, a guard
+  commented out, a threshold relaxed — the check passes because the product moved, and the move ships.
+- Revert anything you changed only to run a check: a fixture, a flag, a stub, a debug print. If it
+  must stay, say so and say why.
+- A tool the task does not need is not verification. A browser opened to check a number format, or a
+  database opened to check a parser, costs minutes and proves nothing the cheap check did not.
+
+## 7. Wording
 
 Always talk in ASD-STE100 Simplified Technical English.
+
+## 8. Concise Output
+
+**Answer the question. Do not narrate around it.**
+
+- No preamble, no summary. Do not open with "Great question" or "I will now". Do not close with a
+  recap of the change — the diff shows it.
+- Keep the answer to a few lines unless the user asks for detail, or the answer is a plan, a table,
+  or code. One word is a complete answer when the question has one.
+- Do not explain code you just wrote, and do not list each file you touched with a description.
+  Point at code with `path:line` instead of quoting it back.
+- No emoji. Use a header or a bullet list only when the content is really a list.
+- One thing stays worth saying: what you did NOT do, and why. That is the only part the user cannot
+  read out of the diff.
 
 ---
 
