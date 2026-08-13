@@ -44,11 +44,14 @@ import {
 	pruneRuns,
 	readAgentPrompt,
 	readMeta,
+	readOutcome,
 	reconcile,
 	appendJournalLine,
 	readJournalLines,
 	sharedSessionId,
+	undeliveredOutcomes,
 	unresumedInterrupted,
+	writeOutcome,
 	type RunMeta,
 	sessionActivity,
 } from "./store.ts";
@@ -2284,6 +2287,50 @@ console.log("\n--- store: work still owed ---");
 		unresumedInterrupted(here).map((m) => m.runId),
 		["a", "b"],
 	);
+
+	// The other debt: a run that FINISHED with no session left to tell. Unlike an
+	// interrupted run this one has a real answer on disk, so what is owed is the
+	// result itself rather than a suggestion to resume.
+	const owed = (runId: string, status: RunMeta["status"], delivered?: boolean, cwd = "/p"): RunMeta => ({
+		...meta(runId, status, undefined, cwd),
+		delivered,
+	});
+	check(
+		"a settled run nobody was told about is owed",
+		undeliveredOutcomes([owed("a", "done"), owed("b", "error"), owed("c", "aborted")]).map((m) => m.runId),
+		["a", "b", "c"],
+	);
+	check(
+		"a delivered run is not",
+		undeliveredOutcomes([owed("a", "done", true), owed("b", "done", false)]).map((m) => m.runId),
+		["b"],
+	);
+	// Still running: there is no outcome yet, and the session that started it is
+	// by definition still there to be told.
+	check(
+		"an unsettled run is not owed",
+		undeliveredOutcomes([owed("a", "running"), owed("b", "paused")]),
+		[],
+	);
+	check(
+		"scoped to this project, like the interrupted debt",
+		undeliveredOutcomes([owed("a", "done", undefined, "/repo-a"), owed("b", "done", undefined, "/repo-b")], "/repo-a").map(
+			(m) => m.runId,
+		),
+		["a"],
+	);
+}
+
+console.log("\n--- store: the outcome file outlives the process ---");
+{
+	const dir = mkdtempSync(join(tmpdir(), "wf-outcome-"));
+	check("nothing written, nothing to read", readOutcome(dir, "wf-1"), undefined);
+	writeOutcome(dir, "wf-1", 'Workflow "demo" finished.\n{"ok":true}');
+	check("round trip", readOutcome(dir, "wf-1"), 'Workflow "demo" finished.\n{"ok":true}');
+	// An empty outcome is not an outcome: it would be delivered as a blank
+	// message that says a run finished without saying anything about it.
+	writeOutcome(dir, "wf-2", "");
+	check("an empty outcome reads as nothing to say", readOutcome(dir, "wf-2"), undefined);
 }
 
 console.log("\n--- notice: runs owed from earlier sessions ---");

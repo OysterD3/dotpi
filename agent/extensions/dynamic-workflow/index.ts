@@ -80,11 +80,60 @@ import { AFTER_RUN, editStreakReminder, ENTER_SPARSE, KEYWORD_REMINDER, routingR
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
 import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
-import { ensureStore, listRuns, readJournalLines, readMeta, reconcile, runDir, unresumedInterrupted } from "./store.ts";
+import {
+	ensureStore,
+	listRuns,
+	readJournalLines,
+	readMeta,
+	readOutcome,
+	reconcile,
+	runDir,
+	undeliveredOutcomes,
+	unresumedInterrupted,
+	writeMeta,
+} from "./store.ts";
 import { registerWorkflowTool, RESULT_MESSAGE, usableModels, WORKFLOW_TOOL_NAME } from "./tool.ts";
 import { showWorkflows } from "./tui.ts";
 
 const BADGE = "✦ dynamic workflow";
+
+/**
+ * Say what a previous session was never told.
+ *
+ * A background run reports through `sendMessage`, which needs a live session.
+ * When the run settles after its own session has gone — the process exited,
+ * `/new` replaced it, `session_shutdown` cancelled it on the way out — the
+ * outcome was built, handed to nothing, and lost. `/workflows` still listed the
+ * run as done, which is the part that made it hard to see: the work was
+ * finished and the model simply had not heard, so the next thing it did was
+ * read the journal back a record at a time to reconstruct its own fleet's
+ * result.
+ *
+ * Sent with NO delivery option, which is the one route that both persists and
+ * waits. pi's sendCustomMessage appends a plain send straight to the session
+ * (state.messages plus a CustomMessageEntry on disk) without starting a turn,
+ * so the result is in the transcript the moment it is said and in context the
+ * next time the model runs. `triggerTurn` would have the session talking before
+ * its user has typed anything; `nextTurn` queues into an in-memory array, so a
+ * session opened and closed without a word would mark the debt paid and never
+ * say it — which is the bug this function exists for, one turn later.
+ *
+ * Oldest first, so several owed runs read in the order they happened. The
+ * outcome FILE is what makes a run owed — a `wait: true` run answered through
+ * its tool result and never writes one, and neither did any run from before
+ * this existed, so nothing already in the store is retold now.
+ */
+function deliverOwedOutcomes(pi: ExtensionAPI, agentDir: string, cwd: string | undefined): void {
+	for (const meta of undeliveredOutcomes(listRuns(agentDir), cwd).reverse()) {
+		const text = readOutcome(agentDir, meta.runId);
+		if (!text) continue;
+		// No `details`: the RunProgress the live path clones is gone with the
+		// process, and the renderer falls back to the outcome's first line for
+		// exactly this case. The text itself is the whole message.
+		pi.sendMessage({ customType: RESULT_MESSAGE, content: text, display: true });
+		writeMeta(agentDir, { ...meta, delivered: true });
+	}
+}
 
 interface ToggleEntry {
 	action: "on" | "off";
@@ -373,6 +422,11 @@ export default function (pi: ExtensionAPI) {
 		// the old run's agents in whatever tree the current session is sitting in.
 		const stillOwed = unresumedInterrupted(listRuns(agentDir), sessionCwd).filter((meta) => !freshIds.has(meta.runId));
 		interruptedNote = interruptedNotice(freshlyDead, stillOwed);
+		// A run that FINISHED but had no session left to tell. Its outcome text is
+		// on disk (tool.ts writes it before reporting), so unlike an interrupted
+		// run there is a real answer to hand over — say it, rather than leaving
+		// the model to reconstruct its own fleet's work from the journal.
+		deliverOwedOutcomes(pi, agentDir, sessionCwd);
 		setBadge(ctx);
 		drawPanel();
 	});

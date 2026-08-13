@@ -94,6 +94,23 @@ export interface RunMeta {
 	 */
 	worktrees?: Array<{ name: string; branch: string; baseCommit: string; files: number }>;
 	args?: unknown;
+	/**
+	 * Whether the session has been handed this run's outcome.
+	 *
+	 * A background run reports by `sendMessage`, which can only reach a LIVE
+	 * session: a run that settles after its session is gone — the process
+	 * exited, `/new` replaced it, `session_shutdown` cancelled it — used to have
+	 * its outcome built in memory, handed to nothing, and dropped. The store
+	 * said "done" and the model was never told, so the next thing it did was
+	 * read the journal back a record at a time to work out what its own fleet
+	 * had produced.
+	 *
+	 * Absent on runs written before this was recorded, and on `wait: true` runs,
+	 * which answer through the tool result and have no delivery to track. Both
+	 * read as "nothing owed" (see undeliveredOutcomes, which needs the outcome
+	 * file to exist before it claims anything is owed).
+	 */
+	delivered?: boolean;
 }
 
 export function storeRoot(agentDir: string): string {
@@ -195,6 +212,33 @@ export function readScript(agentDir: string, runId: string): string | undefined 
 	}
 }
 
+/**
+ * The outcome text a background run reports — the same string `sendMessage`
+ * carries — kept beside the run so it outlives the process that built it.
+ *
+ * Its own file rather than a field in run.json, because `listRuns` reads EVERY
+ * run.json to draw the panel and a run's result is unbounded: a fleet returning
+ * a large JSON object would make every redraw parse it. Nothing reads this file
+ * unless a run turns out to be owed one.
+ */
+export function writeOutcome(agentDir: string, runId: string, text: string): void {
+	try {
+		mkdirSync(runDir(agentDir, runId), { recursive: true });
+		writeFileSync(join(runDir(agentDir, runId), "outcome.txt"), text, "utf8");
+	} catch {
+		/* a store we cannot write must not take the run down */
+	}
+}
+
+export function readOutcome(agentDir: string, runId: string): string | undefined {
+	try {
+		const text = readFileSync(join(runDir(agentDir, runId), "outcome.txt"), "utf8");
+		return text.length > 0 ? text : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Every stored run, newest first. Unreadable directories are skipped. */
 export function listRuns(agentDir: string): RunMeta[] {
 	let names: string[];
@@ -274,6 +318,28 @@ export function unresumedInterrupted(metas: RunMeta[], cwd?: string): RunMeta[] 
 			// agents in the wrong tree. A meta with no cwd recorded is not matched
 			// to anything rather than shown everywhere.
 			(cwd === undefined || meta.cwd === cwd),
+	);
+}
+
+/**
+ * Settled runs whose outcome was never handed to a session.
+ *
+ * The counterpart to unresumedInterrupted, and the reason that one's doc
+ * comment used to be able to say "only an interrupted run's result message
+ * never arrived at all": an errored or aborted run really does deliver, as long
+ * as a session is still there to deliver TO. When there is not — the process
+ * exited between settling and reporting, or `session_shutdown` cancelled the
+ * run on its way out — the message went nowhere and nothing said so.
+ *
+ * `delivered` alone is not enough to claim one is owed: a run from before this
+ * field existed has no flag either, and so does every `wait: true` run. The
+ * outcome FILE is the evidence, so the caller reads it and skips whatever
+ * cannot be produced. Same project only, for unresumedInterrupted's reason —
+ * the run store is global and its results are not.
+ */
+export function undeliveredOutcomes(metas: RunMeta[], cwd?: string): RunMeta[] {
+	return metas.filter(
+		(meta) => isSettled(meta.status) && meta.delivered !== true && (cwd === undefined || meta.cwd === cwd),
 	);
 }
 

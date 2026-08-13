@@ -31,7 +31,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, AFTER_RUN, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
 const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
-const { createRun, readMeta } = await import("./store.ts");
+const { createRun, readMeta, readOutcome } = await import("./store.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
 type SpendEvent = { source: string; key?: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
@@ -957,6 +957,12 @@ console.log("\n--- workflow tool: background ---");
 	check("delivery content carries the result", sent[0]?.message.content.includes('"ok": true'), true);
 	check("delivered message is visible", sent[0]?.message.display, true);
 	check("idle delivery triggers a turn", sent[0]?.options, { triggerTurn: true });
+	// Both halves of the delivery record, on the path where it works: the text
+	// is beside the run before anyone is told, and the run says it was told —
+	// which is what stops a later session repeating a result already in context.
+	const bgRun = immediate.details.runId as string;
+	check("the outcome is kept beside the run", readOutcome(AGENT, bgRun)?.includes('"ok": true'), true);
+	check("and the run records that the session heard it", readMeta(AGENT, bgRun)?.delivered, true);
 	// Guard the "cleared" check with a non-empty assertion: against an empty log
 	// `.at(-1)` is undefined too, so the clear would pass without anything having
 	// been announced at all.
@@ -1445,7 +1451,7 @@ console.log("\n--- panel survives a dead session ---");
 		"await new Promise((resolve) => setTimeout(resolve, 60))",
 		"return 'late'",
 	].join("\n");
-	await tool.execute("t11", { script }, undefined, undefined, ctx);
+	const lateRun = (await tool.execute("t11", { script }, undefined, undefined, ctx)).details.runId as string;
 
 	// The session goes away mid-run: shutdown cancels, then the context dies.
 	events.get("session_shutdown")!({}, ctx);
@@ -1460,6 +1466,64 @@ console.log("\n--- panel survives a dead session ---");
 	process.removeListener("unhandledRejection", watcher);
 	check("no error escapes a settle on a dead session", escaped, undefined);
 	check("no result delivered to a dead session", sent.length, 0);
+
+	// ...but it is not lost either. shutdown cancelled this one, so what is on
+	// disk is the cancellation and its resume path rather than a result — and
+	// the run records that nobody heard even that.
+	check("the outcome outlives the session that could not hear it", readOutcome(AGENT, lateRun)?.includes(lateRun), true);
+	check("and the run records that nobody was told", readMeta(AGENT, lateRun)?.delivered, false);
+}
+
+console.log("\n--- a result that finished after its session died is delivered next session ---");
+{
+	// The failure the store's `delivered` flag exists for, with no cancellation
+	// in the way: the run finishes normally, and by then sendMessage has nothing
+	// live to reach. Before this, the outcome was built in memory, handed to a
+	// dead context, and dropped — `/workflows` said "done" while the model had
+	// never been told, so the next thing it did was read its own fleet's journal
+	// back a record at a time to work out what had been produced.
+	const tool = tools.get("workflow")!;
+	let dead = false;
+	const { ctx } = makeCtx({ model: MODEL, dead: () => dead });
+	events.get("session_start")!({}, ctx);
+	sent.length = 0;
+	const script = [
+		"export const meta = { name: 'unheard', description: 'finishes after the session is gone' }",
+		"await new Promise((resolve) => setTimeout(resolve, 60))",
+		"return 'the answer'",
+	].join("\n");
+	const runId = (await tool.execute("t13", { script }, undefined, undefined, ctx)).details.runId as string;
+
+	// The session goes away WITHOUT a shutdown — a replaced runtime, not a
+	// cancelled run — so the script runs to completion and settles into nothing.
+	dead = true;
+	for (let i = 0; i < 100 && readMeta(AGENT, runId)?.status === "running"; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	check("the run finished", readMeta(AGENT, runId)?.status, "done");
+	check("nothing was delivered", sent.length, 0);
+	check("but the result is on disk", readOutcome(AGENT, runId)?.includes("the answer"), true);
+	check("and the run says nobody heard it", readMeta(AGENT, runId)?.delivered, false);
+
+	// A fresh session picks the debt up. Found by content rather than position:
+	// what matters is that this result arrives, not that it is the only thing
+	// any session ever queues.
+	dead = false;
+	events.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
+	const owed = sent.find((s) => String(s.message.content).includes("the answer"));
+	check("the next session is handed it", owed?.message.customType, "workflow-result");
+	check("visible, like a live delivery", owed?.message.display, true);
+	// No delivery option at all. pi appends a plain send to the session and to
+	// state.messages without starting a turn, so it is on disk the moment it is
+	// said: `triggerTurn` would talk before the user had, and `nextTurn` queues
+	// into memory, where a session opened and closed in silence would mark the
+	// debt paid without ever saying it.
+	check("appended to the session rather than starting a turn", owed?.options, undefined);
+	check("and the run is marked, so it is said once", readMeta(AGENT, runId)?.delivered, true);
+
+	sent.length = 0;
+	events.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
+	check("a later session is not told again", sent.length, 0);
 }
 
 console.log("\n--- resumed session is told about interrupted runs ---");

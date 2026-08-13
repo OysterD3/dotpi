@@ -90,6 +90,7 @@ import {
 	readJournalLines,
 	readScript,
 	writeMeta,
+	writeOutcome,
 	type RunMeta,
 } from "./store.ts";
 
@@ -1105,10 +1106,20 @@ function startRun(
 	run.settled = run.settled.then(() => {
 		meta.endedAt = Date.now();
 		journal({ kind: "run", event: "end", status: progress.status, error: progress.error });
+		if (!wait) {
+			// Write the outcome BEFORE trying to report it, and record whether the
+			// report actually landed. A background run's outcome is built here and
+			// nowhere else; handing it to a session that has gone away used to be
+			// the end of it, which left the model reading its own journal back to
+			// find out what its fleet had produced. Now the text is on disk and the
+			// flag says whether anyone has heard it — index.ts says it once, in the
+			// next session, if nobody has. persist() below writes the flag.
+			writeOutcome(agentDir, runId, run.outcome?.text ?? "");
+			meta.delivered = deliverResult(pi, ctx, run);
+		}
 		persist();
 		pruneRuns(agentDir, CONFIG.retainRuns);
 		changed();
-		if (!wait) deliverResult(pi, ctx, run);
 	});
 	registry.add(run);
 	persist();
@@ -1225,8 +1236,12 @@ function resolveReference(reference: string, ctx: ExtensionContext): string {
 	throw new Error(resolved.error);
 }
 
-/** Hand a finished background run's outcome back to the main agent. */
-function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun): void {
+/**
+ * Hand a finished background run's outcome back to the main agent. Returns
+ * whether the session took it — false means nothing was told, and the outcome
+ * on disk is now owed to the next session (see undeliveredOutcomes).
+ */
+function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun): boolean {
 	try {
 		const idle = ctx.isIdle();
 		pi.sendMessage<RunProgress>(
@@ -1240,8 +1255,12 @@ function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun
 			// so the result gets processed, the way a task notification would.
 			idle ? { triggerTurn: true } : { deliverAs: "followUp" },
 		);
+		return true;
 	} catch {
-		/* a dead session cannot receive results; /workflows still shows them */
+		// A dead session cannot receive anything: every field of a replaced
+		// session's context throws (pi's getters call assertActive), and a run
+		// cancelled by session_shutdown settles on exactly that path.
+		return false;
 	}
 }
 

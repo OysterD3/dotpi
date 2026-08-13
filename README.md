@@ -1333,7 +1333,8 @@ unbounded and there is no timeout — see **Nothing is capped** above.
 
 **Every run is a directory.** `~/.pi/agent/workflow-runs/<runId>/` holds `run.json` (the row
 `/workflows` lists), `journal.jsonl` (an append-only record of every agent, log line and result),
-`script.js` verbatim, and `agents/` — a `--session-dir` in which **each subagent keeps a real pi
+`script.js` verbatim, `outcome.txt` (what the session was told, see **A result nobody heard** below),
+and `agents/` — a `--session-dir` in which **each subagent keeps a real pi
 session**. That last part is the difference between a fleet you can debug and one you can only
 watch: a finished agent's transcript renders with `pi --export` like any other session, tool calls
 and all, and its full stderr sits beside it. Run ids are `wf-<base36 ms>-<n>`, unique across
@@ -1368,6 +1369,24 @@ implementation died and restarted from nothing — $11.15 and 72 minutes in runs
 no result, whose successful agents were sitting on disk the whole time. The interrupted-run notice
 also used to list every dead run but offer a resume call for only the first, so a session that lost
 three was told how to recover one.
+
+**A result nobody heard is still owed.** A background run reports by `sendMessage`, which needs a
+live session. When the run settles after its session is gone — the process exited, `/new` replaced
+it, `session_shutdown` cancelled it on the way out — the outcome was built in memory, handed to
+nothing, and dropped. `/workflows` still said `done`, which is the part that made it hard to see:
+the work had finished and the model simply had not been told, so the next thing it did was read the
+run's own journal back a record at a time to reconstruct what its fleet had produced.
+
+The outcome is now written to `outcome.txt` **before** the delivery is attempted, and `run.json`
+records whether anyone heard it. The next session in the same project says what is owed, once, as an
+ordinary `workflow-result` message — the same type and renderer a live delivery uses — appended to
+the session rather than starting a turn with it. That route is the only one that both persists and
+waits: `triggerTurn` would have the session talking before its user had typed, and `nextTurn` queues
+into an in-memory array, so a session opened and closed in silence would mark the debt paid without
+ever saying it — this bug again, one turn later. The outcome FILE is what makes a run
+owed, so `wait: true` runs (which answer through their tool result) and every run from before this
+existed are never retold. This is the settled-run counterpart to the interrupted-run notice above:
+that one offers a resume because there is no result to give, this one gives the result.
 
 **Agents can be forked context.** `agent(prompt, { context: { parent: 6, files: [...], text: ... } })`
 seeds that agent's session with recent turns of the conversation, whole files, or literal
