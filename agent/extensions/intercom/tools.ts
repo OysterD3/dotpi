@@ -124,7 +124,9 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 				summary: summarise(typeof params.summary === "string" ? params.summary : undefined, message),
 				sentAt: deps.now(),
 			});
-			return said(`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). It arrives on that session's next turn, without interrupting it. There is no reply unless it sends one.`);
+			return said(
+				`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). It waits for that session's next prompt rather than interrupting it, and it is held in memory there, not on disk — a session that quits before its user types again never reads it. There is no reply unless it sends one.`,
+			);
 		},
 	});
 
@@ -185,6 +187,14 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 					if (!peers().some((row) => row.id === peer.id)) return said(`"${peer.name}" quit before answering.`);
 					await sleep(CONFIG.askPollMs);
 				}
+
+				// One more look before giving up. An answer written inside the final
+				// poll interval was accepted — the wait marker was still down when
+				// the peer wrote it, and it was told the ask was unblocked — so
+				// closing without reading it would throw away an answer that both
+				// sides believe was delivered.
+				const late = takeAnswer(deps.layout, askId);
+				if (late !== undefined) return said(`"${peer.name}" answered:\n\n${late}`);
 
 				return said(
 					`No answer from "${peer.name}" within ${Math.round(timeoutMs / 1000)}s. It may be mid-task, or blocked waiting on somebody itself. Carry on without it, or send what you know with ${TOOL_SEND}.`,

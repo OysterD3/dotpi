@@ -40,7 +40,19 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } fro
 import { Text } from "@earendil-works/pi-tui";
 import { CONFIG, MESSAGE_TYPE } from "./config.ts";
 import { intercomBlock, summarise } from "./prompts.ts";
-import { type AliveCheck, drain, ensure, forget, type Layout, layout, processAlive, type Self, sweep, writePresence } from "./store.ts";
+import {
+	type AliveCheck,
+	drain,
+	ensure,
+	forget,
+	type Layout,
+	layout,
+	processAlive,
+	removePresence,
+	type Self,
+	sweep,
+	writePresence,
+} from "./store.ts";
 import { registerIntercomTools } from "./tools.ts";
 
 export type IntercomDetails = {
@@ -108,6 +120,11 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 	 * that arrives after they gave up helps nobody. Mid-turn, both ride the run
 	 * already going, which is background-shell's rule unchanged.
 	 *
+	 * A plain message that lands in the same tick as a question rides that turn
+	 * free. The turn's cost was committed by the question, and a peer gains
+	 * nothing by the pairing — anything it wanted acted on now, it could have
+	 * written into the question itself.
+	 *
 	 * `drain` removes what it reads, so a throw between here and sendMessage
 	 * loses those messages — the same trade background-shell makes with a
 	 * finished shell's exit. The alternative, leaving them on disk until
@@ -161,9 +178,13 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		poller = undefined;
 	};
 
-	/** Leave the peer list, and take the undrainable inbox with it. */
-	const leave = () => {
-		if (self) forget(l, self.id);
+	/**
+	 * Stop answering as this session. The inbox goes too, because nobody will
+	 * ever drain it — unless this same id is coming straight back, which is what
+	 * `/reload` is: the mail sitting there is still addressed to somebody.
+	 */
+	const leave = (returning = false) => {
+		if (self) (returning ? removePresence : forget)(l, self.id);
 		self = undefined;
 		uiCtx = undefined;
 	};
@@ -184,11 +205,14 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		const id = ctx.sessionManager.getSessionId();
 		if (!id) return;
 		ensure(l);
-		sweep(l, now(), alive);
 		self = { id, name: ctx.sessionManager.getSessionName()?.trim() || id.slice(0, CONFIG.idChars), cwd: ctx.cwd };
 		uiCtx = ctx;
 		startedAt = now();
+		// Announce before sweeping, never after: the sweep deletes the inbox of
+		// every id with no presence file, and for the moment between a reload's
+		// teardown and this line, that includes this session's own.
 		beat();
+		sweep(l, now(), alive);
 		start();
 	});
 
@@ -200,9 +224,11 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		beat();
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (event) => {
 		stop();
-		leave();
+		// A reload tears the runtime down and builds it back under the SAME
+		// session id moments later. Every other reason ends this id for good.
+		leave(event.reason === "reload");
 	});
 }
 

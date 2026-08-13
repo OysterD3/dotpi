@@ -1242,7 +1242,9 @@ of what was said.
 
 What arrives is wrapped like a referenced session: provenance, one guard line marking a peer's
 words as a colleague's request rather than an instruction that outranks the receiver's own user,
-and one more that matters more than it looks. **Permission mode is per session**, so two sessions
+and one more that matters more than it looks. The peer's own text cannot close that wrapper — a
+message carrying its own `[end intercom]` gets the bracket taken off it, because everything after a
+forged end marker would read as ordinary context, and the wrapper is the only control here. **Permission mode is per session**, so two sessions
 on this machine do not necessarily have the same answer to "may I run this" — without a rule, the
 intercom is a way around the narrower one: refused here, asked for over there, done. Both sending
 tools carry it and the delivered block repeats it. Claude Code names the same hazard cross-session
@@ -1250,7 +1252,10 @@ permission laundering; the user decided once, and a peer is not a second opinion
 
 Everything it can reach is a **live** session. Presence is a heartbeat plus a pid check, not a file
 that exists: a session that is SIGKILLed never runs its shutdown handler, so every session sweeps
-the corpses when it starts. A message to a session that is not up is refused at send time rather
+the corpses when it starts. "Is it listed" and "is it gone" are deliberately different questions,
+though — a session stopped with Ctrl+Z, or slept with the laptop, goes stale in seconds and stops
+being offered, but it is still there. Only a dead **pid** gets an inbox deleted, and only an id that
+is finished: a `/reload` comes back under the same id, so its unread mail waits for it. A message to a session that is not up is refused at send time rather
 than stored for a resume that may never come — which is what makes this an intercom and not a
 mailbox. The session id also moves under a live process (`/new`, `/resume`, fork all rebind it), so
 presence is torn down and rewritten on every `session_start`; without that a process keeps draining

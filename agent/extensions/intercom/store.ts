@@ -123,9 +123,18 @@ export function writePresence(l: Layout, self: Self, state: Presence): void {
 	} satisfies Peer);
 }
 
-/** Drop a session's presence and its inbox. An inbox with no owner is undrainable. */
-export function forget(l: Layout, id: string): void {
+/** Leave the peer list. Reversible: the next heartbeat puts it back. */
+export function removePresence(l: Layout, id: string): void {
 	rmSync(join(l.peers, `${id}.json`), { force: true });
+}
+
+/**
+ * Drop a session's presence AND its inbox. An inbox with no owner is
+ * undrainable — but this is not reversible, so it is only for an id that is
+ * finished. A session that is coming back under the same id keeps its mail.
+ */
+export function forget(l: Layout, id: string): void {
+	removePresence(l, id);
 	rmSync(join(l.inbox, id), { recursive: true, force: true });
 }
 
@@ -140,21 +149,29 @@ export function listPeers(l: Layout, now: number, alive: AliveCheck = processAli
 }
 
 /**
- * Clear out what died. A session that is SIGKILLed, or whose machine lost
- * power, never runs its shutdown handler, so its presence file and its inbox
- * would otherwise sit there forever — the presence file advertising a session
- * nobody can reach.
+ * Bury what died. A session that is SIGKILLed, or whose machine lost power,
+ * never runs its shutdown handler, so its presence file and its inbox would
+ * otherwise sit there forever — the presence file advertising a session nobody
+ * can reach.
+ *
+ * The test is whether the PROCESS is gone, not whether it is listed. Those come
+ * apart for a session stopped with Ctrl+Z or slept with the laptop: its
+ * heartbeat goes stale in seconds, so `listPeers` stops offering it and nothing
+ * new can be sent to it, but it is still there and its mail is still addressed
+ * to somebody. Sweeping on staleness would take an irreversible action —
+ * deleting an inbox — on a signal that reverses itself the moment the session
+ * is resumed.
  */
 export function sweep(l: Layout, now: number, alive: AliveCheck = processAlive): void {
-	const live = new Set<string>();
+	const running = new Set<string>();
 	for (const file of jsonFiles(l.peers)) {
 		const path = join(l.peers, file);
 		const peer = readJson<Peer>(path);
-		if (isLive(peer, now, alive)) live.add(peer.id);
+		if (peer && typeof peer.id === "string" && typeof peer.pid === "number" && alive(peer.pid)) running.add(peer.id);
 		else rmSync(path, { force: true });
 	}
 	try {
-		for (const id of readdirSync(l.inbox)) if (!live.has(id)) rmSync(join(l.inbox, id), { recursive: true, force: true });
+		for (const id of readdirSync(l.inbox)) if (!running.has(id)) rmSync(join(l.inbox, id), { recursive: true, force: true });
 	} catch {
 		/* no inbox directory yet */
 	}
@@ -163,7 +180,10 @@ export function sweep(l: Layout, now: number, alive: AliveCheck = processAlive):
 	// out of the file rather than off its mtime: everything else here dates from
 	// the caller's clock, and a file's mtime is not that clock.
 	try {
-		for (const file of readdirSync(l.answers)) {
+		// Filtered like every other reader here: an unfiltered walk also sees a
+		// temp file mid-write, and deleting one makes its owner's rename throw a
+		// raw fs error out of an ask.
+		for (const file of readdirSync(l.answers).filter((name) => name.endsWith(".json") || name.endsWith(".wait"))) {
 			const path = join(l.answers, file);
 			const at = readJson<{ at?: number }>(path)?.at;
 			if (typeof at !== "number" || now - at > CONFIG.maxAskTimeoutMs) rmSync(path, { force: true });

@@ -87,6 +87,20 @@ export function describePeer(peer: Peer, now: number): string {
 }
 
 /**
+ * Stop a peer's own text from closing the frame that holds it.
+ *
+ * The text is the one untrusted thing in the block, and the block's whole job
+ * is to say where that text came from. A message carrying its own
+ * `[end intercom]` would end the frame early, and everything the peer wrote
+ * after it would read as ordinary context rather than as a peer's words —
+ * defeating the single control this extension's safety rests on. The opening
+ * bracket is what makes a marker, so that is what is taken away; the result is
+ * visibly mangled, which is the honest outcome for text pretending to be a
+ * delimiter.
+ */
+const fenced = (text: string) => text.replace(/\[(?=\s*(?:end\s+)?intercom\b)/gi, "(");
+
+/**
  * The message content the receiver reads. Details ride outside, unsent.
  *
  * A tick's whole drain becomes one block on purpose: three messages arriving
@@ -98,7 +112,7 @@ export function intercomBlock(envelopes: Envelope[]): string {
 		const waiting = envelope.askId
 			? `[That session is blocked waiting for your answer. Reply with ${TOOL_SEND}(reply_to: "${envelope.askId}", message: "…"), or it gets nothing.]`
 			: undefined;
-		return [from, envelope.text, waiting].filter(Boolean).join("\n");
+		return [from, fenced(envelope.text), waiting].filter(Boolean).join("\n");
 	});
 
 	return [
