@@ -2,18 +2,28 @@
  * /recap — a one-line summary of where the session stands.
  *
  * Two entry points into one generator — a manual `/recap`, and an automatic
- * summary shown when you return to the terminal after being away 5+ minutes. The
- * ideal version knows you were away because the terminal lost and regained focus,
- * and generates the summary *while* you are away so it is ready the instant you
- * return. pi exposes no focus events, so:
+ * summary shown when you return to the terminal after being away 5+ minutes.
  *
  *   - `/recap` is always available and does exactly what it says.
- *   - Auto-on-return is approximated from wall-clock idle — the gap between the
- *     agent going idle and your next message — and generated reactively when you
- *     return, not proactively. It is ON by default (config.ts says why); the
- *     cost is a cheap-model call and a bounded wait in front of your own
- *     message, only after a real absence. Turn it off with
+ *   - Auto-on-return is written **at the end of the trace, while you are away**,
+ *     so it is on screen when you get back. A timer is armed when the agent
+ *     settles and fires once the absence has lasted `idleThresholdMs`; your next
+ *     message then goes straight through. It is ON by default (config.ts says
+ *     why); the cost is one cheap-model call per absence. Turn it off with
  *     `recap.autoOnReturn: false`.
+ *
+ * It used to be generated on the way in — held in front of your next message so
+ * it landed above it — which meant it did not exist until you had already
+ * started typing, and charged you a wait to read a summary of what you had just
+ * come back to. That path still exists as a fallback for the case a timer
+ * cannot cover: a session resumed from disk, where no `agent_settled` has fired
+ * in this process and the gap is only visible once you type.
+ *
+ * The ideal version would know you were away because the terminal lost and
+ * regained focus. pi exposes no focus events, so "away" is still wall-clock
+ * idle, and the trade is now the other way round: a five-minute pause spent
+ * reading the diff produces a recap nobody asked for, where before it produced
+ * one only if you left AND came back.
  *
  * The recap model needs no configuration: unconfigured, the `cheap` role is
  * used when a role map defines it, else the active session model; an explicit
@@ -31,7 +41,7 @@
  *   config.ts      limits and constants
  */
 
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG, ENTRY_TYPE } from "./config.ts";
 import { generateRecap, type SpendReport } from "./generate.ts";
 
@@ -65,13 +75,127 @@ export default function (pi: ExtensionAPI) {
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 	});
 
-	// The agent going idle is what a later return is measured against.
-	pi.on("agent_settled", () => {
+	/**
+	 * Generate and append, shared by the idle timer and the on-return fallback.
+	 * Returns whether an entry was actually appended.
+	 */
+	const produce = async (ctx: ExtensionContext, trigger: "auto", idleMs: number | undefined): Promise<boolean> => {
+		if (!state.begin()) return false;
+		try {
+			const outcome = await generateRecap(ctx, {
+				agentDir,
+				timeoutMs: CONFIG.autoTimeoutMs,
+				signal: ctx.signal,
+				onSpend: announce,
+			});
+			if (outcome.kind !== "ok") return false;
+			pi.appendEntry<RecapDetails>(ENTRY_TYPE, { text: outcome.text, trigger, idleMs });
+			return true;
+		} catch {
+			// A session replaced under a pending timer throws from every member.
+			return false;
+		} finally {
+			state.end();
+		}
+	};
+
+	/**
+	 * The idle timer: armed when the agent settles, fires once the absence has
+	 * lasted long enough to be worth summarising.
+	 *
+	 * This is what puts the recap at the END OF THE TRACE. It used to be
+	 * generated on the way in — held in front of your next message so it landed
+	 * above it — which meant it did not exist until you had already started
+	 * typing, and cost you a wait to read a summary of what you had come back
+	 * to. Waiting out the same threshold on a timer instead produces it while
+	 * you are away, so it is on screen when you return and your next message
+	 * goes straight through.
+	 *
+	 * The trade is honest and worth stating: idle is not away. A five-minute
+	 * pause spent reading the diff now produces a recap you did not ask for,
+	 * where before it produced one only if you left AND came back. That is one
+	 * dim line against a bounded wait in front of every returning message, and
+	 * `recap.autoOnReturn: false` still turns the whole thing off.
+	 */
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	let idleCtx: ExtensionContext | undefined;
+	/**
+	 * Which absence a pending callback belongs to.
+	 *
+	 * `clearTimeout` is enough to stop a timer that has not fired, but not a
+	 * callback already queued, and it says nothing to code that reaches the
+	 * callback another way. Bumping this on every disarm lets the callback ask
+	 * whether the absence it was scheduled for is still the current one — the
+	 * answer is what makes "you came back" actually cancel the recap rather
+	 * than merely usually cancel it.
+	 */
+	let absence = 0;
+
+	const disarm = () => {
+		absence += 1;
+		if (idleTimer === undefined) return;
+		clearTimeout(idleTimer);
+		idleTimer = undefined;
+	};
+
+	const onIdleElapsed = async (scheduledFor: number) => {
+		idleTimer = undefined;
+		const ctx = idleCtx;
+		if (scheduledFor !== absence) return;
+		if (ctx === undefined || state.isGenerating()) return;
+		try {
+			const { settings } = loadSettings(agentDir, ctx.cwd, ctx.isProjectTrusted());
+			const decision = shouldAutoRecap({
+				entries: ctx.sessionManager.getBranch() as GateEntry[],
+				// The timer having fired IS the elapsed-idle proof — it was set for
+				// exactly this threshold when the agent settled — so the gate is
+				// told the condition it cannot re-derive here rather than being
+				// asked to measure the same gap a second time. Every other
+				// condition it checks is still checked.
+				idleMs: settings.idleThresholdMs,
+				autoOnReturn: settings.autoOnReturn,
+				idleThresholdMs: settings.idleThresholdMs,
+				minUserTurns: settings.minUserTurns,
+				hasPending: ctx.hasPendingMessages(),
+			});
+			if (!decision.recap) return;
+			// The entry still carries the real gap, which is what "away 6m" reads.
+			await produce(ctx, "auto", state.idleMs(Date.now()));
+		} catch {
+			/* the session went away while the timer was pending */
+		}
+	};
+
+	// The agent going idle is what a later return is measured against, and now
+	// also what starts the clock on producing the summary unprompted.
+	pi.on("agent_settled", (_event, ctx) => {
 		state.markIdle(Date.now());
+		disarm();
+		if (!ctx.hasUI) return;
+		let settings: ReturnType<typeof loadSettings>["settings"];
+		try {
+			settings = loadSettings(agentDir, ctx.cwd, ctx.isProjectTrusted()).settings;
+		} catch {
+			return;
+		}
+		if (!settings.autoOnReturn) return;
+		idleCtx = ctx;
+		const scheduledFor = absence;
+		idleTimer = setTimeout(() => void onIdleElapsed(scheduledFor), settings.idleThresholdMs);
+		(idleTimer as { unref?: () => void }).unref?.();
 	});
 
-	// Automatic recap on return: only genuine idle returns of a typed message.
+	// The on-return path, now a fallback rather than the usual route. The timer
+	// above covers a session that stayed open; this covers the cases it cannot
+	// reach — a session resumed from disk, where no `agent_settled` has fired in
+	// this process and the idle gap is only visible once you type.
+	//
+	// It is still held in front of the message so the recap lands above it. That
+	// wait is the thing the timer exists to avoid, so it is now paid only when
+	// the timer never got the chance to run.
 	pi.on("input", async (event, ctx) => {
+		// Whatever happens below, the absence is over.
+		disarm();
 		if (event.source !== "interactive" || event.streamingBehavior !== undefined) return;
 		if (!ctx.hasUI || state.isGenerating()) return;
 
@@ -88,23 +212,8 @@ export default function (pi: ExtensionAPI) {
 
 		// Held before the message is processed so the recap lands above it, not in
 		// the middle of the reply. Bounded by autoTimeoutMs; on timeout or failure
-		// the message simply proceeds. The idle gap that got us here is exactly when
-		// a short wait does not matter.
-		const idleMs = state.idleMs(Date.now());
-		if (!state.begin()) return;
-		try {
-			const outcome = await generateRecap(ctx, {
-				agentDir,
-				timeoutMs: CONFIG.autoTimeoutMs,
-				signal: ctx.signal,
-				onSpend: announce,
-			});
-			if (outcome.kind === "ok") {
-				pi.appendEntry<RecapDetails>(ENTRY_TYPE, { text: outcome.text, trigger: "auto", idleMs });
-			}
-		} finally {
-			state.end();
-		}
+		// the message simply proceeds.
+		await produce(ctx, "auto", state.idleMs(Date.now()));
 		// Always pass the message through unchanged.
 	});
 

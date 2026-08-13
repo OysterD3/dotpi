@@ -1121,18 +1121,26 @@ pick:
 }
 ```
 
-**Two doors into one generator.** There is the manual `/recap`, and an automatic summary shown when
-you return to the terminal after being away 5+ minutes. The ideal version knows you were away
-because the terminal loses and regains focus, and generates the summary *while* you are away so it
-is ready the instant you come back. pi exposes no focus events, so:
+**Two doors into one generator.** There is the manual `/recap`, and an automatic summary written at
+the end of the trace while you are away, so it is on screen when you get back.
 
 - `/recap` is always available and does exactly what it says.
-- Auto-on-return is approximated from wall-clock idle — the gap between the agent going idle
-  (`agent_settled`) and your next message — and generated *reactively* when you return, not
-  proactively. It is **on by default**: a recap that must be configured first is a recap that never
-  gets seen (this one ran for weeks without producing an entry). The cost is a cheap-model call and
-  a bounded few-second wait in front of your own message, only after a genuine absence; opt out
-  with `recap.autoOnReturn: false`.
+- Auto-on-return is a timer, armed when the agent settles and fired once the absence has lasted
+  `idleThresholdMs`. It is **on by default**: a recap that must be configured first is a recap that
+  never gets seen (this one ran for weeks without producing an entry). The cost is one cheap-model
+  call per absence; opt out with `recap.autoOnReturn: false`.
+
+It used to be generated on the way *in* — held in front of your next message so it landed above it.
+That put the summary of an absence behind the act of ending it: it did not exist until you had
+already started typing, and you paid a few seconds' wait to read it. Producing it on a timer instead
+means your next message goes straight through. The old path survives as a fallback for the one case
+a timer cannot cover — a session resumed from disk, where no `agent_settled` has fired in this
+process and the gap is only visible once you type.
+
+The trade runs the other way now, and is worth knowing: **idle is not away.** A five-minute pause
+spent reading a diff produces a recap nobody asked for, where before it produced one only if you
+left *and* came back. pi exposes no focus events, so wall-clock idle is still the only proxy
+available; the difference is that it is now spent while you are gone rather than while you wait.
 
 The auto path has three more gates: a minimum of user turns before a recap is worthwhile (3), a
 minimum of turns since the last recap so the same spot is not recapped twice (2), and never while
@@ -1142,7 +1150,7 @@ where your transcript is sent.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Command, event wiring, the auto-on-return flow |
+| `index.ts` | Command, event wiring, the idle timer and the on-return fallback |
 | `prompts.ts` | The recap prompt |
 | `generate.ts` | The tool-less LLM call and its outcomes |
 | `model.ts` | Resolving `recap.model` the way pi resolves `--model` (pure) |

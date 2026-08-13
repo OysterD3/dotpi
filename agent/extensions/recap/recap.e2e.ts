@@ -173,5 +173,97 @@ check("gap too small is ignored", await fireInput({ autoOnReturn: true }, {}, { 
 check("never-settled is ignored", await fireInput({ autoOnReturn: true }, {}, { branch: enoughTurns, model, authOk: true }, false), 0);
 check("nothing appended by any guarded input", entries.length, 0);
 
+// ------------------------------------------------------- the idle timer
+
+// The recap is produced while you are away, so it is at the end of the trace
+// when you get back rather than materialising after you have started typing.
+// Everything here turns on `agent_settled` alone — no input event is fired.
+console.log("\n--- produced on the idle timer, with no input at all ---");
+
+// settings.ts floors idleThresholdMs at 30s, so the timer cannot be driven by
+// waiting. The scheduling call is captured instead, which is better anyway: it
+// asserts the delay is the configured threshold rather than inferring it, and
+// the test does not take half a minute.
+const realSetTimeout = globalThis.setTimeout;
+let scheduled: { fn: () => void; ms: number } | undefined;
+
+function capturing<T>(run: () => T): T {
+	scheduled = undefined;
+	(globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void, ms: number) => {
+		scheduled = { fn, ms };
+		return { unref() {} };
+	};
+	try {
+		return run();
+	} finally {
+		(globalThis as { setTimeout: unknown }).setTimeout = realSetTimeout;
+	}
+}
+
+/** Let the timer's async work finish, on the real timer. */
+const settleAsync = () => new Promise((resolve) => realSetTimeout(resolve, 50));
+
+const THRESHOLD = 300_000;
+const armed = { autoOnReturn: true, idleThresholdMs: THRESHOLD, minUserTurns: 1 };
+
+async function fireIdle(settings: unknown, ctxOptions: Parameters<typeof makeCtx>[0]) {
+	writeSettings(settings);
+	authCalls = 0;
+	entries.length = 0;
+	const { ctx } = makeCtx(ctxOptions);
+	const timer = capturing(() => {
+		events.get("session_start")!({}, ctx);
+		events.get("agent_settled")!({}, ctx);
+		return scheduled;
+	});
+	if (timer) timer.fn();
+	await settleAsync();
+	return { armedAt: timer?.ms, calls: authCalls };
+}
+
+// calls, not appended: makeCtx fakes auth but not completion, so a generation
+// that starts cannot finish here. Reaching the model is what distinguishes
+// "the timer produced a recap" from "the timer did nothing", which is the claim.
+check("settling arms it at the configured threshold, and it fires with nobody typing", await fireIdle(armed, { branch: enoughTurns, model, authOk: true }), {
+	armedAt: THRESHOLD,
+	calls: 1,
+});
+check("auto disabled arms nothing", await fireIdle({ ...armed, autoOnReturn: false }, { branch: enoughTurns, model, authOk: true }), {
+	armedAt: undefined,
+	calls: 0,
+});
+check("no UI arms nothing", await fireIdle(armed, { branch: enoughTurns, model, authOk: true, hasUI: false }), {
+	armedAt: undefined,
+	calls: 0,
+});
+check("background work pending holds it off", await fireIdle(armed, { branch: enoughTurns, model, authOk: true, hasPending: true }), {
+	armedAt: THRESHOLD,
+	calls: 0,
+});
+check("too early in the session holds it off", await fireIdle({ ...armed, minUserTurns: 99 }, { branch: enoughTurns, model, authOk: true }), {
+	armedAt: THRESHOLD,
+	calls: 0,
+});
+
+// Coming back cancels it: the message must not wait for a summary of an absence
+// that turned out to be short.
+{
+	writeSettings(armed);
+	authCalls = 0;
+	entries.length = 0;
+	const { ctx } = makeCtx({ branch: enoughTurns, model, authOk: true });
+	const timer = capturing(() => {
+		events.get("session_start")!({}, ctx);
+		events.get("agent_settled")!({}, ctx);
+		return scheduled;
+	});
+	await events.get("input")!({ source: "interactive", streamingBehavior: undefined }, ctx);
+	// The gap is ~0, so the fallback path declines too; firing the stale timer
+	// afterwards must not produce anything either.
+	timer?.fn();
+	await settleAsync();
+	check("typing disarms it, and a stale timer produces nothing", { calls: authCalls, appended: entries.length }, { calls: 0, appended: 0 });
+}
+
 rmSync(ROOT, { recursive: true, force: true });
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
