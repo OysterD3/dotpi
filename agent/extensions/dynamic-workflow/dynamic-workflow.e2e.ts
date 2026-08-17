@@ -240,6 +240,24 @@ check(
 	description.includes("That is permission, not an instruction"),
 	true,
 );
+// Same reasoning one step out: a phrasing that splits phases across runs is a
+// spend regression too, just a quieter one. "Run several workflows in sequence,
+// one per phase" bought discovery, implement, review and fix as four separate
+// runs of one workflow each — four turn boundaries, four cold starts and four
+// result round-trips to sequence what await sequences for free. The rule that
+// replaced it is a test the model can apply before splitting, so both the rule
+// and the absence of the old licence are asserted, here and in AFTER_RUN.
+check("phases live in one script", description.includes("is ONE script with a phase() call per stage"), true);
+check("and the split test is stated", description.includes("author the next phase's prompts NOW"), true);
+check("no licence to run one workflow per phase", description.includes("one per phase"), false);
+check("after-run notice does not license a split for mere ordering", AFTER_RUN.includes("could not begin until this one finished"), false);
+// The umbrella, not the sub-case: dropping "whose shape needs a fleet" from this
+// reminder once left it licensing a second FLEET for an unpredicted one-file
+// follow-up — unscriptable, therefore permitted, on the one turn this text
+// exists to hold the line. It has to state the same criterion the description
+// does, or the weaker of the two is the one delivered at the weakest moment.
+check("and still requires fleet-shaped work", AFTER_RUN.includes("whose shape needs a fleet"), true);
+check("and says a waiting phase belonged to the finished run", AFTER_RUN.includes("was a phase of this one"), true);
 check("subagents are told to stop when done", SUBAGENT_PREAMBLE.includes("Do what the task asks and then stop."), true);
 // Measured: 142 of 151 assistant turns in a 53-minute workflow agent made
 // exactly one tool call, and every turn re-read ~92k tokens of context. pi has

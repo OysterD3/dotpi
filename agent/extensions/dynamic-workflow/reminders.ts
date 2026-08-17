@@ -24,9 +24,18 @@ export const KEYWORD_REMINDER =
  * feels like momentum. It is not — reading the result is the work. Kept
  * separate from ENTER_SPARSE because the two say different things: that one
  * says the mode is still on, this one says finishing is not a trigger.
+ *
+ * It used to offer "a phase that could not begin until this one finished" as a
+ * reason to start the second run, which is the one thing a single script does
+ * best: await IS that phase boundary. Naming it here licensed the split the
+ * tool description now rules out — discovery, implement, review and fix as four
+ * runs of one workflow each, paying a turn boundary per phase for sequencing
+ * the script would have done for free. What survives is the only justification
+ * that a script cannot serve: work whose shape could not have been written down
+ * before this result was read.
  */
 export const AFTER_RUN =
-	"A workflow's result has landed and the opt-in still stands, which is not a reason to start another one. Read what came back and answer from it. Run a second workflow only if the result itself surfaced work whose shape needs a fleet — a phase that could not begin until this one finished, or a gap too wide for one context — and say which. Following up inline is the normal case, and \"the last one went well\" is not a justification.";
+	"A workflow's result has landed and the opt-in still stands, which is not a reason to start another one. Read what came back and answer from it. Run a second workflow only if the result itself surfaced work whose shape needs a fleet — work that could not have been scripted before reading this result, or a gap too wide for one context — and say which. A phase that merely had to wait for this one was a phase of this one. Following up inline is the normal case, and \"the last one went well\" is not a justification.";
 
 export const ENTER_FULL =
 	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, or a mechanical sweep over many files — and work inline when it does not. When you do run one, give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
