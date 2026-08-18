@@ -10,7 +10,18 @@
  * workflow every substantive task, "token cost is not a constraint", a
  * completeness critic whose whole job is generating another round); what was
  * added is Bounding an agent, because measured runs spend on agent DEPTH, not
- * fleet width. Trimming words here would have saved nothing worth having.
+ * fleet width.
+ *
+ * That correction then overshot, in two lines that were about width rather
+ * than depth. "Most work is served by three to five agents" put a number where
+ * the task's own seams belong, so a request with ten deliverables could not
+ * have ten agents; and the fleet-shape list beside it named only work that
+ * READS, so an implement request matched nothing and came out one agent wide.
+ * Width is now counted from seams, a fleet of one is ruled out, and the tier
+ * split is named as a smell. The guard against enthusiasm survives as the
+ * thing it should always have been: say what each agent ALONE owns.
+ *
+ * Trimming words here would have saved nothing worth having.
  */
 
 export const WORKFLOW_DESCRIPTION = `Execute a workflow script that orchestrates multiple subagents deterministically. Each agent is a fresh headless pi run in this project directory with the standard tools (read, bash, edit, write); agents cannot spawn further workflows.
@@ -26,7 +37,7 @@ ONLY call this tool when the user has explicitly opted into multi-agent orchestr
 
 For any other task — even one that would clearly benefit from parallelism — do NOT call this tool; briefly describe what a workflow could do and ask.
 
-**Ultracode.** When a system-reminder says ultracode is on, the opt-in is standing: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's shape needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, or a mechanical sweep over many files — and work inline when it does not. A task that is merely large or important is not automatically one of those. Scale to the request: most work is served by three to five agents, and a bigger pool needs a reason stated in the request rather than enthusiasm. Multi-phase work (understand → design → implement → review) is ONE script with a phase() call per stage, not one workflow per phase. Sequencing is what await does, and a result is a variable the next phase's prompt interpolates — so a stage that merely has to wait for the one before it is a stage of the same run. The test for splitting is whether you can author the next phase's prompts NOW, with earlier results pasted in: if you can, it belongs in this script; if the plan itself has to be reshaped by reading the result first, that is a second workflow. What replaces the turn boundary is a gate, not oversight: shell() makes the script correct itself on a fact no agent authored, and the result message brings the finished run back to you. Mid-run you see nothing — so where no gate is available (shell() throws in an untrusted project) a split buys a real checkpoint and can be the right call. A finished workflow is not a trigger for the next one: read the result and answer from it, and start another only if the result surfaced work whose shape needs a fleet — say which. When a reminder says ultracode is off, revert to the opt-in rule above.
+**Ultracode.** When a system-reminder says ultracode is on, the opt-in is standing: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's shape needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or a request carrying several deliverables that different agents would own — and work inline when it does not. A task that is merely large or important is not automatically one of those. Width is COUNTED, not chosen: count the task's seams — deliverables to build, files that would collide, findings to verify — and run one agent per seam. Ten real deliverables is ten agents, and there is no default size to fall back on; a number picked before the seams were counted is wrong in whichever direction it lands. What is not a reason for a bigger pool is enthusiasm: if you cannot say what each agent ALONE owns, you have not decomposed the task, and more agents will not do it for you. A fleet of ONE is the same failure from the other side — one agent's worth of work belongs inline, where it gets your context for free and costs no round-trip, so a single-agent script means the list was never split. The one exception is deliberately moving a long job off your turn; say so when that is what you are doing. Multi-phase work (understand → design → implement → review) is ONE script with a phase() call per stage, not one workflow per phase. Sequencing is what await does, and a result is a variable the next phase's prompt interpolates — so a stage that merely has to wait for the one before it is a stage of the same run. The test for splitting is whether you can author the next phase's prompts NOW, with earlier results pasted in: if you can, it belongs in this script; if the plan itself has to be reshaped by reading the result first, that is a second workflow. What replaces the turn boundary is a gate, not oversight: shell() makes the script correct itself on a fact no agent authored, and the result message brings the finished run back to you. Mid-run you see nothing — so where no gate is available (shell() throws in an untrusted project) a split buys a real checkpoint and can be the right call. A finished workflow is not a trigger for the next one: read the result and answer from it, and start another only if the result surfaced work whose shape needs a fleet — say which. When a reminder says ultracode is off, revert to the opt-in rule above.
 
 **Bounding an agent.** Spend is driven far more by how long each agent runs than by how many you start — a four-agent run routinely costs more than a twenty-agent one, because each agent keeps working until it decides it is finished. There is no turn limit; the prompt is the only budget an agent has. So give each one a single deliverable and a visible finish line ("return the three files that define routing" rather than "investigate routing"), prefer several bounded agents to one open-ended one, name the files or directories to start from when you already know them, and pass tools: ["read","grep","find","ls"] to any agent that only needs to look — an agent that cannot edit cannot wander off into fixing things.
 
@@ -103,7 +114,7 @@ The canonical multi-stage pattern — each dimension verifies as soon as its rev
 
 Stating the ownership IN THE PROMPT is what keeps concurrent agents in one repo from overwriting each other, and it costs nothing next to a worktree per agent. A short integrate stage afterwards is normal and expected: that is where the seams get resolved, and it is one agent because it is genuinely one job.
 
-Two smells that both mean the same thing. A prompt containing a bulleted list of requirements: that list IS the fan-out, so split it before you run it. And a single agent past ~40 turns: that is a decomposition failure showing up as wall-clock, not diligence. Neither is fixed by giving the one agent more thinking.
+Three smells that all mean the same thing. A prompt containing a bulleted list of requirements: that list IS the fan-out, so split it before you run it. A single agent past ~40 turns: that is a decomposition failure showing up as wall-clock, not diligence. And a split into backend / frontend / cli — or any other tier an org chart would recognise: that taxonomy existed before the request did, so it cannot be a description of THIS task's seams. Name the files each agent alone writes; when two of them both own src/, the split is a label and not a decomposition. Not one of the three is fixed by giving an agent more thinking.
 
 **Gating on facts, not on claims.** An implement agent satisfies exactly the check you write into its prompt, so a weak check buys code that passes it and nothing else. But the deeper problem is who produces the verdict: if the agent reports whether it succeeded, the verdict is prose, and prose is free to be wrong.
 
@@ -129,8 +140,8 @@ Still say what each agent owns in its prompt. The gate tells you whether the wor
 **Isolating concurrent writers.** \`withWorktree(name, cb)\` gives every agent inside the callback its own git worktree. Isolation is BETWEEN scopes, not between agents: agents in one scope share a directory, so put things that must not collide in different scopes.
 
   await parallel([
-    () => withWorktree('backend', () => agent('Rewrite the transport in src/rpc/**')),
-    () => withWorktree('renderer', () => agent('Rewrite the panes in src/ui/**')),
+    () => withWorktree('transport', () => agent('Rewrite the transport in src/rpc/**')),
+    () => withWorktree('panes', () => agent('Rewrite the panes in src/ui/**')),
   ])
 
 Three things to know. The scope starts from your UNCOMMITTED tree, not HEAD, so agents see the work in progress. The work is COMMITTED to a retained branch and never merged automatically — the result names the branch and the command to apply it, and until you run that your working tree is untouched. A scope that changed nothing is removed.

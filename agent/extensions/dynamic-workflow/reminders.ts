@@ -14,7 +14,7 @@
  * mandating.
  */
 export const KEYWORD_REMINDER =
-	'The user included the keyword "ultracode", opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task\'s SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, or a mechanical sweep over many files. If it does not, say so in one line and do the work inline. The keyword removes the need to ask, not the need to decide.';
+	'The user included the keyword "ultracode", opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task\'s SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, say so in one line and do the work inline. If it does, width comes from counting the task\'s seams — one agent per deliverable — not from a default number. The keyword removes the need to ask, not the need to decide.';
 
 /**
  * Delivered on the turn a workflow's result arrives.
@@ -37,8 +37,15 @@ export const KEYWORD_REMINDER =
 export const AFTER_RUN =
 	"A workflow's result has landed and the opt-in still stands, which is not a reason to start another one. Read what came back and answer from it. Run a second workflow only if the result itself surfaced work whose shape needs a fleet — work that could not have been scripted before reading this result, or a gap too wide for one context — and say which. A phase that merely had to wait for this one was a phase of this one. Following up inline is the normal case, and \"the last one went well\" is not a justification.";
 
+/**
+ * The width half is here because this reminder is the one a session opens
+ * with, and the depth rule alone was read as "keep it small": implement turns
+ * came out one agent wide, or split along backend/frontend/cli, which is an
+ * org chart rather than this task's seams. It states the same counting rule
+ * the description does, so the two cannot drift into different criteria.
+ */
 export const ENTER_FULL =
-	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, or a mechanical sweep over many files — and work inline when it does not. When you do run one, give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
+	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
 
 /**
  * The sparse reminder repeats the two rules that actually change behaviour
@@ -46,7 +53,7 @@ export const ENTER_FULL =
  * "still on" alone had stopped meaning anything by the time it arrived.
  */
 export const ENTER_SPARSE =
-	"Ultracode is still on — workflow when the task's shape needs breadth, independent verification, or scale beyond one context; inline otherwise. Give each agent one bounded deliverable.";
+	"Ultracode is still on — workflow when the task's shape needs breadth, independent verification, scale beyond one context, or splits into several deliverables; inline otherwise. One agent per seam, each with one bounded deliverable — never a fleet of one.";
 
 export const EXIT = "Ultracode is off — the Workflow tool's standard opt-in rule applies again.";
 

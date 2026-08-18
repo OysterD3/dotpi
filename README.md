@@ -1340,6 +1340,19 @@ tokens cost a few cents across a long session, so it is written for behaviour ra
 The e2e suite asserts both the presence of the new sections and the **absence** of the old phrasings,
 because the old phrasings are what the spend was made of.
 
+**And then it was too narrow.** That correction was aimed at depth, but two of its lines cut *width*
+instead. *"Most work is served by three to five agents"* is a number standing where the task's own
+seams belong — a request with ten deliverables cannot get ten agents under it — and the fleet-shape
+list beside it (coverage, verification, sweep) names only work that **reads**, so an implement request
+matched nothing in it. What came out: single-agent runs, and fleets split into `backend` / `frontend` /
+`cli` — a taxonomy that exists before any particular request does, so it cannot be a description of
+that request's seams. Width is now **counted, not chosen**: count the deliverables, the files that
+would collide, the findings to verify, and run one agent per seam, with no default size to fall back
+on. A fleet of one is ruled out — one agent's worth of work belongs inline, where it gets the session's
+context for free — and the tier split joins the bulleted prompt and the 40-turn agent as a named smell.
+The guard against enthusiasm survives as the thing it should always have been: **say what each agent
+alone owns**, because a pool you cannot assign ownership in is not a decomposition.
+
 ### Nothing is capped
 
 There used to be an `dynamicWorkflow.limits` block over most of this — a concurrency cap, an agent cap per
@@ -2589,8 +2602,8 @@ Isolation is **between scopes**, not between agents — agents in one scope shar
 
 ```js
 await parallel([
-  () => withWorktree('backend',  () => agent('Rewrite the transport in src/rpc/**')),
-  () => withWorktree('renderer', () => agent('Rewrite the panes in src/ui/**')),
+  () => withWorktree('transport', () => agent('Rewrite the transport in src/rpc/**')),
+  () => withWorktree('panes',     () => agent('Rewrite the panes in src/ui/**')),
 ])
 ```
 

@@ -298,6 +298,24 @@ check("description says building fans out too", description.includes("**Implemen
 check("and splits by file ownership", description.includes("ONE AGENT PER DELIVERABLE"), true);
 check("ownership is stated in the prompt, not just the script", description.includes("Stating the ownership IN THE PROMPT"), true);
 check("a bulleted prompt is named as the fan-out", description.includes("that list IS the fan-out"), true);
+// The width half of the same lesson, which the depth correction overshot.
+// "Most work is served by three to five agents" was a number standing where the
+// task's seams should be counted, and the fleet-shape list beside it named only
+// work that READS — so an implement request matched no shape and came out one
+// agent wide, or split along backend/frontend/cli, a taxonomy that exists before
+// any request does. The number's absence is asserted for the same reason the
+// other old phrasings are: it is what the narrow runs were made of.
+check("no default fleet size", description.includes("three to five agents"), false);
+check("width is counted from the task", description.includes("Width is COUNTED, not chosen"), true);
+check("and deliverables are a fleet shape", description.includes("several deliverables that different agents would own"), true);
+check("a one-agent workflow is ruled out", description.includes("A fleet of ONE is the same failure"), true);
+check("the tier split is named as a smell", description.includes("or any other tier an org chart would recognise"), true);
+check("and the worktree example does not model tier names", description.includes("withWorktree('backend'"), false);
+// Same criterion in the reminders, or the weaker text is the one delivered.
+check("the entry reminder counts seams too", ENTER_FULL.includes("count the task's seams and run one agent per seam"), true);
+check("and names the org-chart split", ENTER_FULL.includes("backend/frontend/cli is an org chart"), true);
+check("the sparse reminder rules out a fleet of one", ENTER_SPARSE.includes("never a fleet of one"), true);
+check("the keyword reminder counts seams, not a default", KEYWORD_REMINDER.includes("not from a default number"), true);
 // The fan-out guidance briefly told the model to pass isolation: 'worktree' for
 // agents sharing a file. No such option exists — AgentOptions has no isolation
 // field, nothing reads one, and an unknown key is silently ignored rather than
