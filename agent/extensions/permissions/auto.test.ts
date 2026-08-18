@@ -14,7 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTO, CONFIG, CYCLE, nextMode, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy } from "./decide.ts";
-import { buildQuestion, elide, neutralizeFence, stripInvisible, subjectOf } from "./prompt.ts";
+import { buildQuestion, elide, neutralizeFence, stripInvisible, subjectOf, SYSTEM } from "./prompt.ts";
 import { parseRules } from "./rules.ts";
 import { BUILTIN, loadSettings, type PermissionSettings } from "./settings.ts";
 import { extractJson, readVerdict, toVerdict } from "./verdict.ts";
@@ -201,7 +201,7 @@ eq(
 eq(
 	"the destructive table still fires in auto mode",
 	behavior(auto, "bash", { command: "rm -rf /srv/data" }),
-	"ask",
+	"classify",
 );
 // The same delete confined to scratch space is not a finding at all, so it falls
 // through to the classifier like any other command rather than prompting. An
@@ -214,12 +214,12 @@ eq(
 eq(
 	"but a delete OF the temp directory still is",
 	behavior(auto, "bash", { command: "rm -rf /tmp" }),
-	"ask",
+	"classify",
 );
 eq(
 	"and so is one that only looks like it is under it",
 	behavior(auto, "bash", { command: "rm -rf /tmp/../etc" }),
-	"ask",
+	"classify",
 );
 eq(
 	"an allow rule short-circuits the classifier, so it costs nothing",
@@ -232,7 +232,7 @@ eq(
 eq(
 	"allow does not launder a destructive command",
 	behavior(policyFor({ defaultMode: "auto", allow: ["Bash(git *)"] }), "bash", { command: "git push --force" }),
-	"ask",
+	"classify",
 );
 
 // ---------------------------------------------------------------------------
@@ -268,12 +268,14 @@ for (const command of trivialCommands) {
 // And everything with judgement left in it still classifies. False here never
 // blocks anything — it just goes to the model, as it did before the table.
 const notTrivialCommands = [
-	"cat .env", // content reader: the .env deny rules cover the read tool, not bash
+	// `cat .env` and `printenv AWS_SECRET_ACCESS_KEY` used to live here, with a
+	// comment noting the .env deny rules cover the read TOOL and not bash. That
+	// was the gap, not a property worth asserting: category (2) of the policy
+	// rested on a cheap model noticing. secret-file-read and secret-env-print
+	// now catch both in the table, and the assertions moved below the loop.
 	"head -5 secrets.txt", // content reader
 	"env | grep '^PI_'", // credential printer
-	"printenv AWS_SECRET_ACCESS_KEY", // credential printer
 	"echo $HOME", // expansion — could print any variable
-	"echo \"$AWS_SECRET_ACCESS_KEY\"", // expansion inside quotes still expands
 	"echo '$literal'", // technically literal, but the grammar refuses to judge that
 	"echo `id`", // substitution runs code
 	"echo hi > out.txt", // a file write; where it lands is the classifier's question
@@ -291,25 +293,51 @@ for (const command of notTrivialCommands) {
 	eq(`still classified: ${command}`, behavior(auto, "bash", { command }), "classify");
 }
 
+// Reading a secret is category (2) and must not depend on the classifier. The
+// quoted form is the one that regressed silently: inert commands are judged on
+// their unquoted parts, so `echo "$TOKEN"` was blanked to `echo` and cleared,
+// while the bare `echo $TOKEN` was caught — the defense against `echo 'rm -rf'`
+// reading as a command had swallowed an expansion, which is not text.
+for (const command of [
+	"cat .env",
+	"cat ~/.aws/credentials",
+	"head -20 ~/.ssh/id_rsa",
+	"printenv AWS_SECRET_ACCESS_KEY",
+	"echo $GITHUB_TOKEN",
+	'echo "${GITHUB_TOKEN}"',
+	// Was in notTrivialCommands with the comment "expansion inside quotes still
+	// expands" — the hazard was known and handed to the classifier because the
+	// table could not see past blankQuoted. Now it can.
+	'echo "$AWS_SECRET_ACCESS_KEY"',
+]) {
+	// "classify" here is the ARCHITECTURE, not a miss: the table caught it —
+	// that is what a bare `classify` from the no-rule-matched path would not
+	// carry — and auto mode hands the verdict to the model. Assert the finding
+	// travels, since a decision without it is the one that would be allowed on
+	// classifier error (see index.ts).
+	eq(`secret read detected by the table: ${command}`, (decide(auto, { tool: "bash", input: { command }, cwd: CWD }).findings ?? []).length > 0, true);
+	eq(`and routed to the model: ${command}`, behavior(auto, "bash", { command }), "classify");
+}
+
 // Precedence around the table, both directions.
 eq(
 	"trivial does not rescue a destructive chain",
 	behavior(auto, "bash", { command: "echo starting && rm -rf /srv/data" }),
-	"ask",
+	"classify",
 );
 eq(
 	"trivial does not rescue a substitution hiding a delete",
 	// The $ reject alone would send this to the classifier; the destructive
 	// table already asked before the auto branch was reached.
 	behavior(auto, "bash", { command: "echo $(rm -rf /srv/data)" }),
-	"ask",
+	"classify",
 );
 eq(
 	"a shell-profile redirect never even reaches the grammar",
 	// startup-file-write catches `>> ~/.zshrc` at step 2, ahead of everything
 	// in the auto branch — the redirect reject here is backstop, not the gate.
 	behavior(auto, "bash", { command: "echo hi >> ~/.zshrc" }),
-	"ask",
+	"classify",
 );
 eq(
 	"a deny rule beats the trivial table",
@@ -540,8 +568,13 @@ console.log("the destructive table is not switched off by tightening the mode");
 // Every mode that prompts at all must run it, or "being more careful" loosens.
 for (const mode of ["askDestructive", "auto", "askMutating", "askAll", "denyAll"] as Mode[]) {
 	const permissive = policyFor({ defaultMode: mode, allow: ["Bash(git *)", "Bash(rm *)"] });
-	eq(`${mode}: an allowlisted force-push still asks`, behavior(permissive, "bash", { command: "git push --force origin main" }), "ask");
-	eq(`${mode}: an allowlisted recursive delete still asks`, behavior(permissive, "bash", { command: "rm -rf /srv/data" }), "ask");
+	// The invariant is that `allow` never launders the finding — NOT which of the
+	// two non-allow outcomes follows. auto sends it to the model (decide.ts), the
+	// prompting modes still raise the prompt themselves; either way the allow rule
+	// lost, which is the hole this pins.
+	const gated = mode === "auto" ? "classify" : "ask";
+	eq(`${mode}: an allowlisted force-push is not laundered`, behavior(permissive, "bash", { command: "git push --force origin main" }), gated);
+	eq(`${mode}: an allowlisted recursive delete is not laundered`, behavior(permissive, "bash", { command: "rm -rf /srv/data" }), gated);
 }
 
 // allowAll is the one mode that genuinely means "never prompt".
@@ -649,6 +682,55 @@ const overridden = { ...base, settings: { ...base.settings, defaultMode: "auto" 
 eq("the override does not touch the loaded policy", base.settings.defaultMode, "askDestructive");
 eq("but does change the active one", overridden.settings.defaultMode, "auto");
 eq("and rules survive the copy", behavior(overridden, "bash", { command: "npm test" }), "allow");
+
+// The classifier's policy, locked the way the destructive table's is. The whole
+// point of the rewrite is that the list is CLOSED: a fourth category creeping
+// back in is how "stops asking about safe things" quietly becomes the old
+// behaviour again, and nobody notices because each addition reads reasonable.
+// Absence assertions name the phrasings that were removed on purpose.
+eq("policy names exactly three categories", /exactly THREE things/.test(SYSTEM), true);
+eq("and says there is no fourth", SYSTEM.includes("There is no fourth"), true);
+eq("exfiltration is one", SYSTEM.includes("DATA EXFILTRATION"), true);
+eq("secret exposure is one", SYSTEM.includes("SECRET EXPOSURE"), true);
+eq("system-wide deletion is one", SYSTEM.includes("SYSTEM-WIDE DELETION"), true);
+// Demoted patterns reach the classifier now, so the prompt must not re-flag
+// what the table stopped flagging — that would move the prompt, not remove it.
+eq("destructive-looking git work is named safe", SYSTEM.includes("force-pushing, rewriting history"), true);
+eq("no blanket unregenerable-work rule", SYSTEM.includes("Destroys work that cannot be regenerated"), false);
+eq("no blanket outside-workspace-read rule", SYSTEM.includes("Reads or changes data outside the workspace that is not"), false);
+// Outside the working directories is not a finding, and the prompt has to say
+// so in three places or the old rule survives in the carve-outs that used to
+// reference it: the SAFE definition, category (3)'s scope, and the destination
+// test for write/edit. Category (3) is the one that still mentions paths, so it
+// must name SYSTEM roots rather than "outside the working directories" — the
+// distinction between `rm ~/notes.txt` and `rm -rf /usr`.
+eq("outside-the-workspace is explicitly not a finding", SYSTEM.includes('"Outside the working directories" is NOT this'), true);
+eq("and the safe definition says so too", SYSTEM.includes("being outside the working directories. Neither is a finding"), true);
+eq("system-wide deletion is scoped to system roots", SYSTEM.includes("recursive delete rooted at a system path"), true);
+eq("writes are not flagged for landing outside", SYSTEM.includes("A path outside the working directories is NOT a finding"), true);
+eq("but credential and startup destinations still are", SYSTEM.includes("A credential store or shell startup file"), true);
+// The review's case: a hook is an unreadable program scheduled to run, and the
+// destination sits INSIDE the working directories, so "safe whatever is going
+// into it" would have cleared `.git/hooks/pre-commit` carrying `curl | sh`.
+eq("and so are destinations that run later unreviewed", SYSTEM.includes("RUNS LATER WITHOUT REVIEW"), true);
+eq("named concretely enough to apply", SYSTEM.includes(".git/hooks/pre-commit"), true);
+// Readable-but-uncertain must not answer unsafe; unreadable still must.
+eq("readable uncertainty resolves safe", SYSTEM.includes("readable and you are merely unsure"), true);
+eq("unreadable still resolves unsafe", SYSTEM.includes("UNREADABLE"), true);
+// The table sentence has to describe the table as it now is (see settings
+// allowDestructive), or the classifier is told not to look at the only layer
+// still watching a force-push.
+// This assertion has now been wrong twice, which is the point of having it. It
+// first pinned "a table already stops force-pushes… you need not re-find those",
+// false once the patterns were demoted; then "it NO LONGER stops force-pushes",
+// false once every soft finding started routing here instead. What the prompt
+// says about the layer below it has to track decide.ts, and the only durable
+// phrasing is the one that names the split: two hard patterns block, everything
+// else is a flag and the model owns the verdict.
+eq("prompt says the table blocks only two things", SYSTEM.includes("It BLOCKS exactly two things outright"), true);
+eq("and that everything else is flagged, not refused", SYSTEM.includes("it merely FLAGS, and the flag is routed to you"), true);
+eq("and warns against assuming a prior refusal", SYSTEM.includes("never assume something else already refused it"), true);
+eq("no stale claim that the table stops force-pushes", SYSTEM.includes("already stops recursive deletes"), false);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
 if (failures > 0) process.exitCode = 1;

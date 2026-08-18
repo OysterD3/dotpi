@@ -111,8 +111,10 @@ export class AutoClassifier {
 		input: Record<string, unknown>,
 		settings: AutoSettings,
 		dirs: readonly string[],
+		/** The destructive table's reason, when the table is why this is being asked. */
+		flagged?: string,
 	): Promise<Verdict> {
-		return this.ask(ctx, buildQuestion(tool, input, dirs), settings);
+		return this.ask(ctx, buildQuestion(tool, input, dirs, flagged), settings);
 	}
 
 	/** Which model to ask, resolving `permissions.auto.model` at most once. */

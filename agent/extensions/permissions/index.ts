@@ -287,7 +287,14 @@ export default function (pi: ExtensionAPI) {
 			// loosening — askWithoutUi decided this call's outcome before we got here.
 			if (!ctx.hasUI && policy.settings.askWithoutUi === "allow") return undefined;
 
-			const verdict = await classifier.judge(ctx, event.toolName, input, auto, dirsFor(ctx.cwd));
+			const verdict = await classifier.judge(
+					ctx,
+					event.toolName,
+					input,
+					auto,
+					dirsFor(ctx.cwd),
+					decision.findings !== undefined && decision.findings.length > 0 ? decision.reason : undefined,
+				);
 
 			// The classifier's entire authority: it can turn this allow into an ask.
 			// Nothing below reaches a deny, and `safe` returns to exactly where the
@@ -300,8 +307,20 @@ export default function (pi: ExtensionAPI) {
 
 			if (verdict.kind === "error") {
 				if (classifier.shouldReport()) ctx.ui.notify(degradedMessage(verdict, auto.onError), "warning");
-				if (auto.onError === "allow") return undefined;
-				decision = { behavior: "ask", reason: `the auto classifier could not be reached — ${verdict.reason}` };
+				// `onError: "allow"` is sound only where the table already cleared the
+				// call: an unreachable classifier falls back to the table, and the table
+				// said nothing. A decision carrying findings is the opposite case — the
+				// table is what sent us here, so allowing on error would clear the exact
+				// command it caught, and the worse the outage the wider the hole. Those
+				// fall back to the prompt the table used to raise itself, carrying its
+				// own reason, whatever onError says.
+				if (decision.findings !== undefined && decision.findings.length > 0) {
+					decision = { behavior: "ask", reason: decision.reason, findings: decision.findings };
+				} else if (auto.onError === "allow") {
+					return undefined;
+				} else {
+					decision = { behavior: "ask", reason: `the auto classifier could not be reached — ${verdict.reason}` };
+				}
 			} else {
 				// Attributed out loud. A user must be able to tell a prompt raised by
 				// the auditable table from one raised by a model's opinion, because
@@ -501,7 +520,7 @@ export default function (pi: ExtensionAPI) {
 									: "none announced — the scratchpad extension is not installed or is off"
 						}`,
 						`Read-only tools:    ${auto.skipReadOnly ? "skipped without asking (read, grep, find, ls)" : "classified like everything else"}`,
-						`If unreachable:     ${auto.onError === "allow" ? "fall back to the destructive table alone" : "ask about every unrecognised call"}`,
+						`If unreachable:     always ask about destructive findings; ${auto.onError === "allow" ? "allow anything else the table cleared" : "ask about every unrecognised call"}`,
 						`Timeout:            ${auto.timeoutMs} ms`,
 						"",
 						`This session: ${stats.calls} classified (${stats.safe} cleared, ${stats.unsafe} raised a prompt, ${stats.errors} failed)`,

@@ -19,13 +19,23 @@
  * It sits beside the deny rules rather than after the table because it must fire
  * in `allowAll` too, where the rest of the table deliberately does not.
  *
- * `auto` mode adds a sixth outcome, `classify`, at step 5 and nowhere else. That
- * placement is the whole safety argument for putting a model in a security
- * control: the classifier is reached only by calls that steps 1–4 already
- * cleared, so it can add a prompt and nothing else. It never sees a call a deny
- * rule caught, and it cannot clear one. Note that step 4 short-circuits it — an
- * `allow` rule means no model call and no bill, which is what makes the mode
- * affordable on a repo with a decent allowlist.
+ * `auto` mode adds a sixth outcome, `classify`, in TWO places, and they are not
+ * the same bargain. At step 5 it is reached only by calls steps 1–4 already
+ * cleared, so there it can add a prompt and nothing else — the original safety
+ * argument, unchanged. At step 2 it now also receives SOFT destructive findings,
+ * and there it can clear what would otherwise have prompted. That is deliberate:
+ * a pattern list reads flags, not situations, so a table answering alone must
+ * answer for the worst case every time, and the prompts it raises on ordinary
+ * work are what gets the whole control switched off.
+ *
+ * What bounds the second case: hard findings never reach it (step 2 denies them
+ * ahead of every mode), an explicit `ask` rule is consulted first and wins, and
+ * a classifier error on a findings-carrying decision falls back to the prompt
+ * rather than to allow (index.ts) — so the model can only clear a soft finding
+ * by actually answering, never by failing. It still never sees a call a deny
+ * rule caught, and it still cannot clear one. Note that step 4 short-circuits
+ * the step-5 path — an `allow` rule means no model call and no bill, which is
+ * what makes the mode affordable on a repo with a decent allowlist.
  *
  * The conventional order is deny, then ask, then allow. Step 2 is inserted ahead
  * of allow deliberately, and it is the one place this departs from that. The
@@ -136,7 +146,28 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		return { behavior: "deny", reason: describe(hard), findings: hard };
 	}
 
+	// The table DETECTS; in auto mode the model DECIDES. A pattern list sees
+	// flags, never situations — `git reset --hard` in a scratch worktree and on
+	// a tree full of uncommitted work are the same string — so a table that
+	// answers by itself has to answer for the worst case, every time, and the
+	// prompts it raises on ordinary work are what gets the whole thing switched
+	// off. Routing the finding to the classifier keeps the detection (fast,
+	// offline, auditable, and it still runs first) and moves only the verdict.
+	//
+	// This is the ONE place the classifier can loosen rather than tighten, and
+	// it is deliberate. Hard findings never arrive here — they returned deny
+	// above, ahead of every mode — so what the model can clear is exactly the
+	// tier that was previously a prompt a human cleared by hand.
 	if (findings.length > 0 && policy.settings.destructiveOverridesAllow) {
+		// An explicit `ask` rule outranks the classifier. Routing findings to the
+		// model must not silently overrule a rule the user WROTE — otherwise
+		// `ask: ["Bash(rm *)"]` is honoured for `ls` and bypassed for `rm -rf`,
+		// which is the protection inverting exactly where it was aimed.
+		const askedFirst = firstMatch(policy.ask, tool, input, cwd);
+		if (askedFirst) {
+			return { behavior: "ask", reason: `matched ask rule ${askedFirst.source}`, rule: askedFirst.source, findings };
+		}
+		if (mode === "auto") return { behavior: "classify", reason: describe(findings), findings };
 		return { behavior: "ask", reason: describe(findings), findings };
 	}
 
@@ -150,7 +181,10 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		return { behavior: "allow", reason: `allowed by rule ${allowed.source}`, rule: allowed.source };
 	}
 
+	// Same inversion on the conventional-ordering path (destructiveOverridesAllow
+	// false), reached only when no ask or allow rule matched first.
 	if (findings.length > 0) {
+		if (mode === "auto") return { behavior: "classify", reason: describe(findings), findings };
 		return { behavior: "ask", reason: describe(findings), findings };
 	}
 

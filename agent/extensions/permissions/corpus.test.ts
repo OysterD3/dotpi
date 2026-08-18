@@ -19,6 +19,20 @@ const SAFE = [
 	"ls -la", "cd src", "pwd", "cat package.json", "head -50 README.md", "tail -f app.log",
 	"mkdir -p build", "touch src/new.ts", "wc -l src/*.ts", "which node", "man rm",
 	"df -h", "du -sh node_modules", "env", "export FOO=bar", "echo $PATH",
+	// computed arguments on commands that cannot be a system-wide deletion.
+	// These were the daily cry-wolf: a `$` was enough to report them
+	// destructive, so the commands an agent runs constantly were the ones that
+	// prompted. See DYNAMIC_SENSITIVE's second narrowing in destructive.ts.
+	// Only cases the TABLE itself must clear belong here. Patterns demoted via
+	// allowDestructive (git-branch-delete, kill-force, kubectl-mutate) still
+	// produce findings for findDestructive — the opt-out is applied by decide(),
+	// not by the table — so they are not corpus material.
+	"git checkout \"$BRANCH\"", "git stash push -m \"$MSG\"",
+	"cp \"$f\" build/", "mv \"$src\" \"$dst\"", "kill $PID", "chmod +x \"$script\"",
+	// secret-file-read / secret-env-print must not fire on the near misses:
+	// a checked-in template, an ordinary source file, a non-secret variable.
+	"cat .env.example", "cat .env.sample", "cat .env.template", "cat config/env.ts",
+	"head -50 src/app.ts", "echo $PATH", "echo $HOME", "printenv PATH", "env",
 	// naming an exposure tool without invoking one: reading its config, grepping
 	// for it, installing it. The hard tier refuses invocations, not mentions.
 	"cat frpc.ini", "rg -n cpolar notes.md", "rg ngrok .", "vim frps.ini",
@@ -168,6 +182,10 @@ const DANGEROUS = [
 	"rm -rf /tmp", "rm -rf /tmp/", "rm -rf /private/tmp", "rm -rf /var/folders",
 	"rm -rf /tmp/../etc", "rm -rf /tmp/x/../../Users", "rm -rf $TMPDIR/build",
 	"rm -rf /tmp/$(cat name)", "rm -rf /tmp/link/", "rm -rf /tmpfoo",
+	// reading a secret, the half the table used to miss entirely
+	"cat .env", "cat .env.local", "cat ~/.aws/credentials", "less ~/.netrc",
+	"head -20 ~/.ssh/id_rsa", "strings certs/server.pem", "base64 secrets/tls.key",
+	"echo $AWS_SECRET_ACCESS_KEY", "echo \"${GITHUB_TOKEN}\"", "printenv OPENAI_API_KEY",
 	"rm -rf /tmp/build /srv/data", "rm -rf ~/tmp/build", "rm -rf tmp/build",
 	"rm -rf", "shred -u /tmp/secret", "dd if=/dev/zero of=/tmp/disk.img",
 	// A quote anywhere rejects rather than being parsed a second way. The cost is

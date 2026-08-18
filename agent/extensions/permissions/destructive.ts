@@ -170,6 +170,27 @@ export const PATTERNS: Pattern[] = [
 	// --- history and credentials ---
 	{ id: "history-clear", test: /\bhistory\s+-c\b|>\s*~?\/?\.?\w*_?history\b/, reason: "clears shell history" },
 	{ id: "credential-write", test: /\b(security\s+add-generic-password|git\s+config\s+.*credential\.helper)\b/, reason: "writes credentials" },
+	// Reading one was the gap. Every other secret pattern here is a WRITE, and
+	// `permissions.deny` covers `Read(**/.env)` — the read TOOL, not bash — so
+	// `cat .env` matched nothing at all. It is the half that cannot be undone: a
+	// printed secret is in the transcript, the session file, and the provider's
+	// logs before anyone can react.
+	//
+	// What this buys, stated exactly, because it is less than it looks: in `auto`
+	// the finding does not block — it routes to the classifier like every other
+	// soft finding, and the model still decides. What changes is that the model
+	// is now TOLD the table flagged a credential read instead of rediscovering it
+	// from the raw string, the prompting modes ask deterministically, and a
+	// classifier outage falls back to a prompt rather than to allow. The verdict
+	// still rests on the model in the mode this repo actually runs.
+	// `.envrc` is direnv and routinely holds exported secrets; `.env` takes any
+	// number of suffixes (`.env.production.local`), so the excluded template
+	// names are checked across the whole run rather than one component.
+	{ id: "secret-file-read", test: /\b(?:cat|bat|less|more|head|tail|strings|xxd|od|base64|nl)\b[^|;&]*?(?:\.envrc|\.env(?![\w.-]*\.(?:example|sample|template|dist|schema)\b)(?:\.[\w-]+)*|\.aws\/credentials|\.ssh\/id_\w+|\.netrc|\.pgpass|\.pypirc|\S+\.(?:pem|p12|pfx|key))(?=['"\s]|$)/, reason: "reads a credential file" },
+	// The secret word must END the variable name. `$GITHUB_TOKEN` is the token;
+	// `$SERVICE_TOKEN_NAME` is the name OF one and prints nothing secret.
+	// `$AWS_SECRET_ACCESS_KEY` still matches — on its ACCESS_KEY tail.
+	{ id: "secret-env-print", test: /\b(?:printenv\s+\S*|echo\s+[^|;&]*\$\{?)\w*(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|API_KEY)(?![\w])/i, reason: "prints a credential held in an environment variable" },
 
 	// --- irreversible local destruction ---  [added after the 2026-07 audit]
 	{ id: "find-delete", test: /\bfind\b[^|;&]*\s-(?:delete(?=\s|$)|(?:exec|execdir|ok|okdir)\s+(?:sudo\s+)?(?:\S*\/)?(?:rm|rmdir|unlink)(?=\s|$))/, reason: "deletes every file matched by find" },
@@ -230,9 +251,26 @@ export const PATTERNS: Pattern[] = [
  * `git` and `docker` meant `git log --oneline $BASE..HEAD`, `git commit -m "$MSG"`
  * and `docker logs $ID` were all reported destructive — constant, obviously-safe
  * commands, and exactly the cry-wolf that gets a detector switched off.
+ *
+ * Narrowed a second time, for the same reason one scope out. The subcommand
+ * fix stopped `git log $BASE..HEAD` but left `git checkout "$BRANCH"`,
+ * `cp "$f" build/`, `mv "$a" "$b"` and `kill $PID` all reported destructive on
+ * the strength of a `$` — everyday commands, prompting every time, which is
+ * the complaint that started this. Under the three-category policy the
+ * question is not "could this be surprising" but "could the computed value
+ * make this a SYSTEM-WIDE deletion", and only the file-destroying primitives
+ * can. A computed branch name cannot exfiltrate anything, a computed PID
+ * cannot expose a secret, and a computed path handed to `cp` writes rather
+ * than erases.
+ *
+ * What is given up: `rm $target` where the value turns out to be `/`. Note
+ * `rm-recursive` still catches every `rm -rf` on its own, computed or not, so
+ * what actually loses deterministic cover is a NON-recursive `rm`, plus `dd`
+ * and `shred` — all three still listed below. The classifier sees the raw
+ * text either way and the policy tells it a recursive delete reaching outside
+ * the working directories is category (3).
  */
-const DYNAMIC_SENSITIVE =
-	/\b(?:rm|rmdir|mv|cp|dd|shred|truncate|chmod|chown|chgrp|kill|pkill|killall)\b|\bgit\s+(?:-\S+\s+)*(?:push|reset|clean|checkout|restore|branch|rebase|tag|worktree|filter-\w+|update-ref)\b|\b(?:kubectl|oc)\s+(?:--?\S+(?:[= ]\S+)?\s+)*(?:delete|apply|patch|scale|replace|exec)\b|\baws\s+\S+\s+(?:rm|rb|delete\S*|terminate\S*)\b|\bdocker\s+(?:rm|rmi|push|prune|system|volume)\b/;
+const DYNAMIC_SENSITIVE = /\b(?:rm|rmdir|dd|shred)\b/;
 
 /** Command substitution: $(...) or `...`. */
 const SUBSTITUTION = /\$\(([^()]*)\)|`([^`]*)`/g;
@@ -345,6 +383,14 @@ export function blankQuoted(segment: string): string {
 	let out = "";
 	let quote: '"' | "'" | undefined;
 	let escaped = false;
+	// A double-quoted `$VAR` or `${VAR}` is not text, it EXPANDS — so blanking
+	// it hid `echo "$AWS_SECRET_ACCESS_KEY"` from secret-env-print while the
+	// unquoted form was caught. Single quotes do not expand, so they stay
+	// blanked. Only the expansion survives; the literal text around it does
+	// not, which is what keeps `git commit -m "fix rm -rf handling"` quiet.
+	let expanding = false;
+	let braced = false;
+	let braceLiteral = false;
 
 	for (const char of segment) {
 		if (escaped) {
@@ -358,8 +404,55 @@ export function blankQuoted(segment: string): string {
 			continue;
 		}
 		if (quote) {
-			out += char === quote ? char : " ";
-			if (char === quote) quote = undefined;
+			if (char === quote) {
+				out += char;
+				quote = undefined;
+				expanding = false;
+				braced = false;
+				continue;
+			}
+			if (quote === '"') {
+				if (char === "$") {
+					expanding = true;
+					braced = false;
+					out += char;
+					continue;
+				}
+				if (expanding) {
+					if (braced) {
+						// Only the NAME survives. A `${...}` body carries literal text —
+						// defaults (`${MSG:-fix rm -rf handling}`), substring ops,
+						// replacements — and emitting it verbatim put that text back in
+						// front of the table, which is the false positive this whole
+						// function exists to prevent. Blank from the first character that
+						// cannot be part of a name, keep the closing brace as a boundary.
+						if (char === "}") {
+							out += char;
+							expanding = false;
+							braced = false;
+							braceLiteral = false;
+							continue;
+						}
+						// Latches: once past the name, everything to `}` is literal text,
+						// including later name-shaped words. `${MSG:-fix rm}` must not
+						// leak `fix rm` back after blanking only the `:-`.
+						if (!braceLiteral && !/[A-Za-z0-9_]/.test(char)) braceLiteral = true;
+						out += braceLiteral ? " " : char;
+						continue;
+					}
+					if (char === "{") {
+						braced = true;
+						out += char;
+						continue;
+					}
+					if (/[A-Za-z0-9_]/.test(char)) {
+						out += char;
+						continue;
+					}
+					expanding = false;
+				}
+			}
+			out += " ";
 			continue;
 		}
 		if (char === '"' || char === "'") {
