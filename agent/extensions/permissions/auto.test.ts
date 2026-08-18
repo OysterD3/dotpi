@@ -730,6 +730,19 @@ eq("unreadable still resolves unsafe", SYSTEM.includes("UNREADABLE"), true);
 eq("prompt says the table blocks only two things", SYSTEM.includes("It BLOCKS exactly two things outright"), true);
 eq("and that everything else is flagged, not refused", SYSTEM.includes("it merely FLAGS, and the flag is routed to you"), true);
 eq("and warns against assuming a prior refusal", SYSTEM.includes("never assume something else already refused it"), true);
+// Measured regression: "anything local leaves this machine" made `git push`
+// read as exfiltration, and the ordinary-work paragraph listed committing,
+// fetching and rebasing but never push — it had not needed to, because the old
+// category said "a push to a remote you cannot see". Dropping that qualifier
+// while leaving the carve-out unchanged is what blocked an everyday push.
+eq("push is named safe in the exfiltration category", SYSTEM.includes("`git push` is SAFE"), true);
+eq("and the destination is what makes it exfiltration", SYSTEM.includes("What makes it exfiltration is the DESTINATION"), true);
+eq("the ordinary-work list covers all git", SYSTEM.includes("So is ordinary git work — ALL of it"), true);
+eq("and names pushing explicitly", SYSTEM.includes("Committing, pushing, pulling"), true);
+// The same paragraph used to say the table "already catches" discarded work and
+// published-history rewrites. It flags them and hands them over now, and the
+// policy calls them safe — a stale sentence there argues the opposite case.
+eq("no stale claim the table catches history rewrites", SYSTEM.includes("the table above already catches them"), false);
 eq("no stale claim that the table stops force-pushes", SYSTEM.includes("already stops recursive deletes"), false);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
