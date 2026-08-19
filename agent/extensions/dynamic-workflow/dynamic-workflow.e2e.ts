@@ -298,6 +298,15 @@ check("description says building fans out too", description.includes("**Implemen
 check("and splits by file ownership", description.includes("ONE AGENT PER DELIVERABLE"), true);
 check("ownership is stated in the prompt, not just the script", description.includes("Stating the ownership IN THE PROMPT"), true);
 check("a bulleted prompt is named as the fan-out", description.includes("that list IS the fan-out"), true);
+// The worked example is what anchors the shape — "count the seams" under a
+// three-part example reads as three, and the example is the part a model
+// copies. It is now the run the panel actually shows: ten owners in one
+// Implement phase, a shell() Gate, a Fix driven by what the gate returned,
+// and an Audit, all in ONE script rather than four.
+check("the example runs four phases in one script", description.includes("phases: [{ title: 'Implement' }, { title: 'Gate' }, { title: 'Fix' }, { title: 'Audit' }]"), true);
+check("and fans out to ten owners", (description.match(/owns: '/g) ?? []).length, 10);
+check("the gate is shell(), not an agent", description.includes("const gate = await shell("), true);
+check("and Fix runs on what the gate returned", description.includes("gate.stderr.slice(-4000)"), true);
 // The width half of the same lesson, which the depth correction overshot.
 // "Most work is served by three to five agents" was a number standing where the
 // task's seams should be counted, and the fleet-shape list beside it named only

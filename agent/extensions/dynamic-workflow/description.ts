@@ -100,19 +100,40 @@ The canonical multi-stage pattern — each dimension verifies as soon as its rev
 
 **Implementing is fan-out too.** Every pattern here reads, judges or verifies, and that is an accident of which patterns got written down — not a claim that building is inherently serial. A request carrying several deliverables (a transport, a session store, an IPC surface, a fixture and its tests) is ONE AGENT PER DELIVERABLE, not one agent handed the list. Split by what each agent OWNS: the files it alone will write. Agents owning disjoint files run concurrently as they are. For agents that WOULD collide, see **Isolating concurrent writers** below — there is no per-agent \`isolation\` option, and an unknown option is silently ignored rather than rejected, so passing one buys nothing.
 
-  phase('Implement')
+  export const meta = {
+    name: 'ship-the-scheduler',
+    description: 'build it, gate on the real suite, fix what the gate finds, audit',
+    phases: [{ title: 'Implement' }, { title: 'Gate' }, { title: 'Fix' }, { title: 'Audit' }],
+  }
   const PARTS = [
-    { key: 'transport', owns: 'src/main/rpc/**', prompt: '...' },
-    { key: 'sessions', owns: 'src/main/sessions/**', prompt: '...' },
-    { key: 'ipc', owns: 'src/main/ipc/**', prompt: '...' },
+    { key: 'router',    owns: 'src/router/**',     prompt: '...' },
+    { key: 'api',       owns: 'src/api/**',        prompt: '...' },
+    { key: 'tasks',     owns: 'src/tasks/**',      prompt: '...' },
+    { key: 'cron',      owns: 'src/cron/**',       prompt: '...' },
+    { key: 'workspace', owns: 'src/workspace/**',  prompt: '...' },
+    { key: 'worktools', owns: 'src/worktools/**',  prompt: '...' },
+    { key: 'store',     owns: 'src/store/**',      prompt: '...' },
+    { key: 'migrate',   owns: 'src/migrations/**', prompt: '...' },
+    { key: 'main',      owns: 'src/main.ts',       prompt: '...' },
+    { key: 'e2e',       owns: 'test/e2e/**',       prompt: '...' },
   ]
-  const built = await parallel(PARTS.map(p => () =>
+  phase('Implement')
+  await parallel(PARTS.map(p => () =>
     agent(p.prompt + '\\n\\nYou own ' + p.owns + '. Do not edit anything outside it — another agent owns those files and your edit would be lost.',
-      { label: p.key, phase: 'Implement' })))
-  phase('Integrate')
-  await agent('Wire the parts together and make the build and tests pass. ' + built.filter(Boolean).join('\\n'), { phase: 'Integrate' })
+      { label: 'impl:' + p.key, phase: 'Implement' })))
+  phase('Gate')
+  const gate = await shell('pnpm build && pnpm test')
+  phase('Fix')
+  if (gate.exitCode !== 0) {
+    await agent('The build is red. Fix it and resolve the seams between the parts. Failures:\\n' + gate.stderr.slice(-4000), { phase: 'Fix' })
+  }
+  phase('Audit')
+  const audit = await parallel(PARTS.map(p => () =>
+    agent('Review ' + p.owns + ' against what it was asked to build. Return findings only.',
+      { label: 'audit:' + p.key, phase: 'Audit', tools: ['read', 'grep', 'find', 'ls'], schema: FINDINGS_SCHEMA })))
+  return { green: gate.exitCode === 0, findings: audit.filter(Boolean).flatMap(a => a.findings) }
 
-Stating the ownership IN THE PROMPT is what keeps concurrent agents in one repo from overwriting each other, and it costs nothing next to a worktree per agent. A short integrate stage afterwards is normal and expected: that is where the seams get resolved, and it is one agent because it is genuinely one job.
+Stating the ownership IN THE PROMPT is what keeps concurrent agents in one repo from overwriting each other, and it costs nothing next to a worktree per agent. Resolving the seams between the parts is one agent's job — that is Fix, and what tells it which seams are actually broken is the gate, not a guess written before anything ran. Ten deliverables is what ten agents looks like: the panel reads "Implement · 10 agents", and the count came from the request rather than from a default.
 
 Three smells that all mean the same thing. A prompt containing a bulleted list of requirements: that list IS the fan-out, so split it before you run it. A single agent past ~40 turns: that is a decomposition failure showing up as wall-clock, not diligence. And a split into backend / frontend / cli — or any other tier an org chart would recognise: that taxonomy existed before the request did, so it cannot be a description of THIS task's seams. Name the files each agent alone writes; when two of them both own src/, the split is a label and not a decomposition. Not one of the three is fixed by giving an agent more thinking.
 
@@ -120,16 +141,7 @@ Three smells that all mean the same thing. A prompt containing a bulleted list o
 
 This is measured, not hypothetical. A run here told its agent "Run pnpm check", got 25 invocations of \`pnpm check && pnpm test\`, a report of "17/17 passing", and an application that did not start. The adversarial reviewer that followed ran zero commands touching the real thing. Both agents were honest; the acceptance criterion was one they could satisfy by writing it.
 
-So do NOT ask an agent whether the work is good. Run the gate yourself:
-
-  phase('Implement')
-  await parallel(PARTS.map(p => () => agent(p.prompt, { label: p.key, phase: 'Implement' })))
-  phase('Verify')
-  const tests = await shell('pnpm check && pnpm test')
-  if (tests.exitCode !== 0) {
-    await agent('The build is red. Fix it. Failures:\\n' + tests.stderr.slice(-4000), { phase: 'Verify' })
-  }
-  return { green: tests.exitCode === 0, output: tests.stdout.slice(-2000) }
+So do NOT ask an agent whether the work is good. Run the gate yourself: that is the Gate phase in the script above, and it is a shell() call rather than an agent, with Fix running on what it returned.
 
 shell() runs in the host process, and agents cannot call it — they have their own bash inside their own pi, but its output reaches you only as something they chose to type. Only shell() gives you a number the model never touched. Write gates as \`exitCode === 0\`, never \`!== 0\`: a signal-killed process reports null.
 
