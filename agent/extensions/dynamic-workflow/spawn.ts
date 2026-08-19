@@ -176,9 +176,8 @@ export function piInvocation(args: string[]): { command: string; args: string[] 
  * anywhere upstream would fail every agent that inherits it — a whole fleet,
  * for a reason that names an argv index rather than the cause.
  *
- * A COPY of the same guard in advisor/spawn.ts. Extensions here install
- * independently and do not import across boundaries, so the four lines are
- * duplicated rather than shared.
+ * Extensions here install independently and do not import across boundaries,
+ * so the four lines are duplicated rather than shared.
  */
 export function scrubArg(text: string): string {
 	return text.replace(/\0/g, "");

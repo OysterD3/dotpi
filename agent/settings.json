@@ -34,7 +34,6 @@
       "Bash(pnpm test *)",
       "Bash(pnpm lint *)",
       "Workflow",
-      "Advisor",
       "Ask_user",
       "Task",
       "Memory",
@@ -56,9 +55,6 @@
     "auto": {
       "model": "cheap"
     }
-  },
-  "advisor": {
-    "model": "frontier"
   },
   "compaction": {
     "enabled": true

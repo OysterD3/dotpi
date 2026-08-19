@@ -1,7 +1,7 @@
 /**
  * Resolving the summariser model, using pi's own `--model` rules reproduced
  * against the ModelRegistry list (pi's resolver is not exported to
- * extensions). The same transcription the recap, goal, permissions, advisor,
+ * extensions). The same transcription the recap, goal, permissions,
  * subagents, and dynamic-workflow extensions carry; duplicated here so this
  * extension is independently installable.
  *

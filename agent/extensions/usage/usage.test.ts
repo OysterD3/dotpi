@@ -732,14 +732,14 @@ console.log("\n--- budget: checkpoint wording ---");
 	check(
 		"the hidden reminder",
 		budgetReminder(32.1789, 135 * 60_000, 10),
-		"This session has now cost ~$32.1789 over 2h 15m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $10, change approach: delegate, simplify, or consult the advisor — do not keep grinding the same path.",
+		"This session has now cost ~$32.1789 over 2h 15m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $10, change approach: delegate, simplify, or narrow the goal — do not keep grinding the same path.",
 	);
 	// Past $100, formatCost switches to two decimals — the reminder's total must
 	// track that, not hardcode four.
 	check(
 		"a total past $100 still reads clean",
 		budgetReminder(150, undefined, 25),
-		"This session has now cost ~$150.00 over 0m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $25, change approach: delegate, simplify, or consult the advisor — do not keep grinding the same path.",
+		"This session has now cost ~$150.00 over 0m. Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? If you cannot name concrete progress since the last $25, change approach: delegate, simplify, or narrow the goal — do not keep grinding the same path.",
 	);
 
 	// Wrapped exactly the way every other hidden nudge in this repo is (see

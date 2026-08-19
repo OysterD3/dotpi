@@ -60,7 +60,7 @@ export type Listers = {
 
 /**
  * pi.events channel for announcing model spend — the same string contract the
- * recap, advisor, and usage extensions share. With no subscriber it goes
+ * recap and usage extensions share. With no subscriber it goes
  * nowhere; with the usage extension installed, the summary call's cost shows
  * up in /usage instead of being spend nothing can see.
  */

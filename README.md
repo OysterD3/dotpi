@@ -329,7 +329,7 @@ legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, an
 matches every use of the tool.
 
 **Rules can name extension tools too**, and every tool the extensions in here register is allowed
-outright: `Workflow`, `Advisor`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
+outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
 `Bash_output`, `Kill_shell`, and the three `Intercom_*`. Unknown names pass through lower-cased
 (`resolveToolName`), so `Workflow` resolves to the `workflow` tool; the capital is required by the
 rule syntax. In `auto` mode an unlisted tool goes to a model that has never heard of it, and the
@@ -344,20 +344,19 @@ Nothing here reaches the destructive table, which is checked *ahead* of `allow` 
 rule can override — `corpus.test.ts` pins that with a blanket `Bash` rule against a tunnel-expose
 command, in both precedence orders.
 
-`Workflow` and `Advisor` are in `allow` for a further reason worth writing down. In `auto` mode any tool without a matching
-rule goes to the classifier, which can turn it into a prompt — and for these two the prompt never
+`Workflow` is in `allow` for a further reason worth writing down. In `auto` mode any tool without a matching
+rule goes to the classifier, which can turn it into a prompt — and for this one the prompt never
 stops coming. The remembered-approval grain that would normally silence it is `exact:<tool>:<target>`,
-where `target` for a custom tool is `JSON.stringify(input)`. For `advisor` that input is the free-text
-question, and for `workflow` it is the entire script, so the target is different on every single call
+where `target` for a custom tool is `JSON.stringify(input)`. For `workflow` that input is the entire
+script, so the target is different on every single call
 and an "allow this exact call" grant can never match the next one. The tool-wide grant does stick,
-but it has to be found and clicked; allowing them by rule is the honest version of the same thing.
-The trade is explicit, and larger for `workflow` than it looks. Both spawn subprocesses with
+but it has to be found and clicked; allowing it by rule is the honest version of the same thing.
+The trade is explicit, and larger than it looks. `workflow` spawns subprocesses with
 `--no-extensions`, which disables extension discovery in the child — so the permissions extension,
 and with it the destructive table, is **not loaded there at all**. A workflow subagent runs `bash`
 with no destructive gate: `rm -rf`, `git push --force` and `curl | sh` are not classified, not
 prompted, and not denied. (`--approve` does not help; pi maps it to project *trust*, not tool
-approval.) `advisor` is a different case only because it also passes `--no-tools`, so it has no
-`bash` to gate. Allowing `workflow` therefore means trusting the scripts this agent writes to run
+approval.) Allowing `workflow` therefore means trusting the scripts this agent writes to run
 unsupervised in your project — and `Task` is the same bargain by the same mechanism, since subagents
 spawn the same way. `deny` rules still outrank everything in the PARENT session, which is
 where you and the agent share a shell.
@@ -776,9 +775,9 @@ nor, in auto mode, anything a model was talked out of naming.
 
 **`agent/extensions/provider/`** — adds `/provider`: switch every model this config uses, at once.
 
-Seven extensions here resolve a model reference of their own — advisor, goal, permissions' auto
+Six extensions here resolve a model reference of their own — goal, permissions' auto
 classifier, recap, session-ref, subagents, ultracode — and pi has `defaultProvider`/`defaultModel` on top.
-Written out concretely, changing provider means finding eight fully-qualified `provider/id` strings
+Written out concretely, changing provider means finding seven fully-qualified `provider/id` strings
 across two files, and every one you miss goes on quietly billing the old provider.
 
 So a setting names a **role**, and roles are defined per provider:
@@ -794,7 +793,7 @@ So a setting names a **role**, and roles are defined per provider:
   }
 },
 
-"advisor":     { "model": "frontier" },
+"goal":        { "model": "cheap" },
 "permissions": { "auto": { "model": "cheap" } }
 ```
 
@@ -818,15 +817,16 @@ reference, so an id that genuinely ends in a level-shaped token — OpenRouter s
 confirm at all is persisted exactly as configured, level untouched. The role consumers resolve
 suffixed values the same way (`splitThinking` is copied and drift-locked alongside `resolveRole`);
 recap, goal, permissions, session-ref, and ultracode strip the level because their thinking is task-pinned,
-while advisor and subagents honor it — explicit pin beats the carried level beats the fallback.
+while subagents honor it — explicit pin beats the carried level beats the fallback.
 Changing the level live has one audible side effect: ultracode exits its mode when the level moves
 under it, and says so itself.
 
 **`session` and `frontier` are worth keeping apart even when they name the same model**, which they
 do above. They answer different questions — what you talk to, versus the best thing available — and
 the day you put the session on something faster, anything pointed at `session` follows it down.
-`advisor` is the case that makes this concrete: it exists to consult a *stronger* model than the one
-you are running, so pointing it at `session` quietly defeats it.
+The `code-reviewer` subagent in `agent/subagents.json` is the case that makes this concrete: it is
+pinned to `frontier` so a review runs on the best thing available, and pointing that at `session`
+quietly defeats it.
 
 **The map is a data contract, not a module.** Every extension here installs independently and may
 not import across boundaries, so each carries its own fifteen-line reader — the same arrangement as
@@ -2026,106 +2026,6 @@ bridge sends `stop`.
 | `config.ts` | The cmux protocol constants and env-var names |
 | `cmux-notify.test.ts` | Unit and wiring coverage |
 
-**`agent/extensions/advisor/`** — an advisor tool. A zero-parameter `advisor` tool that lets the
-agent pause and consult a **stronger reviewer model** on the whole session so far,
-at the moments that matter — before committing to an approach, when stuck, and before declaring done.
-
-```
-Assistant  → called advisor()
-Result of advisor:
-  Biggest issue: don't use yaml.load on a user upload — use safe_load. …
-```
-
-**Being tool-less is also its failure mode.** The reviewer sees the transcript and nothing else — it
-cannot list a directory or open a file — while being asked to be specific and to produce prioritised
-next steps. So it invents concrete detail. Observed here: step 1 of a numbered plan was *"Read
-`~/.pi/agent/skills/ultracode/SKILL.md`"*, a file that does not exist; `agent/skills/` holds two
-symlinks and nothing else. Because the caller is told to give the advice serious weight, an invented
-path becomes an errand the agent runs and finds nothing at the end of.
-
-Both halves are now stated. The reviewer is told to stay inside what it has seen — every path,
-symbol, flag or API it names must appear in the transcript — and given the alternative, which is to
-say what to look *for* rather than inventing where it lives, and to mark inferences as inferences
-("if X exists"). Without that alternative it would comply by going vague, which throws away the
-point of the tool. The caller is told the matching rule: weight the judgment, verify the details,
-and when a detail turns out wrong, take the intent rather than the literal target — a wrong filename
-does not make the underlying point wrong.
-
-The natural way to build this is a server-side tool, where the API forwards the whole conversation
-to the reviewer model. pi has no such server tool, so the forwarding is done in the client — the tool
-flattens the session branch (task, every tool call, every result) and runs the reviewer as a
-**tool-less headless `pi` call** (`--no-tools`, so it advises and cannot act). What the agent sees is
-the same either way: call `advisor()`, wait, get advice back.
-
-That child call also passes `--thinking` explicitly (`CONFIG.reviewerThinking`, currently `medium`).
-Omitting the flag does **not** mean "the model's default" — the child reads `settings.json` and
-inherits `defaultThinkingLevel`, so raising that for the session being reviewed silently raised every
-consult along with it, at one spawn per `advisor()` call with the whole transcript in the prompt.
-
-The reviewer model is **configurable and required** — that is the whole feature. With none set the
-tool is not offered at all. Set it three ways, in priority order:
-
-- `/advisor <model>` — a session override (also `/advisor off` / `on` / `status`)
-- `--advisor <model>` — a CLI flag for one run
-- `advisor.model` — the durable default in `agent/settings.json`
-
-Model names resolve with pi's own `--model` rules (`opus`, `sonnet`, `openai-codex/gpt-5.6-sol`),
-against the live registry. One rule you might expect is deliberately **not** enforced: that an
-advisor cannot be the very model it advises. What the advisor actually buys is a clean-context read
-of the whole session, and that holds even when the reviewer is the same model — it sees the
-transcript without the anchoring of having produced it, and refusing would leave a single-model
-setup with no advisor at all. `/advisor status` says when the reviewer equals the session model, but
-it runs. An "advisor must be at least as capable" rank check reduces to *allow*, because pi's
-registry carries no capability rank for arbitrary providers.
-
-**A consult says what it is doing while it does it.** It can run for minutes — the transcript is
-large, reviewer models are slow, and a reasoning model spends most of that time thinking before it
-writes a word — and a single static line for five minutes is indistinguishable from a wedged
-subprocess. The headless child streams pi's own session events, so the wait is not actually opaque:
-
-```
-Consulting openai-codex/gpt-5.6-sol… 8s
-openai-codex/gpt-5.6-sol is thinking… 1m 12s · 3.1k chars of reasoning
-openai-codex/gpt-5.6-sol is writing advice… 1m 40s · 840 chars
-openai-codex/gpt-5.6-sol is writing advice… 4m 2s · 2.4k chars · gives up at 5m 0s
-```
-
-The line repaints on a one-second timer rather than per event, because the clock has to keep moving
-through the long silence *before* the first token — that silence is when it looks hung, and a moving
-number is the only thing that answers it. The deadline is named only in the back half of the budget,
-where the question stops being curiosity and starts being "should I kill this?". `progress.ts` is
-pure, and the stream parsing is tested against a fake `pi` child, so both are covered without a model.
-
-The main-agent guidance (when and how to call it) lives in the tool description so it rides in the
-system prompt. The reviewer-side prompt is authored here, reconstructed from the documented
-behaviour of server-side implementations, whose instructions never ship in a client.
-
-The transcript budget is 20% of the reviewer's window (down from 50%), priced from session
-`019fcad1`: seven consults forwarded 614k input tokens — advisor spawns are fresh processes, so
-none of it cached, and the over-window ones billed at gpt-5.6's doubled long-context rate — $3.20
-of transcript for seven answers. Advice quality lives in recent state and the transcript already
-drops oldest-first, so the cheap 80% is the stale 80%; on sol this still forwards ~54k tokens.
-
-```jsonc
-{
-  "advisor": {
-    "model": "opus",     // required to enable; the reviewer model
-    "enabled": true      // optional kill switch
-  }
-}
-```
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Settings, `--advisor` flag, `/advisor` command, active-tool sync, status chip |
-| `tool.ts` | The `advisor` tool: resolve the reviewer, forward the session, return advice + usage |
-| `transcript.ts` | Session branch → budgeted transcript, with tool results, oldest dropped first (pure) |
-| `guidance.ts` | The tool guidance and the reviewer prompt |
-| `models.ts` | Model reference resolution; `sameModel` labels a self-advising setup (pure) |
-| `progress.ts` | Reading thinking/writing out of the child's stream, and the status line (pure) |
-| `spawn.ts` | The tool-less headless `pi` reviewer subprocess |
-| `advisor.test.ts` | Unit and wiring coverage (`advisor.live.ts` spawns a real reviewer) |
-
 **`agent/extensions/subagents/`** — configurable subagents. You define a set of named subagents,
 each pinned to a model, a reasoning (thinking) level, a purpose, and optionally a tool allowlist and
 a role prompt; the main agent delegates a scoped task to one by name through the `task` tool, and it
@@ -2155,7 +2055,7 @@ level), and `--tools` (the allowlist), plus its role prompt via `--append-system
 spawn mechanism the ultracode workflow uses, here driven by standing definitions instead of a script.
 A subagent that pins no model inherits the session model; `defaults` supplies a shared
 model/reasoning for the ones that omit them. The `task` tool is offered only when at least one
-subagent is configured (active-tool sync, like the advisor), so an empty config adds nothing to the
+subagent is configured (active-tool sync), so an empty config adds nothing to the
 prompt, and its description lists the available subagents so the model knows what it can delegate to.
 
 **Describe one, don't fill in seven dialogs.** `/subagents add a read-only reviewer on the frontier

@@ -15,7 +15,7 @@
  * config; the first interactive edit migrates such a block into the store.
  *
  * The `task` tool is offered only when at least one subagent is configured
- * (active-tool sync, like the advisor extension), so an empty config adds
+ * (active-tool sync), so an empty config adds
  * nothing to the prompt.
  *
  * Store file (agent/subagents.json), shape { defaults?, agents }:

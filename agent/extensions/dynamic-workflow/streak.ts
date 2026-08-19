@@ -77,9 +77,9 @@ interface ToolResultBranchEntry {
  * Reads RESULTS, not calls: a blocked or interrupted call never produced one,
  * and by the time a result exists the interesting moment (asking, or not) has
  * already passed either way. The live counter (index.ts's tool_call handler)
- * counts the call itself instead, matching advisor.ts's own precedent for the
- * same reason that one does — the model has already committed by the time it
- * calls, so there is no reason to wait for the result to count it live. The
+ * counts the call itself instead, for the reason the live path always had —
+ * the model has already committed by the time it calls, so there is no reason
+ * to wait for the result to count it live. The
  * two can disagree by an in-flight call at the exact moment of a crash; that
  * is the same gap store.ts's reconcile() already accepts for run state.
  */

@@ -56,7 +56,6 @@
       "Bash(pnpm test *)",
       "Bash(pnpm lint *)",
       "Workflow",
-      "Advisor",
       "Ask_user",
       "Task",
       "Memory",
@@ -82,9 +81,6 @@
       "onError": "allow",
       "timeoutMs": 10000
     }
-  },
-  "advisor": {
-    "model": "frontier"
   },
   "goal": {
     "model": "cheap"

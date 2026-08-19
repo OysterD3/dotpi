@@ -306,7 +306,6 @@ console.log("the copies have not drifted");
 			"goal/model.ts",
 			"recap/model.ts",
 			"permissions/model.ts",
-			"advisor/models.ts",
 			"dynamic-workflow/models.ts",
 			"subagents/models.ts",
 			"session-ref/model.ts",

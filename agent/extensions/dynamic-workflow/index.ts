@@ -545,10 +545,9 @@ export default function (pi: ExtensionAPI) {
 		if (streak === null) return;
 		pi.sendMessage(
 			{ customType: ENTRY_TYPE, content: systemReminder(editStreakReminder(streak)), display: false },
-			// Same idiom as advisor.ts's resurfaced-advice nudge: a tool call always
-			// lands mid-turn in practice, but isIdle() is checked rather than
-			// assumed, matching every other extension that injects a message from
-			// inside a running turn.
+			// A tool call always lands mid-turn in practice, but isIdle() is
+			// checked rather than assumed, matching every other extension that
+			// injects a message from inside a running turn.
 			ctx.isIdle() ? { triggerTurn: true } : { deliverAs: "followUp" },
 		);
 	});

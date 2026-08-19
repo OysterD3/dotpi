@@ -1,10 +1,10 @@
 /**
  * provider — switch every model this config uses, in one command.
  *
- * Seven extensions here resolve a model reference of their own (advisor, goal,
+ * Six extensions here resolve a model reference of their own (goal,
  * permissions' auto classifier, recap, session-ref, subagents, ultracode), and pi has its
  * own `defaultProvider`/`defaultModel` on top. Written out concretely, changing
- * provider means finding eight fully-qualified `provider/id` strings across two
+ * provider means finding seven fully-qualified `provider/id` strings across two
  * files — and every one you miss goes on quietly billing the old provider.
  *
  * So references become ROLES, and roles are defined per provider:
@@ -17,7 +17,7 @@
  *     }
  *   }
  *
- * With `permissions.auto.model: "cheap"` and `advisor.model: "session"`,
+ * With `permissions.auto.model: "cheap"` and a subagent pinned to `frontier`,
  * `/provider anthropic` moves all of it at once. A reference may end in
  * `:level` — pi's own `--model` syntax — to pin the thinking level that model
  * runs at; the session role's level is applied live and persisted as

@@ -43,7 +43,7 @@
  * Three kinds of tool call keep pi's own framing, because restyling them would
  * be worse than leaving them alone: any tool an extension registered a
  * renderer for (its author already chose how it looks — this repo's workflow
- * panel and advisor progress rows both rely on that), any tool that draws its
+ * panel relies on that), any tool that draws its
  * own frame, and any result carrying images. See `patch.ts`.
  *
  * There is no settings block. The extension either draws the transcript or it

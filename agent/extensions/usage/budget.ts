@@ -113,7 +113,7 @@ export function budgetReminder(totalUsd: number, elapsedMs: number | undefined, 
 	return (
 		`This session has now cost ~${formatCost(totalUsd)} over ${elapsedText(elapsedMs)}. ` +
 		"Stop and account: which of the task's acceptance criteria are verified done, which are not, and is the current approach converging? " +
-		`If you cannot name concrete progress since the last ${formatClean(stepUsd)}, change approach: delegate, simplify, or consult the advisor — do not keep grinding the same path.`
+		`If you cannot name concrete progress since the last ${formatClean(stepUsd)}, change approach: delegate, simplify, or narrow the goal — do not keep grinding the same path.`
 	);
 }
 

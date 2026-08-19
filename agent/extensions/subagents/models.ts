@@ -2,8 +2,8 @@
  * Resolving a subagent's model reference ("gpt-5.6-luna", "sonnet",
  * "openai-codex/gpt-5.6-sol") to a real registry model, using pi's own
  * `--model` rules reproduced against the ModelRegistry list (pi's resolver is
- * not exported to extensions). Same transcription the recap, ultracode, and
- * advisor extensions use; duplicated here so this extension is independently
+ * not exported to extensions). Same transcription the recap and ultracode
+ * extensions use; duplicated here so this extension is independently
  * installable.
  */
 

@@ -156,7 +156,7 @@ function num(value: unknown): number {
  * The convention, and it is a convention rather than something pi enforces: a
  * tool that spent on its own account puts the number of calls it made on
  * `details.turns`. Every spending tool in this repo already had that number to
- * hand — `subagents` and `advisor` were already reporting it, `ultracode` now
+ * hand — `subagents` was already reporting it, `ultracode` now
  * does — because each of them counts subagent turns to build the usage block in
  * the first place.
  *
