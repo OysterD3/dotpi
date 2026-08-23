@@ -60,6 +60,7 @@
       "Task",
       "Memory",
       "Scratchpad",
+      "Recall",
       "Lsp_diagnostics",
       "Bash_output",
       "Kill_shell",

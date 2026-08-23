@@ -83,8 +83,8 @@ export interface DietSettings {
 	 * byte-identically every time — so nothing in the eviction itself ever
 	 * tells the model a round ran. That is fine for one round. It stops being
 	 * fine when a turn re-reads its way through several: each stub still says
-	 * "re-run the tool if you still need it", which is an invitation to read
-	 * right back into a window that is about to fill up again. This is the
+	 * how to get its body back (recall), which is an invitation to read right
+	 * back into a window that is about to fill up again. This is the
 	 * one place the extension breaks silence, and only after a pattern, not a
 	 * single round — a session that never reaches the threshold sees nothing
 	 * new.

@@ -1183,7 +1183,7 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
 
   <h3>What the model sees instead</h3>
   <pre class="code"><span class="c">// an ordinary drop</span>
-[older output dropped to keep this session inside its context window — <b>read(src/app.ts)</b>, <b>41.2 KB</b>. Re-run the tool if you still need it.]
+[older output dropped to keep this session inside its context window — <b>read(src/app.ts)</b>, <b>41.2 KB</b>. Call recall with id "<b>call_17</b>" if you still need it.]
 
 <span class="c">// a superseded read — pointed at the fresh copy instead of a pointless re-run</span>
 [stale copy dropped — <b>read(src/app.ts)</b>, <b>41.2 KB</b>. A newer read of this file appears later in the conversation.]</pre>
@@ -1270,8 +1270,8 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
   <h3>Escalation — the one time it breaks silence</h3>
   <p>
     A stub is deliberately silent, because it must render identically forever. That is fine for one round. It stops
-    being fine when a turn re-reads its way through several: every stub ends with <em>"re-run the tool if you still
-    need it"</em>, which reads as permission to read straight back into a window that is about to fill up again.
+    being fine when a turn re-reads its way through several: every stub ends with how to get its body back
+    (<em>recall</em>), which reads as permission to read straight back into a window that is about to fill up again.
     The measured session hit six rounds, roughly 100k tokens apiece, and never knew it — then hit the provider's own
     "input exceeds the context window" error, which is the failure <code>highWaterRatio</code> exists to pre-empt.
   </p>

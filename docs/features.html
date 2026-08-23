@@ -570,7 +570,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
 
   <div class="catbar"><h3><span class="le">Cost &amp; Context</span><span class="lz">成本与上下文</span></h3><span class="ct">6</span></div>
   <div class="grid g3">
-    <div class="feat"><h4>context-diet</h4><div class="cmd">passive</div>
+    <div class="feat"><h4>context-diet</h4><div class="cmd">recall tool</div>
       <p><span class="le">Trims the provider-bound copy of the conversation mid-turn — old tool-result bodies, stale screenshots, superseded reads.</span><span class="lz">在一轮之内裁剪发往服务商的那份会话副本——旧工具结果正文、过期截图、被覆盖的重复读取。</span></p>
       <div class="why"><span class="le">pi only considers compaction at turn boundaries, so one long turn can run past the price cliff unwatched.</span><span class="lz">pi 只在轮次边界考虑压缩，所以一个长轮次可能冲过价格悬崖而无人看守。</span></div>
       <a class="dd-link" href="#diet"><span class="le">Full deep dive ↓</span><span class="lz">完整深潜 ↓</span></a></div>
@@ -822,7 +822,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
         <li><span class="le">Over 80% of the window, old tool-result <em>bodies</em> go oldest-first down to 55%. Errors never go, nor do the newest 24 results — the live working set.</span><span class="lz">超过窗口 80% 时，旧工具结果的<em>正文</em>按从旧到新丢弃，直到降回 55%。错误永不丢，最新的 24 条结果也不丢——那是活跃工作集。</span></li>
         <li><span class="le">Screenshots: only the newest 3 survive. One goes stale the moment the next is taken and costs ~1.2k tokens to keep saying so.</span><span class="lz">截图：只保留最新 3 张。下一张一拍，上一张就过期了，而继续留着它每次约 1.2k token。</span></li>
         <li><span class="le">Superseded reads, swept even past the target — deliberately narrow: a later whole-file read covers an earlier read of that path; a later <em>partial</em> read covers nothing.</span><span class="lz">被覆盖的读取，即使已达目标也继续清理——定义刻意收窄：后来的整文件读取覆盖此前对同一路径的读取；后来的<em>部分</em>读取什么都不覆盖。</span></li>
-        <li><span class="le">Each dropped body becomes one line naming the call and its size, so the model can go get it again.</span><span class="lz">每条被丢弃的正文变成一行，注明调用与大小，模型可以再去取。</span></li>
+        <li><span class="le">Each dropped body becomes one line naming the call and its size, plus the id to recall it by: the <code>recall</code> tool returns the stored body without re-running anything. A superseded read's line points at the fresh copy instead.</span><span class="lz">每条被丢弃的正文变成一行，注明调用与大小，并附上可用于 recall 的 id：<code>recall</code> 工具会返回存储的原文，不需要重新执行任何东西。被覆盖的读取则改为指向较新的那份副本。</span></li>
       </ul>
     </div>
     <div class="card">

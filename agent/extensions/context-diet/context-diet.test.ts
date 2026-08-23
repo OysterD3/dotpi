@@ -41,6 +41,7 @@ import {
 	resolveBounds,
 	stubText,
 } from "./diet.ts";
+import { findToolResult, recallResult } from "./recall.ts";
 import { createDiet } from "./session.ts";
 
 let failures = 0;
@@ -107,6 +108,8 @@ check("long args are clipped", describeCall("bash", { command: "x".repeat(200) }
 // Newlines would break the one-line stub into many.
 check("newlines flattened", describeCall("bash", { command: "a\n\nb" }), "bash a b");
 check("no args, bare name", describeCall("lsp_diagnostics", {}), "lsp_diagnostics");
+// A recalled body that is dropped again must say which result it was.
+check("recall labelled by id", describeCall("recall", { id: "call_3" }), "recall call_3");
 check("labels come off the tool calls", indexCallLabels(conversation(2)).get("call_1"), "read src/file-1.ts");
 
 console.log("\n--- what a round selects ---");
@@ -197,7 +200,7 @@ console.log("\n--- duplicate reads ---");
 	check("stale copy swept past the target", stale !== undefined, true);
 	check("and marked so its stub explains itself", stale!.superseded, true);
 	check("its stub points at the newer read", stubText(stale!).includes("newer read of this file"), true);
-	check("ordinary stubs are unchanged", stubText(plan.records[0]).includes("Re-run the tool"), true);
+	check("ordinary stubs are unchanged", stubText(plan.records[0]).includes("Call recall with id"), true);
 	check("unsuperseded results past the target still survive", plan.records.some((r) => r.toolCallId === "call_21"), false);
 }
 {
@@ -304,7 +307,7 @@ console.log("\n--- escalation wording ---");
 		"<system-reminder>\n" +
 			"Context has been trimmed 3 times this turn (~221k tokens dropped). You are reading faster than the window holds. " +
 			"Change strategy: delegate self-contained subtasks (if the Workflow tool is available), or finish and verify the " +
-			"current item before opening new files. Re-reading dropped results will re-trigger trimming.\n" +
+			"current item before opening new files. Recalling or re-reading dropped results will re-trigger trimming.\n" +
 			"</system-reminder>",
 	);
 	// No singular/plural branch, unlike dietLine — the spec's wording is a fixed
@@ -338,7 +341,7 @@ console.log("\n--- invariant: pairing survives ---");
 	const stub = after.find((m: Msg) => m.role === "toolResult" && m.toolCallId === "call_0") as Msg;
 	check("dropped body is one text block", [stub.content.length, stub.content[0].type], [1, "text"]);
 	check("stub names the file", stub.content[0].text.includes("read src/file-0.ts"), true);
-	check("stub says how to get it back", stub.content[0].text.includes("Re-run the tool"), true);
+	check("stub says how to get it back", stub.content[0].text.includes('Call recall with id "call_0"'), true);
 	check("stub is far smaller than the body", stub.content[0].text.length < 200, true);
 	const kept = after.find((m: Msg) => m.role === "toolResult" && m.toolCallId === "call_9") as Msg;
 	check("survivors are untouched", kept.content[0].text.length, 40_000);
@@ -449,17 +452,26 @@ console.log("\n--- round counters and escalation ---");
 	const diet = createDiet(settings);
 	const messages = conversation(100);
 
-	const rounds: { dropped?: number; roundsThisTurn: number; escalation?: unknown }[] = [];
+	const rounds: { dropped?: number; saved: number; roundsThisTurn: number; escalation?: unknown }[] = [];
 	for (let i = 0; i < 8; i++) {
 		const step = diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
-		rounds.push({ dropped: step.entry?.dropped, roundsThisTurn: diet.roundsThisTurn, escalation: step.escalation });
+		rounds.push({
+			dropped: step.entry?.dropped,
+			saved: step.entry ? step.entry.fromTokens - step.entry.toTokens : 0,
+			roundsThisTurn: diet.roundsThisTurn,
+			escalation: step.escalation,
+		});
 	}
 
 	check("every call in range finds a fresh round", rounds.every((r) => r.dropped === 12), true);
 	check("roundsThisTurn counts every round, not just the escalating one", rounds.map((r) => r.roundsThisTurn), [1, 2, 3, 4, 5, 6, 7, 8]);
 	check("roundsThisSession tracks the same total with nothing to reset it", diet.roundsThisSession, 8);
 	check("no escalation before the threshold", [rounds[0].escalation, rounds[1].escalation], [undefined, undefined]);
-	check("escalation fires exactly on the round that reaches the threshold", rounds[2].escalation, { roundsThisTurn: 3, tokensThisTurn: 358_740 });
+	// tokensThisTurn is the sum of what the rounds so far reported dropping —
+	// not a constant, since a stub's length (and so its saving) follows its id.
+	const savedByThird = rounds[0].saved + rounds[1].saved + rounds[2].saved;
+	check("escalation fires exactly on the round that reaches the threshold", rounds[2].escalation, { roundsThisTurn: 3, tokensThisTurn: savedByThird });
+	check("and what it reports is three rounds' worth of drops", savedByThird > 350_000 && savedByThird < 360_000, true);
 	// Latched: the turn keeps firing rounds past the threshold, but the model
 	// is told once, not on every round after — see escalatedThisTurn in
 	// session.ts for why re-telling it every round would just be more noise.
@@ -502,10 +514,13 @@ console.log("\n--- round counters and escalation ---");
 	check("the evicted set is untouched", diet.size, 36);
 
 	// A fresh turn gets its own escalation: the latch reset along with the count.
-	const escalations: unknown[] = [];
-	for (let i = 0; i < 3; i++) escalations.push(diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 }).escalation);
+	const steps: ReturnType<typeof diet.step>[] = [];
+	for (let i = 0; i < 3; i++) steps.push(diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 }));
+	const escalations = steps.map((s) => s.escalation);
 	check("no escalation for the first two rounds of the new turn", [escalations[0], escalations[1]], [undefined, undefined]);
-	check("escalation fires again once the new turn reaches the threshold", escalations[2], { roundsThisTurn: 3, tokensThisTurn: 358_740 });
+	// Counted from the boundary: this turn's three rounds, not all six.
+	const savedThisTurn = steps.reduce((sum, s) => sum + (s.entry ? s.entry.fromTokens - s.entry.toTokens : 0), 0);
+	check("escalation fires again once the new turn reaches the threshold", escalations[2], { roundsThisTurn: 3, tokensThisTurn: savedThisTurn });
 	check("roundsThisSession keeps accumulating across the boundary", diet.roundsThisSession, 6);
 }
 {
@@ -613,6 +628,41 @@ console.log("\n--- reasoning drops (flag off by default) ---");
 	check("dropOldReasoning read from settings", resolveSettings({ dropOldReasoning: true }).dropOldReasoning, true);
 	check("keepRecentReasoning floor of 1", resolveSettings({ keepRecentReasoning: 0 }).keepRecentReasoning, DEFAULT_SETTINGS.keepRecentReasoning);
 	check("valid keepRecentReasoning taken", resolveSettings({ keepRecentReasoning: 25 }).keepRecentReasoning, 25);
+}
+
+console.log("\n--- recall: the way back from a stub ---");
+{
+	// Session entries as getBranch() returns them: every entry type, root to
+	// leaf, a compaction included — recall sees through all of it, which is
+	// what keeps a result older than a compaction reachable.
+	const entries: any[] = [
+		{ type: "session_info", id: "e0" },
+		{ type: "message", id: "e1", message: assistant([{ id: "call_a", name: "read", arguments: { path: "src/a.ts" } }]) },
+		{ type: "message", id: "e2", message: result("call_a", "read", "a".repeat(5_000)) },
+		{ type: "message", id: "e3", message: assistant([{ id: "call_b", name: "bash", arguments: { command: "pnpm test" } }]) },
+		{ type: "message", id: "e4", message: result("call_b", "bash", "ok", { image: 300 }) },
+		{ type: "compaction", id: "e5", summary: "…" },
+		{ type: "message", id: "e6", message: { role: "user", content: "next" } },
+	];
+	check("finds a result by its id, past a later compaction", findToolResult(entries, "call_a")?.toolName, "read");
+	check("an entry id is not a tool call id", findToolResult(entries, "e2"), undefined);
+	check("unknown id is undefined", findToolResult(entries, "call_zzz"), undefined);
+	const back = recallResult(entries, "call_a");
+	check("returns the stored body, whole", [back.content.length, (back.content[0] as Msg).text.length], [1, 5_000]);
+	check("details name the call and its size", back.details, { toolCallId: "call_a", toolName: "read", bytes: 5_000 });
+	check("the body is a copy, not the session entry's own array", back.content !== (entries[2].message as Msg).content, true);
+	check("image blocks come back too", recallResult(entries, "call_b").content.map((c: Msg) => c.type), ["text", "image"]);
+	let thrown = "";
+	try {
+		recallResult(entries, "call_zzz");
+	} catch (error) {
+		thrown = (error as Error).message;
+	}
+	check("an unknown id throws, naming the id", thrown.includes('"call_zzz"'), true);
+	// The stub and the tool agree on the id — the one fact the round trip rests on.
+	const record: EvictionRecord = { toolCallId: "call_a", label: "read src/a.ts", bytes: 5_000, savedTokens: 1_000 };
+	check("stub names the id recall needs", stubText(record).includes('Call recall with id "call_a"'), true);
+	check("a superseded stub points at the newer read instead", stubText({ ...record, superseded: true }).includes("recall"), false);
 }
 
 console.log("\n--- the transcript line ---");

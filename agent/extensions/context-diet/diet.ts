@@ -102,8 +102,17 @@ function clip(text: string, max: number): string {
 export function describeCall(name: string, args: unknown): string {
 	const a = (args ?? {}) as Record<string, unknown>;
 	const pick = (key: string): string | undefined => (typeof a[key] === "string" ? (a[key] as string) : undefined);
+	// `id` last: it is what a recall call names, so a recalled body that is
+	// later dropped again gets a stub saying which result it was.
 	const detail =
-		pick("file_path") ?? pick("path") ?? pick("command") ?? pick("pattern") ?? pick("query") ?? pick("prompt") ?? undefined;
+		pick("file_path") ??
+		pick("path") ??
+		pick("command") ??
+		pick("pattern") ??
+		pick("query") ??
+		pick("prompt") ??
+		pick("id") ??
+		undefined;
 	return detail ? `${name} ${clip(detail, CONFIG.labelChars)}` : name;
 }
 
@@ -189,7 +198,10 @@ export function stubText(record: EvictionRecord): string {
 	if (record.superseded) {
 		return `[stale copy dropped — ${record.label}, ${formatBytes(record.bytes)}. A newer read of this file appears later in the conversation.]`;
 	}
-	return `[older output dropped to keep this session inside its context window — ${record.label}, ${formatBytes(record.bytes)}. Re-run the tool if you still need it.]`;
+	// The id is fixed at eviction time like everything else here, so naming it
+	// keeps the stub byte-stable — and gives the model a way back that re-runs
+	// nothing: the recall tool (recall.ts) returns the stored body.
+	return `[older output dropped to keep this session inside its context window — ${record.label}, ${formatBytes(record.bytes)}. Call recall with id "${record.toolCallId}" if you still need it.]`;
 }
 
 /**
@@ -379,7 +391,7 @@ export function escalationReminder(roundsThisTurn: number, tokensThisTurn: numbe
 		`Context has been trimmed ${roundsThisTurn} times this turn (~${formatTokens(tokensThisTurn)} tokens dropped). ` +
 		"You are reading faster than the window holds. Change strategy: delegate self-contained subtasks (if the " +
 		"Workflow tool is available), or finish and verify the current item before opening new files. " +
-		"Re-reading dropped results will re-trigger trimming.";
+		"Recalling or re-reading dropped results will re-trigger trimming.";
 	return `<system-reminder>\n${body}\n</system-reminder>`;
 }
 

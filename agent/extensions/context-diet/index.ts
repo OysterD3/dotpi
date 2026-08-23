@@ -37,18 +37,29 @@
  * with --no-extensions, and they are not the problem: in the measured session
  * 270 subagent calls cost $5.35 between them, because each one starts empty.
  *
+ * The way back from a stub is the `recall` tool (recall.ts), not re-running:
+ * a stub names its toolCallId, and recall returns the stored body from the
+ * session branch by that id — every original is still there, because this
+ * hook only ever rewrites the provider-bound copy, and getBranch() is the raw
+ * root→leaf walk, so a result older than a compaction can still be recalled.
+ * Re-running was wrong twice over: a bash call repeats whatever it did, and a
+ * read returns the file as it is now, not as the model was reasoning about
+ * it. Recall is precise, but what it returns re-enters context as a new
+ * result and is evicted like any other — which is why the escalation below
+ * still stands.
+ *
  * Two gaps the same forensics traced, both closed here:
  *
  *   - Escalation. The measured session hit six rounds, ~100k tokens dropped
- *     apiece, and never knew it: every stub says "re-run the tool if you
- *     still need it", which reads as permission to read right back into a
- *     window that is about to fill up again, and the turn eventually hit the
- *     provider's own "input exceeds the context window" error — the failure
- *     `highWaterRatio` exists to pre-empt, except it cannot once the model
- *     keeps re-opening what a round just dropped. Past `escalateAfterRounds`
- *     rounds in one turn, the model is told directly, once, and an attended
- *     user gets the same news as a ctx.ui.notify warning rather than a muted
- *     transcript line.
+ *     apiece, and never knew it: every stub says how to get its body back,
+ *     which reads as permission to read right back into a window that is
+ *     about to fill up again, and the turn eventually hit the provider's own
+ *     "input exceeds the context window" error — the failure `highWaterRatio`
+ *     exists to pre-empt, except it cannot once the model keeps re-opening
+ *     what a round just dropped. Past `escalateAfterRounds` rounds in one
+ *     turn, the model is told directly, once, and an attended user gets the
+ *     same news as a ctx.ui.notify warning rather than a muted transcript
+ *     line.
  *   - Pinning. Other extensions can protect a specific result from every
  *     eviction rule — including the keepImages sweep, which only spares the
  *     newest few screenshots — by emitting `pi.events.emit("context-diet:pin",
@@ -77,8 +88,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { type DietSettings, ENTRY_TYPE, resolveSettings, SETTINGS_KEY } from "./config.ts";
 import { type DietEntry, escalationNotice, escalationReminder } from "./diet.ts";
+import { RECALL_TOOL, recallResult } from "./recall.ts";
 import { renderDiet } from "./render.ts";
 import { createDiet } from "./session.ts";
 
@@ -108,6 +121,22 @@ export default function (pi: ExtensionAPI) {
 	if (!settings.enabled) return;
 
 	const diet = createDiet(settings);
+
+	// The way back from a stub. Reads the session branch, not the context the
+	// hook below is trimming, so the body comes back whole and nothing re-runs.
+	pi.registerTool({
+		name: RECALL_TOOL,
+		label: "Recall",
+		description:
+			"Return the full original output of a tool result that was dropped from context and replaced by a one-line " +
+			"stub. Pass the id the stub names. The result is read back from this session exactly as it was; nothing is re-run.",
+		parameters: Type.Object({
+			id: Type.String({ description: "The tool call id named in the stub" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return recallResult(ctx.sessionManager.getBranch(), params.id);
+		},
+	});
 
 	// Guards turnBoundary() against firing on a retry or a queued continuation
 	// that re-enter the SAME run — agent-loop.js's runAgentLoopContinue emits

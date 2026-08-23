@@ -329,7 +329,7 @@ legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, an
 matches every use of the tool.
 
 **Rules can name extension tools too**, and every tool the extensions in here register is allowed
-outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
+outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Recall`, `Lsp_diagnostics`,
 `Bash_output`, `Kill_shell`, and the three `Intercom_*`. Unknown names pass through lower-cased
 (`resolveToolName`), so `Workflow` resolves to the `workflow` tool; the capital is required by the
 rule syntax. In `auto` mode an unlisted tool goes to a model that has never heard of it, and the
@@ -2189,8 +2189,17 @@ target. "Superseded" is deliberately narrow: a later whole-file read covers any 
 that path, an identical (path, offset, limit) covers its exact duplicate, and a later partial read
 covers nothing — the model may still be using the rest. The measured session read three of its own
 source files three times each. Each dropped body becomes one line naming the call and its size —
-and for a superseded read, saying the fresh copy is below — so the model can find what it actually
-wants.
+plus the `toolCallId` to recall it by, or for a superseded read, a note that the fresh copy is
+below — so the model can find what it actually wants.
+
+The way back from a stub is the `recall` tool, not re-running. A stub names its `toolCallId`, and
+`recall` returns the stored body from the session branch by that id — every original is still there,
+because the hook only ever rewrites the provider-bound copy, and `getBranch()` is the raw root→leaf
+walk, so a result older than a compaction can still be recalled. Re-running was the only way back
+before, and it is wrong twice over: a `bash` call repeats whatever it did, and a `read` returns the
+file as it is now, not as the model was reasoning about it. Recall is precise, but what it returns
+re-enters context as a new result and is evicted like any other; a recalled body that is dropped
+again gets a stub labelled with the id it came from.
 
 `dropOldReasoning` (default **off**, experimental) lets rounds also strip thinking blocks from all
 but the newest 10 assistant messages. The measured session carried 1MB of encrypted reasoning
@@ -2232,9 +2241,10 @@ empty.
 | `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
 | `session.ts` | The per-session eviction sets — stickiness and hysteresis (pure) |
 | `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
-| `index.ts` | The `context` hook, and the resets that clear the sets |
+| `index.ts` | The `context` hook, the `recall` tool's registration, and the resets that clear the sets |
 | `render.ts` | The one-line transcript entry |
-| `context-diet.test.ts` | 101 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
+| `recall.ts` | The `recall` tool's lookup — the stored body behind a stub's id (pure) |
+| `context-diet.test.ts` | 151 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
 
 **`agent/extensions/test-streak/`** — says something when the suite is being re-run instead of read.
 
