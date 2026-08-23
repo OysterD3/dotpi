@@ -2222,6 +2222,18 @@ Two invariants carry the whole thing, and both are asserted directly:
   between the two ratios is the hysteresis that keeps rounds rare; narrowing it is the one change
   here that can cost more than it saves.
 
+The set lives in memory, and that was a hole. pi emits `session_start` on every process start, resume
+and reload; the handler reset the set and nothing rebuilt it. The next call then anchored on the last
+billed figure — the *trimmed* size, under the high-water mark — so no round fired and the hook passed
+the full history through. Two real sessions did exactly that on the first call after a resume:
+`019fcc5c` sent ~837k tokens and `019fd429` ~565k, and both got "Your input exceeds the context
+window" back — the failure this extension exists to prevent, caused by its own state loss. Each round
+entry now records its decisions (`records`, `reasoningKeys`), and `session_start` / `session_tree`
+rebuild the set from the branch, byte-identically, so the stubs — and the prompt cache — survive a
+restart. Rounds written before the fields existed cannot be rebuilt; they make the first call distrust
+the billed anchor once and measure the raw history instead, which is what the replay of both sessions
+now does: a round fires on the resumed call and the request leaves trimmed.
+
 Replaying `019fcad1` through it, charging each round's cache break in full:
 
 | | real | with the diet |
@@ -2241,10 +2253,10 @@ empty.
 | `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
 | `session.ts` | The per-session eviction sets — stickiness and hysteresis (pure) |
 | `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
-| `index.ts` | The `context` hook, the `recall` tool's registration, and the resets that clear the sets |
+| `index.ts` | The `context` hook, the `recall` tool's registration, the resets, and the restore that rebuilds the set from the branch |
 | `render.ts` | The one-line transcript entry |
 | `recall.ts` | The `recall` tool's lookup — the stored body behind a stub's id (pure) |
-| `context-diet.test.ts` | 151 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
+| `context-diet.test.ts` | 162 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
 
 **`agent/extensions/test-streak/`** — says something when the suite is being re-run instead of read.
 

@@ -57,6 +57,18 @@ export interface Diet {
 	readonly roundsThisSession: number;
 	/** Forget everything, for when the message list underneath is replaced wholesale. */
 	reset(): void;
+	/**
+	 * Rebuild the sets from the rounds a branch carries (diet.ts dietRounds),
+	 * after a reset() has cleared them. The set is memory-only, and pi emits
+	 * session_start on every process start, resume and reload — without this,
+	 * a resumed session's first call went out with every body restored while
+	 * the billed figure it anchored on still described the trimmed request.
+	 * Records come back as written, so the stubs render byte-identically and
+	 * the prompt cache survives the restart. A round from before entries
+	 * carried their decisions cannot be rebuilt; it marks the billed anchor as
+	 * stale instead, and the next step() measures the messages it is given.
+	 */
+	restore(rounds: readonly DietEntry[]): void;
 	/** Zero the per-turn counters and the escalation latch. Call on a genuine turn boundary. */
 	turnBoundary(): void;
 	/**
@@ -87,6 +99,10 @@ export function createDiet(settings: DietSettings): Diet {
 	// model needs to be told a pattern is happening, not reminded every call
 	// that it still is.
 	let escalatedThisTurn = false;
+	// Set by restore() when the branch holds rounds it could not rebuild. The
+	// billed figure pi reports then describes the last *trimmed* request, and
+	// trusting it would send the untrimmed one. Cleared after one step().
+	let staleAnchor = false;
 
 	return {
 		get size() {
@@ -110,6 +126,18 @@ export function createDiet(settings: DietSettings): Diet {
 			roundsThisSession = 0;
 			tokensThisTurn = 0;
 			escalatedThisTurn = false;
+			staleAnchor = false;
+		},
+
+		restore(rounds) {
+			for (const round of rounds) {
+				if (!round.records && !round.reasoningKeys) {
+					staleAnchor = true;
+					continue;
+				}
+				for (const record of round.records ?? []) evicted.set(record.toolCallId, record);
+				for (const key of round.reasoningKeys ?? []) reasoningDropped.add(key);
+			}
 		},
 
 		turnBoundary() {
@@ -143,7 +171,14 @@ export function createDiet(settings: DietSettings): Diet {
 			 * fallback used there reads low by the system prompt and tool schemas, which
 			 * is harmless at a point in the session that is nowhere near the threshold.
 			 */
-			const currentTokens = reportedTokens ?? estimateMessagesTokens(applyDiet(messages, evicted, reasoningDropped));
+			let currentTokens = reportedTokens ?? estimateMessagesTokens(applyDiet(messages, evicted, reasoningDropped));
+			if (staleAnchor) {
+				// One call only: the response to this request re-anchors pi's
+				// figure on what actually went out. With nothing evicted yet the
+				// estimate is of the raw history, which is the number that matters.
+				staleAnchor = false;
+				currentTokens = Math.max(currentTokens, estimateMessagesTokens(applyDiet(messages, evicted, reasoningDropped)));
+			}
 
 			const plan = planDiet({ messages, evicted, currentTokens, contextWindow, settings, pinned: new Set(pinned.keys()) });
 
@@ -168,6 +203,11 @@ export function createDiet(settings: DietSettings): Diet {
 					fromTokens,
 					toTokens,
 					...(reasoning ? { reasoningDropped: reasoning.keys.length } : {}),
+					// The decisions themselves, for restore(). Always present on new
+					// entries — an empty list still says "nothing to rebuild here",
+					// which is not what a missing field says.
+					records: plan?.records ?? [],
+					...(reasoning ? { reasoningKeys: reasoning.keys } : {}),
 				};
 
 				// A round just fired: count it against both budgets before deciding

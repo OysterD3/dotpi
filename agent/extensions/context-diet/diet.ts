@@ -20,7 +20,8 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
-import { CONFIG, type DietSettings } from "./config.ts";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { CONFIG, type DietSettings, ENTRY_TYPE } from "./config.ts";
 
 /** What a stub needs to describe what used to be there. Fixed at eviction time. */
 export interface EvictionRecord {
@@ -49,6 +50,14 @@ export interface DietEntry {
 	toTokens: number;
 	/** Assistant messages whose reasoning was stripped this round. Absent before the flag existed. */
 	reasoningDropped?: number;
+	/**
+	 * What this round decided, so a later process can rebuild the set from the
+	 * session instead of forgetting it — see session.ts restore(). Absent on
+	 * entries written before the fields existed; restore() treats those as a
+	 * warning that the billed anchor cannot be trusted on the next call.
+	 */
+	records?: EvictionRecord[];
+	reasoningKeys?: string[];
 }
 
 type ResultContent = (TextContent | ImageContent)[];
@@ -453,6 +462,26 @@ export function collectReasoningDrops(
 		savedTokens += Math.ceil(chars / CONFIG.charsPerToken);
 	}
 	return { keys, savedTokens };
+}
+
+/**
+ * The diet rounds a branch carries, oldest first, as restore() wants them.
+ *
+ * A compaction clears what came before it: the results those rounds dropped
+ * are gone from context outright, replaced by a summary, which is the same
+ * reason index.ts resets on session_compact. Entries of any other kind are
+ * passed over.
+ */
+export function dietRounds(entries: readonly SessionEntry[]): DietEntry[] {
+	let rounds: DietEntry[] = [];
+	for (const entry of entries) {
+		if (entry.type === "compaction") {
+			rounds = [];
+			continue;
+		}
+		if (entry.type === "custom" && entry.customType === ENTRY_TYPE && entry.data) rounds.push(entry.data as DietEntry);
+	}
+	return rounds;
 }
 
 /**

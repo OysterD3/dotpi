@@ -385,7 +385,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
     </div>
     <figcaption class="ann"><span class="hint">Hover or tap a stage.</span></figcaption>
     <div class="anns">
-      <div id="an-hk-start"><b>session_start</b>memory re-reads <code>agent/settings.json</code>, resolves which store this cwd reads from, reads MEMORY.md and every fact file, and assembles the block. The diet clears its eviction set here too — a toolCallId from the previous session means nothing in this one.</div>
+      <div id="an-hk-start"><b>session_start</b>memory re-reads <code>agent/settings.json</code>, resolves which store this cwd reads from, reads MEMORY.md and every fact file, and assembles the block. The diet resets its eviction set here and rebuilds it from the branch's round entries, so a resumed session's stubs come back byte-identical instead of its first call going out untrimmed.</div>
       <div id="an-hk-before"><b>before_agent_start</b>memory returns <code>{ systemPrompt: event.systemPrompt + "\n\n" + block }</code>. Once per turn, not once per call: the system prompt is cached, so a per-call injection would buy nothing and cost a cache break.</div>
       <div id="an-hk-agent"><b>agent_start</b>The diet calls <code>turnBoundary()</code> — zeroing rounds-this-turn and the escalation latch. Guarded by a <code>turnActive</code> flag, because a retry or a queued continuation re-enters the same run and emits its own agent_start; only the first one starts a turn.</div>
       <div id="an-hk-ctx"><b>context — the only hook inside the loop</b>Fires on every LLM call inside <code>streamAssistantResponse</code>. This is where <code>diet.step()</code> decides whether a round is due, and where the trimmed message array is returned. Returning nothing leaves the request exactly as pi built it.</div>
@@ -1233,11 +1233,15 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
 
   <h3>When the set is thrown away</h3>
   <p>
-    A toolCallId only means something against one message list, so the whole diet resets whenever that list is
-    replaced wholesale: <code>session_start</code>, <code>session_before_switch</code>,
-    <code>session_before_fork</code>, <code>session_before_tree</code>, and <code>session_compact</code>. After a
+    A toolCallId only means something against one message list, so the whole diet resets whenever that list has
+    been replaced wholesale: <code>session_start</code>, <code>session_tree</code>, and <code>session_compact</code>
+    — the events that fire after the change, so a switch, fork or tree move that is cancelled leaves the set alone. After a
     compaction the dropped results are gone from context outright and the summary that replaced them is small, so
-    the counters and the pin set start over there too.
+    the counters and the pin set start over there too. A reset is not the end of the set, though: every round
+    entry records its decisions, and <code>session_start</code> and <code>session_tree</code> rebuild the set from
+    the branch once the new list is in place — byte-identically, so the stubs and the prompt cache survive a
+    restart. Before that rebuild existed, a resumed session's first call went out with every body restored while
+    the billed figure it anchored on still described the trimmed request; two real sessions overflowed that way.
   </p>
 </section>
 
@@ -1454,7 +1458,7 @@ unclosed. Related: <span class="s">[[ssr-cpu-budget]]</span>.</pre>
       <tr><td class="k">memory/load.ts</td><td class="d">pure</td><td class="x">Frontmatter parsing and <code>assemble()</code> — the budget and the order.</td></tr>
       <tr><td class="k">memory/locate.ts</td><td class="d">pure-ish</td><td class="x">cwd → slug candidates for the inherited store, and the global user file path.</td></tr>
       <tr><td class="k">memory/store.ts</td><td class="d"></td><td class="x">pi's own store: the atomic fork, the filename guard, temp-then-rename writes.</td></tr>
-      <tr><td class="k">context-diet/index.ts</td><td class="d"></td><td class="x">The <code>context</code> hook, the turn guard, the resets, escalation delivery, the pin channel.</td></tr>
+      <tr><td class="k">context-diet/index.ts</td><td class="d"></td><td class="x">The <code>context</code> hook, the turn guard, the resets and the restore from the branch, the <code>recall</code> tool, escalation delivery, the pin channel.</td></tr>
       <tr><td class="k">context-diet/diet.ts</td><td class="d">pure</td><td class="x">What gets dropped and what the model reads instead.</td></tr>
       <tr><td class="k">context-diet/session.ts</td><td class="d">pure</td><td class="x">Per-session eviction sets, round counters, the escalation latch.</td></tr>
       <tr><td class="k">context-diet/config.ts</td><td class="d"></td><td class="x">Settings, defaults, and the validation that rejects an inverted pair.</td></tr>

@@ -29,6 +29,7 @@ import {
 	collectReasoningDrops,
 	describeCall,
 	dietLine,
+	dietRounds,
 	escalationNotice,
 	escalationReminder,
 	type EvictionRecord,
@@ -628,6 +629,61 @@ console.log("\n--- reasoning drops (flag off by default) ---");
 	check("dropOldReasoning read from settings", resolveSettings({ dropOldReasoning: true }).dropOldReasoning, true);
 	check("keepRecentReasoning floor of 1", resolveSettings({ keepRecentReasoning: 0 }).keepRecentReasoning, DEFAULT_SETTINGS.keepRecentReasoning);
 	check("valid keepRecentReasoning taken", resolveSettings({ keepRecentReasoning: 25 }).keepRecentReasoning, 25);
+}
+
+console.log("\n--- resume: the set survives a restart ---");
+{
+	// Two real sessions overflowed on the first call after a resume: the set
+	// was reset, nothing rebuilt it, and the billed figure pi reported still
+	// described the trimmed request. Rebuilding from the round entries must
+	// give back the same view, byte for byte, without spending a round on it.
+	const settings = { ...SETTINGS, dropOldReasoning: true, keepRecentReasoning: 2 };
+	const messages = conversation(40, 40_000, { thinking: 2_000 });
+	const first = createDiet(settings);
+	const round = first.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 });
+	check("a round entry carries its decisions", [round.entry!.records!.length, round.entry!.reasoningKeys!.length], [round.entry!.dropped, round.entry!.reasoningDropped]);
+	const branch: any[] = [
+		{ type: "session_info", id: "e0" },
+		{ type: "custom", customType: "elapsed", data: { ms: 1 } },
+		{ type: "custom", customType: "context-diet", data: round.entry },
+	];
+	const resumed = createDiet(settings);
+	resumed.restore(dietRounds(branch));
+	check("restored set is the same size", resumed.size, first.size);
+	// Billed figure well under the high-water mark — what a resumed process sees.
+	const step = resumed.step({ messages, contextWindow: 272_000, reportedTokens: 150_000 });
+	check("the view survives the restart byte for byte", JSON.stringify(step.messages), JSON.stringify(first.view(messages)));
+	check("and no round is spent on it", step.entry, undefined);
+}
+{
+	// A branch written before entries carried their decisions cannot be
+	// rebuilt. The billed anchor is then a lie — it describes the last trimmed
+	// request — so the first call measures the raw history and trims. Once.
+	const messages = conversation(40);
+	const legacy: any[] = [{ type: "custom", customType: "context-diet", data: { dropped: 12, fromTokens: 260_000, toTokens: 150_000 } }];
+	const resumed = createDiet(SETTINGS);
+	resumed.restore(dietRounds(legacy));
+	const step = resumed.step({ messages, contextWindow: 272_000, reportedTokens: 150_000 });
+	check("a round fires although the billed figure is under the mark", step.entry !== undefined, true);
+	check("and the request leaves trimmed", step.messages!.some((m: Msg) => m.role === "toolResult" && m.content[0].text.includes("dropped")), true);
+	const next = resumed.step({ messages, contextWindow: 272_000, reportedTokens: 150_000 });
+	check("the next call trusts the billed figure again", next.entry, undefined);
+	check("while the view stays trimmed", next.messages!.length, messages.length);
+}
+{
+	// A branch with no rounds has nothing to distrust: a fresh session whose
+	// billed figure is under the mark is left exactly as before, however large
+	// the local estimate of its messages would be.
+	const fresh = createDiet(SETTINGS);
+	fresh.restore(dietRounds([{ type: "session_info", id: "e0" }] as any));
+	check("fresh session, billed under the mark, nothing fires", fresh.step({ messages: conversation(100), contextWindow: 272_000, reportedTokens: 150_000 }), {});
+}
+{
+	// dietRounds: compaction clears what came before it; other entries pass.
+	const round = (n: number) => ({ type: "custom", customType: "context-diet", data: { dropped: n, fromTokens: 1, toTokens: 0, records: [] } });
+	const branch: any[] = [round(1), { type: "custom", customType: "other", data: { dropped: 9 } }, { type: "compaction", summary: "…" }, round(2), { type: "custom", customType: "context-diet" }, round(3)];
+	check("rounds after the last compaction, in order", dietRounds(branch).map((r) => r.dropped), [2, 3]);
+	check("nothing after a trailing compaction", dietRounds([...branch, { type: "compaction", summary: "…" }] as any), []);
 }
 
 console.log("\n--- recall: the way back from a stub ---");

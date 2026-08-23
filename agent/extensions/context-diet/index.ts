@@ -48,6 +48,19 @@
  * result and is evicted like any other — which is why the escalation below
  * still stands.
  *
+ * The set lives in memory, and that was a hole. pi emits session_start on
+ * every process start, resume and reload; the handler reset the set and
+ * nothing rebuilt it. The next call then anchored on the last billed figure
+ * — the *trimmed* size, under the high-water mark — so no round fired and
+ * the hook passed the full history through. Two real sessions did exactly
+ * that on the first call after a resume, sending ~837k and ~565k tokens and
+ * getting "Your input exceeds the context window" back: the failure this
+ * extension exists to prevent, caused by its own state loss. Each round
+ * entry now records its decisions, and session_start / session_tree rebuild
+ * the set from the branch (session.ts restore()). Rounds written before the
+ * field existed cannot be rebuilt; they make the first call distrust the
+ * billed anchor once and measure the raw history instead.
+ *
  * Two gaps the same forensics traced, both closed here:
  *
  *   - Escalation. The measured session hit six rounds, ~100k tokens dropped
@@ -87,10 +100,10 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type DietSettings, ENTRY_TYPE, resolveSettings, SETTINGS_KEY } from "./config.ts";
-import { type DietEntry, escalationNotice, escalationReminder } from "./diet.ts";
+import { type DietEntry, dietRounds, escalationNotice, escalationReminder } from "./diet.ts";
 import { RECALL_TOOL, recallResult } from "./recall.ts";
 import { renderDiet } from "./render.ts";
 import { createDiet } from "./session.ts";
@@ -150,8 +163,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerEntryRenderer<DietEntry>(ENTRY_TYPE, (entry, _options, theme) => (entry.data ? renderDiet(entry.data, theme) : undefined));
 
-	// Cleared whenever the message list underneath is replaced wholesale: a
-	// toolCallId from the old branch means nothing on the new one. After a
+	// Cleared whenever the message list underneath has been replaced wholesale:
+	// a toolCallId from the old branch means nothing on the new one. After a
 	// compaction the dropped results are gone from context outright and the
 	// summary that replaced them is small, so the count starts over there too
 	// — round counters and the pin set included, since a toolCallId pinned or
@@ -160,10 +173,24 @@ export default function (pi: ExtensionAPI) {
 		diet.reset();
 		turnActive = false;
 	};
-	pi.on("session_start", reset);
-	pi.on("session_before_switch", reset);
-	pi.on("session_before_fork", reset);
-	pi.on("session_before_tree", reset);
+	// ...and rebuilt from the new list once it is in place. The set is
+	// memory-only, and session_start fires on every process start, resume and
+	// reload — a reset with no rebuild is how two real sessions sent their
+	// whole untrimmed history on the first call after a resume (see the
+	// header). The branch carries every round's decisions, so the set comes
+	// back exactly as it was and the stubs stay byte-identical.
+	//
+	// Bound to the events that fire AFTER the change — session_start follows a
+	// completed switch, fork, /new, resume or reload, session_tree a completed
+	// tree move — never to the session_before_* ones: those fire before the
+	// user can still cancel, and a reset there with no rebuild behind it left
+	// a cancelled switch with an empty set over an unchanged, untrimmed list.
+	const restore = (_event: unknown, ctx: ExtensionContext) => {
+		reset();
+		diet.restore(dietRounds(ctx.sessionManager.getBranch()));
+	};
+	pi.on("session_start", restore);
+	pi.on("session_tree", restore);
 	pi.on("session_compact", reset);
 
 	pi.on("agent_start", () => {
