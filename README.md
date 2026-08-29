@@ -1298,6 +1298,65 @@ tools say why.
 | `config.ts` | Heartbeats, timeouts, limits |
 | `intercom.test.ts` | Liveness and the sweep, resolution, draining, previews and peer rows, the block, and two whole sessions end to end |
 
+**`agent/extensions/pointer/`** — point a session at elements on a page in Chrome. A small
+extension (in `chrome/`, loaded unpacked) puts a bar at the bottom of the page; you click elements,
+they become chips, and either **Send** — type the ask there and pi starts on it — or **Attach** —
+hold them for the next prompt you type in pi. Meant for web work: the slow step of "which file is
+this button in" goes away.
+
+```
+/pointer install     write the browser's native-host manifest (once per machine)
+/pointer clear       drop what is attached
+Alt+Shift+P          show or hide the bar in Chrome (or click the extension's icon)
+```
+
+What pi receives per element is its `file:line:col`, the components that rendered it (innermost
+first), a CSS selector, the whole outerHTML, and one screenshot of the viewport with every
+selection outlined. The location comes from React itself, no build plugin needed: React 18 keeps
+`_debugSource` on the fiber; React 19 removed it, so the fiber's `_debugStack` — an Error captured
+where the JSX was created — is symbolicated through the dev server's own source map (inline on
+Vite, a sibling `.map` on Next). When every frame is a library's, the owner's stack is used instead,
+which is where `<Button>` was written in the app. If code-inspector-plugin's `data-insp-path` is on
+the element it wins, being exact per element. Anything else (Astro, production builds) gets the DOM
+context only, with the project root, and pi finds the file.
+
+The browser has no way to reach a pi session directly, and a session has no listening socket — by
+choice: a localhost port is a channel every page you visit can talk to. So the bridge is Chrome's
+native messaging. The extension connects to a host name, Chrome spawns the wrapper `/pointer
+install` wrote, and that host reads intercom's presence files to see which sessions are up, works
+out which of them holds the project the dev server serves (Next says so in its
+`com.chrome.devtools.json`; Astro puts the root on the page; Vite says nothing, so `lsof` maps the
+port to the server's directory), writes the point into that session's inbox under
+`<agentDir>/pointer/`, and waits for the session to say how it landed. The session drains its inbox
+the way intercom does, on a timer that reads the session id fresh each tick.
+
+Delivery follows the same rule as intercom and background-shell. A **send** is a custom message
+carrying the elements, the shot and the ask: an idle session is woken by it, a busy one gets it as
+a follow-up on the run already going, and the bar says which. An **attach** is held in this process
+and a widget above the editor says so; `before_agent_start` splices it into the next prompt, once.
+Held here rather than queued in pi so that `/pointer clear` can drop it and an Escape cannot lose
+it. A send while elements are attached takes them along, because a turn started by a custom
+message does not pass through `before_agent_start`.
+
+Setting it up is three steps, once: `/pointer install` in pi; load `agent/extensions/pointer/chrome`
+unpacked at `chrome://extensions` with Developer mode on — the id it gets is fixed by the key
+pinned in the manifest and must read what `/pointer install` printed; restart the browser. The host
+manifest is written for every Chromium browser found on the machine (Chrome, Brave, Edge, Arc,
+Vivaldi, Chromium, the Chrome channels). It is macOS and Linux only; Windows needs a registry key
+this does not write. Sessions are reachable only while intercom is loaded, since presence is its.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Inbox poll, delivery, the attach widget, `/pointer` |
+| `store.ts` | Inbox and ack files, the sweep, session-to-project matching |
+| `host.ts` | The native messaging host: framed stdio, peers, `lsof`, points and acks |
+| `install.ts` | Extension id from the pinned key; wrapper and manifests |
+| `prompts.ts` | What the model reads; chip and chat-row labels |
+| `chrome/manifest.json` | MV3, `activeTab` + `scripting` + `nativeMessaging`, the pinned key |
+| `chrome/background.js` | Injects the two scripts, takes the screenshot, owns the native port |
+| `chrome/bar.js` | The bar, in the isolated world and a closed shadow root |
+| `chrome/resolve.js` | Fiber → source, in the page's world |
+
 **`agent/extensions/dynamic-workflow/`** — dynamic workflow: a `workflow` tool that orchestrates fleets of
 subagents from a script, and the triggers that opt the model into using it.
 

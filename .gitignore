@@ -50,6 +50,10 @@ agent/workflow-runs/
 agent/git/
 agent/npm/
 
+# pointer's runtime files: the native-host wrapper `/pointer install` writes,
+# and the inbox/ack files the browser hands a session through. Per machine.
+agent/pointer/
+
 # Extension credential files. These sit at the repo root because that is where
 # the extension looks for them, which puts a plaintext API key one careless
 # `git add` away from a public repo.

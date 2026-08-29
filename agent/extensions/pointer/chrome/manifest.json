@@ -1,0 +1,27 @@
+{
+	"manifest_version": 3,
+	"name": "pi pointer",
+	"version": "0.1.0",
+	"description": "Select elements on the page and point the pi coding agent at their source.",
+	"key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwBcP+VVh8dOdcamXylWGc+zUIpfuErS1f2Tyeqo0Uj1b/6QcG3yIwZ++ChAYg66WmmnjYs7z711T/J2P7d6RbfkmlpEulOmMlyY8aESnLxAXtHIGM/RWfQKydsxQ4GgKlOqkT9UBtR1p8qwLridUj/dzTJdkxD8wGKJvBCDZfBvmuWECdi1TnxrJSFnkeT9xxXZUTMJ+HJYG+YYwQwfz4gxgWyZI+wivmgx2t6Lv2y+JMkeY28yvGKArbGB6Ti4vL6lK1hFdRadvNcRoeNguQRRpoiteCdR2FiEMfPS6b7pAhY71fqzZG18zV/OEY5cM/AhcXX/VdZ366YcjdOsvMQIDAQAB",
+	"minimum_chrome_version": "116",
+	"permissions": [
+		"activeTab",
+		"scripting",
+		"nativeMessaging"
+	],
+	"action": {
+		"default_title": "pi pointer — select elements (Alt+Shift+P)"
+	},
+	"commands": {
+		"_execute_action": {
+			"suggested_key": {
+				"default": "Alt+Shift+P"
+			},
+			"description": "Show or hide the pi pointer bar"
+		}
+	},
+	"background": {
+		"service_worker": "background.js"
+	}
+}
