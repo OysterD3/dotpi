@@ -6,8 +6,8 @@
  * merges that with the run store, so runs from previous sessions are listed too.
  */
 import { isAgentRecord, type JournalRecord } from "./journal.ts";
-import { newProgress, type AgentRow, type RunProgress, type WorkflowRun } from "./runs.ts";
-import { isSettled, unresumedInterrupted, type RunMeta } from "./store.ts";
+import { newProgress, type AgentRow, type PhaseProgress, type RunProgress, type WorkflowRun } from "./runs.ts";
+import { isSettled, unresumedInterrupted, type RunMeta, type RunStatus } from "./store.ts";
 
 /**
  * Rebuild a run's view from its journal, for runs this process is not driving
@@ -22,18 +22,35 @@ export function progressFromJournal(meta: RunMeta, records: unknown[]): RunProgr
 	progress.error = meta.error;
 	progress.resumedFrom = meta.resumedFrom;
 
+	/**
+	 * Every route into this marks the phase entered, because every route into it
+	 * IS the run having got there — a phase() record, or an agent naming the
+	 * phase. The plan record below is the one thing that seeds a phase without
+	 * entering it, which is what makes a rebuilt run show its pending phases.
+	 */
 	const phaseFor = (title: string): AgentRow[] => {
 		let entry = progress.phases.find((phase) => phase.title === title);
 		if (!entry) {
 			entry = { title, agents: [] };
 			progress.phases.push(entry);
 		}
+		entry.entered = true;
 		return entry.agents;
 	};
 
 	for (const record of records as JournalRecord[]) {
 		if (!record || typeof record !== "object") continue;
-		if (record.kind === "phase") {
+		if (record.kind === "plan") {
+			// First, and in declared order: the plan is what the panel lists, and a
+			// phase the run has already reached must keep the position the script
+			// gave it rather than the position it happened to start in.
+			for (const phase of record.phases ?? []) {
+				if (!phase?.title) continue;
+				const existing = progress.phases.find((entry) => entry.title === phase.title);
+				if (existing) existing.detail = phase.detail;
+				else progress.phases.push({ title: phase.title, detail: phase.detail, agents: [] });
+			}
+		} else if (record.kind === "phase") {
 			phaseFor(record.title);
 		} else if (record.kind === "log") {
 			progress.logs.push(record.message);
@@ -139,15 +156,44 @@ export function doneCount(agents: Array<{ status: string }>): number {
 	return agents.filter((agent) => agent.status === "done" || agent.status === "replayed").length;
 }
 
+/**
+ * Where one phase has got to.
+ *
+ * "pending" is a phase the script declared and the run has not reached.
+ * "active" is one it has, with work still outstanding — including a phase with
+ * no agents at all, which is a gate or a shell() step rather than a finished
+ * one. "done" needs the run to have reached it AND nothing of its own left
+ * running; once the run itself has settled, everything it reached is done,
+ * because nothing is coming.
+ */
+export function phaseState(phase: PhaseProgress, runStatus?: RunStatus): "pending" | "active" | "done" {
+	if (!phase.entered) return "pending";
+	if (runStatus !== undefined && isSettled(runStatus)) return "done";
+	if (phase.agents.length === 0) return "active";
+	return phase.agents.every((agent) => agent.status !== "running" && agent.status !== "queued") ? "done" : "active";
+}
+
+/**
+ * The one-line progress digest under the prompt.
+ *
+ * Only phases the run has REACHED get a fraction. A declared phase nothing has
+ * started has no numerator and no denominator to report, and "Route-test 0/0"
+ * on a line this narrow reads as a phase that ran and did nothing — so the rest
+ * of the plan is carried as a count instead, which is short enough to survive
+ * the clip and honest about what it is.
+ */
 export function phaseSummary(progress: RunProgress): string {
 	if (progress.phases.length === 0) return "starting…";
-	return progress.phases
+	const parts = progress.phases
+		.filter((phase) => phase.entered)
 		.map((phase) => {
 			const done = doneCount(phase.agents);
 			const failed = phase.agents.filter((agent) => agent.status === "failed").length;
 			return `${phase.title} ${done}/${phase.agents.length}${failed ? `(${failed}✗)` : ""}`;
-		})
-		.join(" · ");
+		});
+	const pending = progress.phases.filter((phase) => !phase.entered).length;
+	if (pending > 0) parts.push(`+${pending} planned`);
+	return parts.length > 0 ? parts.join(" · ") : "starting…";
 }
 
 export function statusMark(status: RunMeta["status"]): string {

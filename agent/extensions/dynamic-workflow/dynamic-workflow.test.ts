@@ -23,7 +23,7 @@ import { loadSettings } from "./index.ts";
 import { SUBAGENT_PREAMBLE } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
-import { formatElapsed, interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
+import { formatElapsed, interruptedNotice, panelLines, phaseState, phaseSummary, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
 	allAgentsFailed,
 	newProgress,
@@ -873,7 +873,10 @@ console.log("\n--- panel ---");
 
 	const row = (index: number, label: string, status: AgentRow["status"]): AgentRow => ({ index, label, status, startedAt: 0 });
 	const progress = newProgress("wf-1", "review");
-	progress.phases.push({ title: "Find", agents: [row(1, "a", "done"), row(2, "b", "running")] });
+	// `entered` is what phaseRows sets the moment a run reaches a phase; a
+	// fixture that skips it is describing a phase the run never got to, which the
+	// summary now leaves out on purpose (see phaseSummary).
+	progress.phases.push({ title: "Find", entered: true, agents: [row(1, "a", "done"), row(2, "b", "running")] });
 	progress.usage.cost = 0.1234;
 	const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 	const lines = panelLines([run], 65_000)!;
@@ -894,7 +897,7 @@ console.log("\n--- panel ---");
 
 	// A replayed agent counts as done in every summary.
 	const resumed = newProgress("wf-2", "review");
-	resumed.phases.push({ title: "Find", agents: [row(1, "a", "replayed"), row(2, "b", "done")] });
+	resumed.phases.push({ title: "Find", entered: true, agents: [row(1, "a", "replayed"), row(2, "b", "done")] });
 	const resumedRun: WorkflowRun = {
 		progress: resumed,
 		controller: new AbortController(),
@@ -1085,6 +1088,46 @@ console.log("\n--- journal: rebuilding a run's view ---");
 	check("logs are rebuilt", progress.logs, ["done"]);
 	check("totals come from run.json", progress.usage.cost, 0.02);
 	check("a journal-less run still renders", progressFromJournal(meta, []).phases, []);
+	// Every phase in a journal written before plans existed is one the run
+	// reached — there was no other way for it to get into the file.
+	check("an old journal has no pending phases", progress.phases.map((phase) => !!phase.entered), [true, true]);
+
+	// A plan record seeds the phases the run has not reached, in DECLARED order,
+	// and keeps that order even for a phase whose agents landed first.
+	const planned = progressFromJournal(meta, [
+		{ kind: "agent", seq: 1, t: 0, index: 1, key: "k", label: "a", phase: "Synthesize", status: "done", startedAt: 0, endedAt: 4 },
+		{ kind: "plan", seq: 2, t: 0, phases: [{ title: "Draft", detail: "write it" }, { title: "Synthesize" }, { title: "Route-test" }] },
+	]);
+	check("the plan's order wins over arrival order", planned.phases.map((phase) => phase.title), ["Synthesize", "Draft", "Route-test"]);
+	check("a phase with agents is entered", planned.phases[0]!.entered, true);
+	check("a declared phase nothing reached is not", [planned.phases[1]!.entered, planned.phases[2]!.entered], [undefined, undefined]);
+	check("the plan's note reaches the rebuilt phase", planned.phases[1]!.detail, "write it");
+}
+
+console.log("\n--- panel: a phase is pending, active or done ---");
+{
+	const row = (status: AgentRow["status"]): AgentRow => ({ index: 0, label: "a", status, startedAt: 0 });
+	check("declared and unreached is pending", phaseState({ title: "P", agents: [] }), "pending");
+	// Reached with no agents is a gate or a shell() step, not a finished phase.
+	check("reached but empty is active", phaseState({ title: "P", entered: true, agents: [] }), "active");
+	check("a running agent keeps it active", phaseState({ title: "P", entered: true, agents: [row("done"), row("running")] }), "active");
+	// A queued agent has been asked for and has not started; counting it as
+	// settled is what over-reported a phase's progress before isAgentSettled.
+	check("a queued agent keeps it active too", phaseState({ title: "P", entered: true, agents: [row("queued")] }), "active");
+	check("all settled is done", phaseState({ title: "P", entered: true, agents: [row("done"), row("failed")] }), "done");
+	// Once the run itself has settled nothing is coming, so a phase it reached
+	// is done however its agents ended.
+	check("a settled run finishes what it reached", phaseState({ title: "P", entered: true, agents: [row("running")] }, "aborted"), "done");
+	check("but not what it never reached", phaseState({ title: "P", agents: [] }, "done"), "pending");
+
+	const progress = newProgress("wf-p", "planned");
+	progress.phases.push({ title: "Draft", entered: true, agents: [row("done")] }, { title: "Synthesize", agents: [] }, { title: "Route-test", agents: [] });
+	check("the summary counts the plan instead of printing 0/0", phaseSummary(progress), "Draft 1/1 · +2 planned");
+	// A run whose plan is up but which has reached nothing yet reports the plan,
+	// not "starting…": three phases declared is more than the old line could say
+	// at that moment, and the run's own status mark already leads the line.
+	check("a plan alone is still worth reporting", phaseSummary({ ...progress, phases: [{ title: "Draft", agents: [] }] }), "+1 planned");
+	check("no phases at all is the only 'starting…'", phaseSummary({ ...progress, phases: [] }), "starting…");
 }
 
 // ---------------------------------------------------------------- new: context
@@ -3096,11 +3139,14 @@ console.log("\n--- tui: the two-pane run view ---");
 		const progress = newProgress("wf-split", "sweep");
 		progress.phases.push({
 			title: "Find",
+			entered: true,
 			agents: [
 				{ index: 0, label: "runner", status: "running", phase: "Find", startedAt: 0, sessionFile, usage, model: "openai/gpt-5" },
 				{ index: 1, label: "waiter", status: "queued", phase: "Find", startedAt: 0 },
 			],
 		});
+		// Declared but not reached: the phase the panel has to show anyway.
+		progress.phases.push({ title: "Synthesize", detail: "merge the findings", agents: [] });
 		const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 		const registry = new RunRegistry();
 		registry.add(run);
@@ -3117,15 +3163,40 @@ console.log("\n--- tui: the two-pane run view ---");
 		const wideLines = panel.render(120);
 		const wide = wideLines.join("\n");
 		check("no rendered line exceeds the width it was given", wideLines.filter((l) => visibleWidth(l) > 120).length, 0);
-		check("the tree and the detail pane sit side by side", wide.includes("│"), true);
-		check("the running agent's prompt shows the stripped task, not the preamble", wide.includes("find every TODO in src/"), true);
-		check("the preamble boilerplate itself is not shown", wide.includes("You are a subagent"), false);
-		check("activity names a real tool call", /last \d+ of \d+ tool call/.test(wide), true);
+		check("the phase list and the agent list sit side by side", wide.includes("│"), true);
+		// The whole point of the plan: a phase with no agents is on the board.
+		check("the phase column is headed", wide.includes("Phases"), true);
+		check("a declared phase nobody has reached yet is still listed", wide.includes("Synthesize"), true);
+		check("and carries no fraction, because it has none yet", /Synthesize\s+\d+\/\d+/.test(wide), false);
+		check("the reached phase reports its progress", wide.includes("Find") && /Find\s+0\/2/.test(wide), true);
+		check("the right pane heads the selected phase and its agent count", wide.includes("· 2 agents"), true);
+		check("and lists that phase's agents", wide.includes("runner") && wide.includes("waiter"), true);
+		check("the detail pane is one step in, not shown yet", wide.includes("find every TODO in src/"), false);
 
 		check("just under SPLIT_MIN_WIDTH stays single-pane", panel.render(SPLIT_MIN_WIDTH - 1).join("\n").includes("│"), false);
 		check("at SPLIT_MIN_WIDTH it splits", panel.render(SPLIT_MIN_WIDTH).join("\n").includes("│"), true);
 
-		// ↓ selects the queued agent.
+		// ↓ walks the PHASE list while the left column has focus.
+		panel.handleInput("\x1b[B");
+		const onPending = panel.render(120).join("\n");
+		check("↓ moves to the pending phase", onPending.includes("· 0 agents"), true);
+		check("which says it has not started rather than that it is empty", onPending.includes("not started yet"), true);
+		check("and shows the plan's own note for it", onPending.includes("merge the findings"), true);
+		check("a pending phase has nothing to open", (panel.handleInput("\x1b[C"), panel.render(120).join("\n").includes("not started yet")), true);
+		panel.handleInput("\x1b[A");
+
+		// → moves focus into the agent column; → again opens the agent.
+		panel.handleInput("\x1b[C");
+		panel.handleInput("\x1b[C");
+		const detailLines = panel.render(120);
+		const detail = detailLines.join("\n");
+		check("the running agent's prompt shows the stripped task, not the preamble", detail.includes("find every TODO in src/"), true);
+		check("the preamble boilerplate itself is not shown", detail.includes("You are a subagent"), false);
+		check("activity names a real tool call", /last \d+ of \d+ tool call/.test(detail), true);
+		check("the phase column stays on screen at every depth", detail.includes("Phases"), true);
+		check("nothing overflows the width in the detail pane", detailLines.filter((l) => visibleWidth(l) > 120).length, 0);
+
+		// ↓ selects the queued agent, with the detail still open.
 		panel.handleInput("\x1b[B");
 		const queuedLines = panel.render(120);
 		const queued = queuedLines.join("\n");
@@ -3134,10 +3205,13 @@ console.log("\n--- tui: the two-pane run view ---");
 		check("an agent with no session file yet says so, not \"missing\"", queued.includes("prompt pending first turn"), true);
 		check("still nothing overflows the width", queuedLines.filter((l) => visibleWidth(l) > 120).length, 0);
 
-		// Escape from the two-pane view goes straight to the runs list — not
-		// through an intermediate "agent" screen, unlike the narrow fallback.
-		panel.handleInput("\x1b"); // escape
-		check("escape from two-pane goes directly to the runs list", panel.render(120).join("\n").includes("✦ Workflows"), true);
+		// Escape unwinds the two-pane's own levels one at a time: detail, then
+		// the agent column, then out to the runs list.
+		panel.handleInput("\x1b");
+		check("escape leaves the detail for the agent list", panel.render(120).join("\n").includes("· 2 agents"), true);
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+		check("and once more reaches the runs list", panel.render(120).join("\n").includes("✦ Workflows"), true);
 
 		panel.dispose();
 	} finally {
@@ -3224,7 +3298,11 @@ console.log("\n--- tui: shared-session chains pick each agent's OWN prompt by or
 			() => {},
 		);
 		// The only run and it is "running", so the constructor already opened it
-		// (see the single-active-run jump) with the first chained agent selected.
+		// (see the single-active-run jump), on the phase list. → focuses the phase's
+		// agents, → again opens the first of them.
+		panel.render(120);
+		panel.handleInput("\x1b[C");
+		panel.handleInput("\x1b[C");
 		const first = panel.render(120).join("\n");
 		check("the first agent (ordinal 0) shows its OWN task", first.includes("first: inspect the module"), true);
 		check("not the second agent's — the bug this closes showed the chain's FIRST prompt for every agent in it", first.includes("second: apply the fix"), false);
@@ -3269,7 +3347,12 @@ console.log("\n--- tui: a chain past the head-bound scan falls back to the opene
 			theme,
 			() => {},
 		);
-		panel.handleInput("\x1b[B"); // select the second ("later") chained agent — ordinal 1
+		// → into the phase's agents, → again to open one, then ↓ to the second
+		// ("later") chained agent — ordinal 1.
+		panel.render(120);
+		panel.handleInput("\x1b[C");
+		panel.handleInput("\x1b[C");
+		panel.handleInput("\x1b[B");
 		const wide = panel.render(120).join("\n");
 		check("the fallback shows the only task actually found", wide.includes("only the opener is reachable"), true);
 		check("and labels it as the chain opener rather than lying silently", wide.includes("(chain opener)"), true);
@@ -3450,17 +3533,21 @@ console.log("\n--- tui: g and PgUp/PgDn are gated to the view where their effect
 			p.dispose();
 		}
 
-		// Split mode: "run" and "agent" collapse into one screen that already
-		// shows the detail pane (see forward()/back()), but there is no row
-		// budgeted for a log pane there at all (see SPLIT_HINTS) — so PgDn works
-		// and "g" still must not.
+		// Split mode: the right column holds the phase's agent LIST until you step
+		// into one, so PgDn is a no-op there and only works once the detail pane
+		// is actually on screen. There is no row budgeted for a log pane in this
+		// layout at all (see SPLIT_HINTS), so "g" still must not.
 		{
 			const p = new WorkflowsPanel({ agentDir: activeDir, registry: new RunRegistry(), sessionId: SESSION, notify: () => {}, requestRender: () => {}, rows: () => 40 }, theme, () => {});
 			p.render(120); // split
 			p.handleInput("g");
 			check("g does nothing in split mode", priv(p).showLogs, false);
 			p.handleInput("\x1b[6~"); // PageDown
-			check("PgDn DOES move the prompt scroll in split mode's run view", priv(p).promptScroll > 0, true);
+			check("PgDn is a no-op while the agent LIST is showing", priv(p).promptScroll, 0);
+			p.handleInput("\x1b[C"); // -> focus the agent column
+			p.handleInput("\x1b[C"); // -> open the agent
+			p.handleInput("\x1b[6~"); // PageDown
+			check("PgDn DOES move the prompt scroll in split mode's agent detail", priv(p).promptScroll > 0, true);
 			p.dispose();
 		}
 	} finally {

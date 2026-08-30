@@ -37,11 +37,38 @@ export interface AgentRow {
 	options?: AgentOptions;
 }
 
+/**
+ * One phase of a run: the plan and the progress against it, in that order.
+ *
+ * A phase exists here for two different reasons, and telling them apart is the
+ * whole reason `entered` is recorded. Either the script DECLARED it in
+ * `meta.phases` — in which case it is on the board from the first frame, before
+ * a single agent has been asked for — or the run REACHED it, via a phase() call
+ * or an agent naming it. Only the second is progress; the first is intent.
+ *
+ * Without that distinction a declared phase is indistinguishable from a phase
+ * that ran and produced nothing, and both render as "0/0" — which reads as
+ * finished. That was the bug: a three-phase run showed one phase, because a
+ * phase with no agents yet had no way to be on the board at all.
+ */
+export interface PhaseProgress {
+	title: string;
+	/** The one-line note from meta.phases, when the script declared this phase. */
+	detail?: string;
+	/**
+	 * True once the run actually got here. Undefined means declared-but-pending;
+	 * a journal written before plans existed has no pending phases, so every
+	 * phase it rebuilds is entered.
+	 */
+	entered?: boolean;
+	agents: AgentRow[];
+}
+
 export interface RunProgress {
 	runId: string;
 	name: string;
 	status: RunStatus;
-	phases: Array<{ title: string; agents: AgentRow[] }>;
+	phases: PhaseProgress[];
 	logs: string[];
 	agentCount: number;
 	replayedCount: number;

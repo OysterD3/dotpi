@@ -43,6 +43,8 @@ For any other task — even one that would clearly benefit from parallelism — 
 
 Every script must begin with \`export const meta = {...}\` — a PURE object literal (no variables, calls, or interpolation) with required string fields \`name\` and \`description\`, and optionally \`phases: [{ title, detail? }]\` and \`deterministic: false\` (see Determinism below).
 
+\`phases\` is the PLAN, and the panel draws it: every phase listed is on the board from the moment the run starts, dimmed until the run reaches it, so a watcher sees where the work is going and not only where it has got to. So list EVERY phase the script goes through, in the order it will reach them, one entry per phase() call and titles matching exactly — including the last one, which for most fan-outs is the stage that reads what came back (\`Synthesize\`). Declaring one phase for a script with three is not a smaller plan; it is an unstated one, and the panel can only show what the script said.
+
 Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async context — use await and top-level return):
 - agent(prompt, opts?): Promise<any> — spawn a subagent; returns its final text. On failure agent() returns null (filter with .filter(Boolean)). opts:
   - label, phase — how the agent appears in progress output. Neither affects the result, so relabelling never invalidates a resume.
@@ -57,7 +59,7 @@ Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async c
 - shell(command, opts?): Promise<{exitCode, stdout, stderr, truncated, timedOut}> — run a command on the HOST and read its real exit code. See **Gating on facts** below; this is the only value in a script an agent cannot author. opts: {timeoutMs?, env?}. Runs in the enclosing withWorktree() scope when there is one. NOT replayed on resume — a gate has to describe the tree as it is now. Unavailable (throws) when the project is not trusted.
 - withWorktree(name, callback): Promise<any> — run the callback with every agent() inside it writing in its own git worktree. See **Isolating concurrent writers**. Throws when the project is not a trusted git repository.
 - pipeline(items, stage1, stage2, ...): Promise<any[]> — run each item through all stages independently, NO barrier between stages. Every stage callback receives (prevResult, originalItem, index). A stage that throws drops that item to null and skips its remaining stages.
-- phase(title): void — group subsequent agents under this title in progress output.
+- phase(title): void — enter a phase: subsequent agents are grouped under this title, and the phase is marked reached on the board. Titles must match meta.phases exactly; a title not declared there is appended to the plan as it happens.
 - log(message): void — emit a progress line.
 - args: any — the value passed as this tool's \`args\` input, verbatim.
 - budget: {total: null, spent(), remaining()} — compatibility stub; total is always null and remaining() Infinity, so budget-guarded loops written for other harnesses fall through cleanly.

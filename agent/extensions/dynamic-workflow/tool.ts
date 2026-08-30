@@ -344,7 +344,7 @@ export function registerWorkflowTool(pi: ExtensionAPI, options: WorkflowToolOpti
 			// the point: an unusable script must fail the call, not a run.
 			const { script, source } = resolveScript(params, options.agentDir);
 			const { meta } = validateScript(script);
-			const run = startRun(pi, { ...params, script, source }, meta.name, ctx, options, params.wait === true);
+			const run = startRun(pi, { ...params, script, source }, meta.name, meta.phases ?? [], ctx, options, params.wait === true);
 
 			if (params.wait === true) {
 				// Synchronous mode: stream progress into this tool row and hand the
@@ -498,6 +498,8 @@ function startRun(
 	pi: ExtensionAPI,
 	params: { script: string; source: string; args?: unknown; resumeFromRunId?: string },
 	name: string,
+	/** meta.phases: the stages the script says it will go through, in order. */
+	plan: Array<{ title: string; detail?: string }>,
 	ctx: ExtensionContext,
 	options: WorkflowToolOptions,
 	wait: boolean,
@@ -586,12 +588,28 @@ function startRun(
 		progress.logs.push(`resuming ${params.resumeFromRunId}: ${replayIndex.size} completed agent(s) available to replay`);
 	}
 
+	// The plan goes up before anything runs. meta.phases is the script's own
+	// statement of the stages it will go through, so the panel can show all of
+	// them from the first frame instead of discovering them one agent at a time —
+	// a three-phase run used to display one phase until the second started, which
+	// is the difference between watching a plan and guessing at one. Journalled
+	// as a single record so a run rebuilt from disk shows the same board.
+	const declared = plan.filter((phase) => typeof phase?.title === "string" && phase.title.length > 0);
+	if (declared.length > 0) {
+		for (const phase of declared) progress.phases.push({ title: phase.title, detail: phase.detail, agents: [] });
+		journal({ kind: "plan", phases: declared.map((phase) => ({ title: phase.title, detail: phase.detail })) });
+	}
+
+	// Entering a phase is what phase() and an agent naming one both do; the seed
+	// above deliberately does not, so a declared phase reads as pending until the
+	// run reaches it.
 	const phaseRows = (title: string): AgentRow[] => {
 		let entry = progress.phases.find((p) => p.title === title);
 		if (!entry) {
 			entry = { title, agents: [] };
 			progress.phases.push(entry);
 		}
+		entry.entered = true;
 		return entry.agents;
 	};
 
@@ -1284,6 +1302,12 @@ function firstAgentError(progress: RunProgress): string | undefined {
 function phaseText(progress: RunProgress): string {
 	const lines: string[] = [];
 	for (const phase of progress.phases) {
+		// A declared phase the run has not reached has no fraction to give, and
+		// "0/0 done" would claim it finished having done nothing.
+		if (!phase.entered) {
+			lines.push(`${phase.title}: pending`);
+			continue;
+		}
 		const done = phase.agents.filter((a) => a.status === "done" || a.status === "replayed").length;
 		const failed = phase.agents.filter((a) => a.status === "failed").length;
 		lines.push(`${phase.title}: ${done}/${phase.agents.length} done${failed ? `, ${failed} failed` : ""}`);
@@ -1306,11 +1330,11 @@ function renderProgress(progress: RunProgress, theme: Theme, expanded: boolean, 
 		const replayed = phase.agents.filter((a) => a.status === "replayed").length;
 		const failed = phase.agents.filter((a) => a.status === "failed").length;
 		const running = phase.agents.filter((a) => a.status === "running").length;
-		const parts = [`${done + replayed}/${phase.agents.length}`];
+		const parts = [phase.entered ? `${done + replayed}/${phase.agents.length}` : theme.fg("muted", "pending")];
 		if (running) parts.push(theme.fg("warning", `${running} running`));
 		if (replayed) parts.push(theme.fg("muted", `${replayed} replayed`));
 		if (failed) parts.push(theme.fg("error", `${failed} failed`));
-		lines.push(`  ${theme.fg("accent", phase.title)}  ${parts.join("  ")}`);
+		lines.push(`  ${theme.fg(phase.entered ? "accent" : "muted", phase.title)}  ${parts.join("  ")}`);
 		if (expanded) {
 			for (const agent of phase.agents) {
 				const agentMark =

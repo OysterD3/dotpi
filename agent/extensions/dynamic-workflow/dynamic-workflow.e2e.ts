@@ -31,7 +31,8 @@ if (!getAgentDir().startsWith(ROOT)) {
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, AFTER_RUN, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
 const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
-const { createRun, readMeta, readOutcome } = await import("./store.ts");
+const { createRun, readJournalLines, readMeta, readOutcome } = await import("./store.ts");
+const { phaseSummary, progressFromJournal } = await import("./panel.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
 type SpendEvent = { source: string; key?: string; detail?: string; calls?: number; usage: { cost?: number; reasoning?: number } };
@@ -915,6 +916,42 @@ console.log("\n--- workflow tool: wait mode ---");
 	check("log recorded in details", result.details.logs, ["working"]);
 	check("wait mode does not sendMessage", sent.length, 0);
 
+}
+
+console.log("\n--- workflow tool: meta.phases is the board, not just a comment ---");
+{
+	// The measured complaint: a three-phase script showed ONE phase, because a
+	// phase only existed once an agent had joined it. The plan is now seeded at
+	// run start and journalled, so the phases that have not happened yet are on
+	// the board — and stay on it for a run rebuilt from disk.
+	const tool = tools.get("workflow")!;
+	const { ctx } = makeCtx({ model: MODEL });
+	const script = [
+		"export const meta = { name: 'planned', description: 'three declared, one reached', phases: [{ title: 'Draft', detail: 'write it' }, { title: 'Synthesize' }, { title: 'Route-test' }] }",
+		"phase('Draft')",
+		"return 'done'",
+	].join("\n");
+	const result = await tool.execute("t-plan", { script, wait: true }, undefined, undefined, ctx);
+	const phases = result.details.phases as Array<{ title: string; detail?: string; entered?: boolean }>;
+	check("every declared phase is on the board", phases.map((phase) => phase.title), ["Draft", "Synthesize", "Route-test"]);
+	check("the plan's own note rides along", phases[0]?.detail, "write it");
+	check("the phase the run reached is marked entered", phases[0]?.entered, true);
+	check("the ones it never got to are not", [phases[1]?.entered, phases[2]?.entered], [undefined, undefined]);
+
+	// Same board from the journal: a finished run, or one a previous session
+	// left behind, is rebuilt from disk and must not regress to agents-only.
+	const runId = /\(wf-[a-z0-9-]+\)/.exec(result.content[0].text as string)?.[0]?.slice(1, -1) ?? "";
+	const meta = readMeta(AGENT, runId)!;
+	const rebuilt = progressFromJournal(meta, readJournalLines(AGENT, runId));
+	check("the journal rebuilds the same plan, in order", rebuilt.phases.map((phase) => phase.title), ["Draft", "Synthesize", "Route-test"]);
+	check("and remembers which one the run reached", rebuilt.phases.map((phase) => !!phase.entered), [true, false, false]);
+	check("the footer summary counts the rest rather than claiming 0/0", phaseSummary(rebuilt), "Draft 0/0 · +2 planned");
+}
+
+console.log("\n--- workflow tool: error and abort paths ---");
+{
+	const tool = tools.get("workflow")!;
+	const { ctx } = makeCtx({ model: MODEL });
 	const bad = await tool.execute("t2", { script: "return 1" }, undefined, undefined, ctx).then(
 		() => "no-throw",
 		(error: Error) => error.message,

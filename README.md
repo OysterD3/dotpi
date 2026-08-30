@@ -1618,8 +1618,8 @@ time money is spent, so its spend is answered for from `run.json` when a report 
 reaching it should not need a typed command. It takes the editor's
 place at the bottom of the screen — framed by a rule above and below, key hints under the lower one — the same slot pi's own
 selector and an `ask_user` question use, and the statusline stands down for it, so the panel owns
-the prompt and the footer between them. Three levels: this session's runs, then one run's phases
-and agents, then one agent. `↑↓` selects,
+the prompt and the footer between them. Four levels: this session's runs, then one run's phases,
+then that phase's agents, then one agent. `↑↓` selects,
 `→`/`←` moves between levels, `p` pauses or resumes, `c` cancels, `g` toggles the log pane, `x`
 exports the selected agent's transcript to HTML, `e` shows where its stderr was written, and `R`
 puts a resume instruction in the editor for you to send. The trade is ask_user's: while the panel
@@ -1628,6 +1628,31 @@ time) — and Esc-to-interrupt is unavailable until you do, which a one-key gest
 easier to trip into. Pausing is live: in-flight agents finish and new ones park at a gate, so a run can be held
 mid-fleet and let go again. The subcommands remain for scripting:
 `/workflows list|show <id>|pause <id>|resume <id>|cancel [id]`.
+
+**The phase column shows the plan, not only the progress.** On a terminal at least 90 columns wide
+the run view is two panes: the phases down the left, the selected phase's agents down the right.
+
+```
+Phases                    │ Synthesize  · 1 agent
+  ✓ Draft            3/3  │ ❯ ● synthesize   gpt-5.6-sol · 78.2k tok · 34s elapsed
+❯ 2 Synthesize       0/1  │
+  3 Route-test           │
+```
+
+The left column is `meta.phases` — what the script *said* it would do — seeded into the run before
+a single agent starts and journalled with it, so a phase is on the board from the first frame,
+dimmed and with no fraction, until the run reaches it. It used to be the flat agent list with a
+heading per phase, which could only show a phase that already had an agent in it: a three-phase
+script displayed **one phase** until its second phase started. The board showed where the run had
+got to and never where it was going.
+
+A pending phase is deliberately not `0/0`. That is the same string a phase that ran and produced
+nothing prints, and on a status line it reads as finished — so a phase nobody has reached shows its
+number and its title and nothing else, and the footer line carries the rest of the plan as
+`+2 planned` rather than a row of zeroes. The distinction is one field, `entered`, set by the two
+things that actually mean the run got there: a `phase()` call, or an agent naming the phase. A
+journal written before plans existed has no plan record, so every phase it rebuilds is one the run
+reached — which is exactly right.
 
 **Runs are shown by name, not by id.** `wf-0ms5sqq7r-6` is fourteen characters of base36 in a line
 the statusline clips, and there is nothing in the panel you address by id anyway — you select with
@@ -2632,8 +2657,8 @@ rather than at run end, so a crash cannot leave committed work with nothing poin
 
 ## Watching an agent work
 
-Open `/workflows` (or **shift+↓**), pick a run with **→**, pick an agent, and the detail view tails
-that agent's live pi session:
+Open `/workflows` (or **shift+↓**), pick a run with **→**, pick a phase, then an agent, and the
+detail view tails that agent's live pi session:
 
 ```
 status   ● running

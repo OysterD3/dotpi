@@ -56,8 +56,8 @@ import { join } from "node:path";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG, PANEL_OPEN_CHANNEL } from "./config.ts";
-import type { AgentRow, RunProgress, RunRegistry } from "./runs.ts";
-import { formatElapsed, progressFromJournal, sessionRuns, startedLabel, statusMark } from "./panel.ts";
+import type { AgentRow, PhaseProgress, RunProgress, RunRegistry } from "./runs.ts";
+import { formatElapsed, phaseState, progressFromJournal, sessionRuns, startedLabel, statusMark } from "./panel.ts";
 import { statSync } from "node:fs";
 import {
 	agentErrorPath,
@@ -128,12 +128,14 @@ const HINTS: Record<View, string[]> = {
 
 /**
  * The two-pane view's own hints — shown instead of HINTS.run/HINTS.agent once
- * isSplit() is true (see render()). There is no further "open": the detail
- * pane already shows whatever the tree's cursor is on. And no `g` log pane:
- * that is a run-level concept the split layout has no row budgeted for, so it
- * stays narrow-only rather than fighting the detail pane for space.
+ * isSplit() is true (see render()). "→ open" is back: the layout has three
+ * levels of its own now (phases → that phase's agents → one agent's detail), so
+ * there IS a further step in, unlike the version whose right pane was always
+ * the detail. Still no `g` log pane: that is a run-level concept the split
+ * layout has no row budgeted for, so it stays narrow-only rather than fighting
+ * the agent pane for space.
  */
-const SPLIT_HINTS = ["q close", "↑↓ agent", "esc back", "PgUp/PgDn scroll prompt", "p pause/resume", "c cancel", "x export", "e stderr path"];
+const SPLIT_HINTS = ["q close", "↑↓ select", "→ open", "← back", "PgUp/PgDn scroll prompt", "p pause/resume", "c cancel", "x export", "e stderr path"];
 
 /**
  * Below this many total columns there is not enough room left over for a
@@ -336,6 +338,21 @@ export class WorkflowsPanel {
 	/** The selected run's id, so a refresh follows the run and not the row. */
 	private selectedRunId: string | undefined;
 	private agentIndex = 0;
+	/**
+	 * The two-pane view's own cursors: which phase the left column is on, and
+	 * which of THAT phase's agents the right column is on.
+	 *
+	 * Deliberately separate from agentIndex, which indexes the flat list the
+	 * narrow drill-down walks. One cursor cannot mean both "the 4th agent of the
+	 * run" and "the 4th agent of this phase", and a phase with no agents has no
+	 * position in the flat list at all — which is exactly the case the pending
+	 * phases this panel now shows are made of. Each layout owns its own cursor
+	 * and clamps it; nothing is carried across a resize.
+	 */
+	private phaseIndex = 0;
+	private agentInPhase = 0;
+	/** Which of the two panes the arrows drive. Phases until you step right. */
+	private focus: "phases" | "agents" = "phases";
 	private showLogs = false;
 	private status = "";
 	private timer: ReturnType<typeof setInterval> | undefined;
@@ -540,6 +557,23 @@ export class WorkflowsPanel {
 		return progress.phases.flatMap((phase) => phase.agents);
 	}
 
+	/** The run's phases, plan included — the left column of the two-pane view. */
+	private phases(): PhaseProgress[] {
+		return this.currentProgress()?.phases ?? [];
+	}
+
+	/** The phase the left column's cursor is on, clamped to what exists. */
+	private selectedPhase(): PhaseProgress | undefined {
+		const phases = this.phases();
+		if (phases.length === 0) return undefined;
+		return phases[Math.min(this.phaseIndex, phases.length - 1)];
+	}
+
+	/** The agents of the selected phase — the right column's list. */
+	private phaseAgents(): AgentRow[] {
+		return this.selectedPhase()?.agents ?? [];
+	}
+
 	// ------------------------------------------------------------------ input
 
 	handleInput(data: string): void {
@@ -596,7 +630,27 @@ export class WorkflowsPanel {
 			this.runIndex = Math.min(this.metas.length - 1, Math.max(0, this.runIndex + delta));
 			this.selectedRunId = this.metas[this.runIndex]?.runId;
 			this.agentIndex = 0;
+			this.phaseIndex = 0;
+			this.agentInPhase = 0;
+			this.focus = "phases";
 			this.viewed = undefined;
+		} else if (this.isSplit()) {
+			// Two-pane: the arrows drive whichever column has focus. Moving the
+			// phase cursor resets the agent one — the new phase's agents are a
+			// different list, and holding an index across them would land the
+			// caret on an unrelated agent (`x` and `e` act on whatever it is on).
+			if (this.view === "run" && this.focus === "phases") {
+				const phases = this.phases();
+				if (phases.length === 0) return;
+				this.phaseIndex = Math.min(phases.length - 1, Math.max(0, this.phaseIndex + delta));
+				this.agentInPhase = 0;
+				this.promptScroll = 0;
+				return;
+			}
+			const count = this.phaseAgents().length;
+			if (count === 0) return;
+			this.agentInPhase = Math.min(count - 1, Math.max(0, this.agentInPhase + delta));
+			this.promptScroll = 0;
 		} else if (this.view === "run" || this.view === "agent") {
 			// The agent detail moves with the selection rather than scrolling: it
 			// is a bounded handful of fields, so there is nothing in it to scroll,
@@ -614,13 +668,25 @@ export class WorkflowsPanel {
 		if (this.view === "runs" && this.currentMeta()) {
 			this.view = "run";
 			this.agentIndex = 0;
+			this.phaseIndex = 0;
+			this.agentInPhase = 0;
+			this.focus = "phases";
 			this.promptScroll = 0;
 			return;
 		}
-		// Narrow fallback only: the two-pane layout already shows the selected
-		// agent's detail beside the tree, so there is no further "open" — the
-		// separate "agent" view exists only for the single-pane drill-down.
-		if (!this.isSplit() && this.view === "run" && this.agents().length > 0) {
+		if (this.isSplit()) {
+			// phases → that phase's agents → one agent's detail. A pending phase
+			// has nothing to step into, which is the honest answer: there is no
+			// agent there yet.
+			if (this.view === "run" && this.focus === "phases") {
+				if (this.phaseAgents().length > 0) this.focus = "agents";
+				return;
+			}
+			if (this.view === "run" && this.phaseAgents().length > 0) this.view = "agent";
+			return;
+		}
+		// Narrow fallback: one flat agent list, one detail screen.
+		if (this.view === "run" && this.agents().length > 0) {
 			this.view = "agent";
 		}
 	}
@@ -629,14 +695,27 @@ export class WorkflowsPanel {
 	 * One level back within a run; a no-op already at "runs" (h/left has never
 	 * closed the panel — only q, ctrl+c and escape do, see handleInput).
 	 *
-	 * Two-pane collapses "run" and "agent" into one screen (see forward()), so
-	 * either state steps back to the list in a single press — matching "Escape:
-	 * two-pane → runs → close" — while the narrow fallback still steps back one
-	 * level at a time.
+	 * The two-pane view has three levels of its own now — the phase list, one
+	 * phase's agents, one agent's detail — so it unwinds them one press at a
+	 * time, ending at the runs list. It used to collapse to the runs list from
+	 * anywhere, which was right when the layout had only one cursor in it.
 	 */
 	private back(): void {
 		if (this.view === "runs") return;
-		if (this.isSplit() || this.view === "run") {
+		if (this.isSplit()) {
+			if (this.view === "agent") {
+				this.view = "run";
+				this.focus = "agents";
+				return;
+			}
+			if (this.focus === "agents") {
+				this.focus = "phases";
+				return;
+			}
+			this.view = "runs";
+			return;
+		}
+		if (this.view === "run") {
 			this.view = "runs";
 			return;
 		}
@@ -651,7 +730,10 @@ export class WorkflowsPanel {
 		// it, exist only once "agent" is entered. Scrolling before that mutated
 		// promptScroll with nothing on screen to show it moved, so the agent you
 		// opened next started pre-scrolled for no visible reason.
-		const detailVisible = this.isSplit() ? this.view === "run" || this.view === "agent" : this.view === "agent";
+		// "agent" in either layout now: the split view's right column holds the
+		// phase's agent LIST until you step into one, and scrolling a prompt that
+		// is not on screen is the same silent no-op this guard was added for.
+		const detailVisible = this.view === "agent";
 		if (!detailVisible) return;
 		const agent = this.selectedAgent();
 		if (!agent) return;
@@ -702,7 +784,16 @@ export class WorkflowsPanel {
 		});
 	}
 
+	/**
+	 * Whatever `x`, `e` and the detail pane act on — read from the cursor the
+	 * CURRENT layout owns, so the two never disagree about which agent is
+	 * selected (see phaseIndex/agentInPhase).
+	 */
 	private selectedAgent(): AgentRow | undefined {
+		if (this.isSplit()) {
+			const agents = this.phaseAgents();
+			return agents[Math.min(this.agentInPhase, Math.max(0, agents.length - 1))];
+		}
 		return this.agents()[this.agentIndex];
 	}
 
@@ -1255,60 +1346,118 @@ export class WorkflowsPanel {
 		const theme = this.theme;
 		const progress = this.currentProgress();
 		if (!progress) return [theme.fg("muted", "This run has no journal on disk.")];
-		const agents = this.agents();
-		if (agents.length === 0) return [theme.fg("muted", "No agents recorded yet.")];
+		if (progress.phases.length === 0) return [theme.fg("muted", "No phases recorded yet.")];
 
 		const inner = Math.max(1, width - 2);
 		const leftWidth = Math.min(LEFT_PANE_MAX, Math.max(LEFT_PANE_MIN, Math.round(inner * LEFT_PANE_FRACTION)));
 		const rightWidth = Math.max(10, inner - leftWidth - GUTTER_WIDTH);
 
-		const left = this.treeLines(agents, progress, leftWidth, budget);
-		const right = this.detailLines(this.selectedAgent(), rightWidth, budget);
+		const left = this.phaseLines(progress, leftWidth, budget);
+		// The right column is whichever of the two things the cursor is inside:
+		// the selected phase's agents, or — one step further in — the selected
+		// agent's own detail. The phase list on the left never goes away, so the
+		// plan stays on screen at every depth.
+		const right =
+			this.view === "agent"
+				? this.detailLines(this.selectedAgent(), rightWidth, budget)
+				: this.phaseAgentLines(rightWidth, budget);
 		return zipColumns(left, right, leftWidth, theme.fg("border", GUTTER));
 	}
 
 	/**
-	 * The two-pane's LEFT column: phase headings, then one row per agent —
-	 * status icon and label, cursor-highlighted. Every row goes through
-	 * truncateToWidth(…, pad: true) so it is exactly `width` wide, which is
-	 * what makes the zip in twoPaneBody exact rather than clipped after the
-	 * fact.
+	 * The two-pane's LEFT column: the run's PHASES — the plan and the progress
+	 * against it, one row each, in the order the script declared them.
+	 *
+	 * It used to be the flat agent list with a heading per phase, which could only
+	 * ever show phases that already had an agent in them: a three-phase script
+	 * displayed one phase until its second phase started, so the board showed
+	 * where the run was and never what it was going to do. Now a declared phase is
+	 * on it from the first frame, dimmed, with no fraction — because it has none
+	 * yet, not because it finished empty.
+	 *
+	 * Every row goes through truncateToWidth(…, pad: true) so it is exactly
+	 * `width` wide, which is what makes the zip in twoPaneBody exact rather than
+	 * clipped after the fact.
 	 */
-	private treeLines(agents: AgentRow[], progress: RunProgress, width: number, budget: number): string[] {
+	private phaseLines(progress: RunProgress, width: number, budget: number): string[] {
 		const theme = this.theme;
+		const phases = progress.phases;
 		const errorRows = progress.error ? 1 : 0;
-		const fixed = Math.max(1, budget - errorRows);
-
-		// Same converging-window approach as runBody, at the tree's own width —
-		// see the comment there for why this cannot be pre-paid in one pass.
-		let window = this.windowFor(this.agentIndex, agents.length, Math.max(3, fixed - 1));
-		for (let pass = 0; pass < 4; pass++) {
-			const headings = this.phasesIn(agents, window.start, window.end);
-			const next = this.windowFor(this.agentIndex, agents.length, Math.max(3, fixed - headings));
-			if (next.start === window.start && next.end === window.end) break;
-			window = next;
-		}
+		// One heading row, then the window, then the error. The heading is paid for
+		// up front because unlike the agent tree this list has no per-row chrome to
+		// settle by iteration — a phase is exactly one line.
+		const fixed = Math.max(1, budget - errorRows - 1);
+		const window = this.windowFor(this.phaseIndex, phases.length, Math.max(3, fixed));
 
 		const lines: string[] = [];
 		const push = (text: string) => lines.push(truncateToWidth(text, width, "", true));
+		push(theme.fg("muted", "Phases"));
 		if (window.before > 0) push(theme.fg("muted", `↑ ${window.before} more`));
-		let lastPhase: string | undefined;
 		for (let i = window.start; i < window.end; i++) {
-			const agent = agents[i]!;
-			const phase = agent.phase ?? "Agents";
-			if (phase !== lastPhase) {
-				lastPhase = phase;
-				const inPhase = agents.filter((other) => (other.phase ?? "Agents") === phase);
-				const settled = inPhase.filter((other) => isAgentSettled(other.status)).length;
-				push(theme.fg("accent", `${phase}  ${settled}/${inPhase.length}`));
-			}
-			const selected = i === this.agentIndex;
+			const phase = phases[i]!;
+			const state = phaseState(phase, progress.status);
+			const selected = i === this.phaseIndex;
+			// The number is the position in the plan, and it is replaced by a tick
+			// once the phase is done — so the column reads as a checklist rather than
+			// as a list that happens to be numbered.
+			const mark = state === "done" ? theme.fg("success", "✓") : theme.fg(state === "active" ? "warning" : "muted", String(i + 1));
+			const settled = phase.agents.filter((agent) => isAgentSettled(agent.status)).length;
+			// A pending phase has no count to give. Printing "0/0" there is the exact
+			// misreading this whole column exists to fix.
+			const count = state === "pending" ? "" : `  ${theme.fg("muted", `${settled}/${phase.agents.length}`)}`;
+			const tone = selected ? "accent" : state === "pending" ? "muted" : "text";
+			const caret = selected && this.focus === "phases" ? theme.fg("accent", "❯") : " ";
 			if (selected) this.caretLine = lines.length;
-			const caret = selected ? theme.fg("accent", "▸") : " ";
-			push(`${caret} ${agentStatusIcon(agent.status, theme)} ${theme.fg(selected ? "text" : "muted", agent.label)}`);
+			push(`${caret} ${mark} ${theme.fg(tone, phase.title)}${count}`);
 		}
 		if (window.after > 0) push(theme.fg("muted", `↓ ${window.after} more`));
 		if (progress.error) push(theme.fg("error", progress.error));
+		return lines;
+	}
+
+	/**
+	 * The two-pane's RIGHT column while a phase is selected: that phase's agents,
+	 * under a heading naming the phase and how many it holds.
+	 *
+	 * Not padded, because it is always the last column in the zip (see the header
+	 * comment) — and truncated rather than wrapped, because these are rows in a
+	 * list, where a wrapped label would read as a second agent.
+	 */
+	private phaseAgentLines(width: number, budget: number): string[] {
+		const theme = this.theme;
+		const phase = this.selectedPhase();
+		if (!phase) return [theme.fg("muted", "No phase selected.")];
+		const agents = phase.agents;
+		const lines: string[] = [];
+		const push = (text: string) => lines.push(truncateToWidth(text, width, ""));
+		const count = agents.length === 1 ? "1 agent" : `${agents.length} agents`;
+		push(`${theme.fg("accent", theme.bold(phase.title))}  ${theme.fg("muted", `· ${count}`)}`);
+		if (phase.detail) push(theme.fg("muted", phase.detail));
+		if (agents.length === 0) {
+			// Two different empties, and conflating them is what made a planned phase
+			// look like a failed one: not started yet, versus reached and did its work
+			// without agents (a shell() gate).
+			push(theme.fg("muted", phase.entered ? "no agents in this phase" : "not started yet"));
+			return lines;
+		}
+		const window = this.windowFor(this.agentInPhase, agents.length, Math.max(3, budget - lines.length));
+		if (window.before > 0) push(theme.fg("muted", `  ↑ ${window.before} more`));
+		const now = Date.now();
+		for (let i = window.start; i < window.end; i++) {
+			const agent = agents[i]!;
+			const selected = i === this.agentInPhase;
+			const elapsed = agent.endedAt ? formatElapsed(agent.endedAt - agent.startedAt) : `${formatElapsed(now - agent.startedAt)} elapsed`;
+			const detail = [agent.model?.split("/").at(-1), agent.usage ? `${formatTokens(agent.usage.totalTokens)} tok` : undefined, elapsed]
+				.filter(Boolean)
+				.join(" · ");
+			// The caret only appears once the agent column has focus; before that the
+			// left column owns it, and two carets would say two things are selected.
+			const focused = selected && this.focus === "agents";
+			if (focused) this.caretLine = lines.length;
+			const caret = focused ? theme.fg("accent", "❯") : " ";
+			push(`${caret} ${agentStatusIcon(agent.status, theme)} ${theme.fg(focused ? "text" : "muted", agent.label)}  ${theme.fg("muted", detail)}`);
+		}
+		if (window.after > 0) push(theme.fg("muted", `  ↓ ${window.after} more`));
 		return lines;
 	}
 
