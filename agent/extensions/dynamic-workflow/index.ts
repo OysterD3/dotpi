@@ -29,11 +29,17 @@
  *        (detector and reminder text verbatim from the binary; the keyword
  *        changes nothing else — no effort bump, prompt not rewritten);
  *      - `/dynamic-workflow` (alias `/ultracode`) turns the mode on for the
- *        session: thinking is raised to
- *        xhigh ("dynamic workflow: xhigh + workflow orchestration, this session only")
+ *        session: thinking is raised as close to xhigh as the model goes
+ *        ("dynamic workflow: xhigh + workflow orchestration, this session only")
  *        and standing reminders follow a fixed cadence — full on entry, "still
  *        on" every 10th user turn, exit notice once when it goes off. Changing
- *        the thinking level away from xhigh exits the mode.
+ *        the thinking level away from the applied one exits the mode;
+ *      - `/thinking` offers the same thing as an effort LEVEL: the model's own
+ *        levels plus "ultracode", which resolves to xhigh AND the standing
+ *        opt-in. pi's built-in picker cannot carry it — ThinkingLevel is a
+ *        closed union in pi-agent-core and the picker is built inside
+ *        interactive mode — so this is the same choice under a name the
+ *        extension owns, and picking a plain level from it leaves the mode.
  *
  * Reminders are injected as hidden custom messages (display: false) via
  * before_agent_start — pi's own plan-mode pattern — so they reach the model as
@@ -72,6 +78,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, LEGACY_SETTINGS_KEY, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
@@ -161,6 +168,65 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 	} catch {
 		return { ...DEFAULT_SETTINGS };
 	}
+}
+
+/**
+ * The name ultracode answers to in the effort list.
+ *
+ * Not a ThinkingLevel — that union is closed in pi-agent-core and this is not a
+ * seventh member of it. It is a row in `/thinking`'s list that resolves to
+ * xhigh plus the standing opt-in; see the command's own comment.
+ */
+export const ULTRACODE_LEVEL = "ultracode";
+
+/**
+ * pi's own wording for each level, so `/thinking` reads like the built-in
+ * picker rather than like a second, differently-described list. Copied rather
+ * than imported: the descriptions live in an interactive-mode component pi does
+ * not export as data, and one line of drift here is cosmetic.
+ */
+const LEVEL_DESCRIPTIONS: Record<string, string> = {
+	off: "No reasoning",
+	minimal: "Very brief reasoning (~1k tokens)",
+	low: "Light reasoning (~2k tokens)",
+	medium: "Moderate reasoning (~8k tokens)",
+	high: "Deep reasoning (~16k tokens)",
+	xhigh: "Extra-high reasoning (~32k tokens)",
+	max: "Maximum reasoning",
+};
+
+/** Every level pi knows, for a context that cannot name a model to narrow it. */
+const ALL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export interface ThinkingChoice {
+	value: string;
+	description: string;
+}
+
+/**
+ * The rows `/thinking` offers: what the current model supports, then ultracode.
+ *
+ * Ultracode goes LAST rather than in effort order, because it is not a point on
+ * the same scale — picking it changes what the session does, not only how hard
+ * it thinks — and a row that costs money should not sit where a neighbouring
+ * keystroke lands on it.
+ */
+export function thinkingChoices(ctx: { model?: unknown } | undefined): ThinkingChoice[] {
+	let levels = ALL_LEVELS;
+	try {
+		const model = ctx?.model;
+		// A model whose capabilities pi cannot report leaves the full list, which
+		// is what pi itself falls back to; setThinkingLevel clamps either way, so
+		// the worst case is offering a level that resolves to a nearby one.
+		if (model) levels = getSupportedThinkingLevels(model as Parameters<typeof getSupportedThinkingLevels>[0]);
+	} catch {
+		/* an unusable model description is not a reason to have no list */
+	}
+	if (levels.length === 0) levels = ALL_LEVELS;
+	return [
+		...levels.map((level) => ({ value: level, description: LEVEL_DESCRIPTIONS[level] ?? "" })),
+		{ value: ULTRACODE_LEVEL, description: "xhigh + workflow orchestration, this session only" },
+	];
 }
 
 export interface RestoredBranchState {
@@ -554,9 +620,17 @@ export default function (pi: ExtensionAPI) {
 
 	// Leaving the applied level exits the mode. Our own setThinkingLevel call is
 	// guarded out. The user's explicit choice stands: no restore.
-	pi.on("thinking_level_select", (event, ctx) => {
-		if (settingLevel || !mode.isOn()) return;
-		if (event.level === appliedLevel) return;
+	/**
+	 * Leave the mode because the user chose a different level, keeping THAT
+	 * level. Not disable(), which restores the pre-ultracode one: the choice
+	 * that got us here is the choice, and undoing it would be the extension
+	 * arguing with it.
+	 *
+	 * Shared by the event above and `/thinking` below, which reaches the same
+	 * state by a different road — one place, so the two cannot drift into
+	 * leaving the mode in different states.
+	 */
+	const leaveForLevel = (ctx: ExtensionContext, level: string) => {
 		mode.disable();
 		// An explicit off, same as /ultracode off below: stale keyword history
 		// must not resurrect the opt-in the user just left.
@@ -565,7 +639,13 @@ export default function (pi: ExtensionAPI) {
 		appliedLevel = undefined;
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "off" });
 		setBadge(ctx);
-		if (ctx.hasUI) ctx.ui.notify(`Dynamic workflow off — thinking level changed to ${event.level}`, "info");
+		if (ctx.hasUI) ctx.ui.notify(`Dynamic workflow off — thinking level changed to ${level}`, "info");
+	};
+
+	pi.on("thinking_level_select", (event, ctx) => {
+		if (settingLevel || !mode.isOn()) return;
+		if (event.level === appliedLevel) return;
+		leaveForLevel(ctx, event.level);
 	});
 
 	const setLevel = (level: string) => {
@@ -577,6 +657,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	/** What the session's effort level is called right now, mode included. */
+	const currentLevelLabel = () =>
+		mode.isOn() ? `dynamic workflow (${appliedLevel ?? pi.getThinkingLevel()} + workflow orchestration)` : pi.getThinkingLevel();
+
 	const enable = (ctx: ExtensionContext) => {
 		if (mode.isOn()) {
 			ctx.ui.notify("Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)", "info");
@@ -587,24 +671,24 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Dynamic workflow needs a model selected.", "error");
 			return;
 		}
-		// pi clamps the requested level to the model's supported set (upward
-		// first, so models without xhigh but with max get max). Anything below
-		// xhigh is a refusal: "Ultracode runs at xhigh effort, which <model>
-		// doesn't support — switch to an xhigh-capable model."
+		// Ask for xhigh and take what the model gives. pi clamps the request to
+		// the model's supported set (upward first, so models without xhigh but
+		// with max get max), and this used to REFUSE anything that landed below
+		// xhigh — which made the level unreachable on models that simply do not
+		// go that high, for the half of the mode that has nothing to do with
+		// effort. Ultracode is xhigh AND standing orchestration; a model that
+		// cannot do the first can still do the second, so the level is applied
+		// as high as it goes and the notice says where it landed.
 		const before = pi.getThinkingLevel();
 		setLevel("xhigh");
 		const applied = pi.getThinkingLevel();
-		if (applied !== "xhigh" && applied !== "max") {
-			setLevel(before);
-			ctx.ui.notify(`Dynamic workflow runs at xhigh thinking, which ${model.id} doesn't support — switch to an xhigh-capable model.`, "error");
-			return;
-		}
 		previousLevel = before;
 		appliedLevel = applied;
 		mode.enable();
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "on", previousLevel });
 		setBadge(ctx);
-		ctx.ui.notify(`Set effort level to dynamic workflow (this session only): ${applied} + workflow orchestration`, "info");
+		const capped = applied !== "xhigh" && applied !== "max" ? ` — ${model.id} tops out below xhigh` : "";
+		ctx.ui.notify(`Set effort level to dynamic workflow (this session only): ${applied} + workflow orchestration${capped}`, "info");
 	};
 
 	const disable = (ctx: ExtensionContext) => {
@@ -796,6 +880,69 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			ctx.ui.notify(`Invalid argument: ${argument}. Valid options are: on, off, status`, "error");
+		},
+	});
+
+	// `/thinking` — the effort selector with "ultracode" in it.
+	//
+	// pi's own selector cannot carry it. ThinkingLevel is a closed union in
+	// pi-agent-core and the built-in picker is constructed inside interactive
+	// mode from the MODEL's supported levels, so an extension has no way to add
+	// a row to it, and the cycle key walks the same closed list. What an
+	// extension can do is offer the same choice under a name of its own — which
+	// is also why the command is `/thinking` and not a fourth alias for
+	// `/dynamic-workflow`: the thing being chosen is an effort level, and it
+	// belongs in the list of effort levels rather than behind a verb.
+	//
+	// "ultracode" is not a seventh level pretending to be one of the six. It
+	// resolves to xhigh (or as close as the model goes) and turns the mode on,
+	// so what it adds to the list is a level that also standing-opts the session
+	// into orchestration — see enable() for what that costs and reminders.ts for
+	// what it asks of the model.
+	pi.registerCommand("thinking", {
+		description: "Set the effort level — the model's own levels, plus ultracode (xhigh + workflow orchestration)",
+		getArgumentCompletions: (prefix: string) =>
+			thinkingChoices(uiCtx)
+				.filter((choice) => choice.value.startsWith(prefix.trim().toLowerCase()))
+				.map((choice) => ({ value: choice.value, label: `${choice.value} — ${choice.description}` })),
+		handler: async (args: string, ctx) => {
+			uiCtx = ctx;
+			const choices = thinkingChoices(ctx);
+			const argument = args.trim().toLowerCase();
+			// Typed straight through (`/thinking ultracode`), or picked from the
+			// list when nothing was typed. A headless context has no list to show,
+			// so there the argument is the only route in.
+			let picked = argument;
+			if (!picked) {
+				if (!ctx.hasUI) {
+					ctx.ui.notify(`Current effort level: ${currentLevelLabel()}. Options: ${choices.map((choice) => choice.value).join(", ")}`, "info");
+					return;
+				}
+				const labels = choices.map((choice) => `${choice.value} — ${choice.description}`);
+				const chosen = await ctx.ui.select("Effort level", labels);
+				if (chosen === undefined) return;
+				picked = choices[labels.indexOf(chosen)]?.value ?? "";
+			}
+			if (!picked) return;
+			if (picked === ULTRACODE_LEVEL) return void enable(ctx);
+			if (!choices.some((choice) => choice.value === picked)) {
+				ctx.ui.notify(`Unknown effort level: ${picked}. Options: ${choices.map((choice) => choice.value).join(", ")}`, "error");
+				return;
+			}
+			// Written through the guard and the mode left EXPLICITLY, rather than
+			// letting pi's own thinking_level_select event come back round and do
+			// it. Both would work in pi, but only one of them is a fact this code
+			// controls: the round trip depends on the host emitting an event for a
+			// write the extension itself made, which is a contract nothing here
+			// asserts and nothing here would notice breaking.
+			const wasApplied = mode.isOn() ? appliedLevel : undefined;
+			setLevel(picked);
+			const applied = pi.getThinkingLevel();
+			// Staying on the level ultracode itself applied is not leaving it —
+			// same rule the event handler uses, so picking "xhigh" while the mode
+			// is on keeps the mode rather than silently dropping it.
+			if (wasApplied !== undefined && applied !== wasApplied) leaveForLevel(ctx, applied);
+			ctx.ui.notify(applied === picked ? `Effort level: ${applied}` : `Effort level: ${applied} (${picked} is not available on this model)`, "info");
 		},
 	});
 }

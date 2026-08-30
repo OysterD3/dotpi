@@ -1363,6 +1363,7 @@ subagents from a script, and the triggers that opt the model into using it.
 ```
 ultracode find every place this event is mishandled     # keyword: opts in this one turn
 /ultracode                                              # session mode: on until turned off
+/thinking ultracode                                     # the same, chosen as an effort level
 ```
 
 The **keyword** is matched on whole words, so a whole-word "ultracode" triggers it but
@@ -1373,9 +1374,48 @@ level is untouched — the keyword and the session mode are independent.
 The **session mode** (`/ultracode`, or `/ultracode on|off|status`) raises thinking to xhigh for the
 session, and standing reminders follow a fixed cadence — the full "Ultracode is on" reminder on
 entry, a sparse nudge every 10th user turn, and one exit notice when it goes off. Changing the
-thinking level away from xhigh exits the mode. The mode survives session resume: toggles are
-replayed from the branch, and delivered reminders are counted so a resumed session continues the
+thinking level away from the applied one exits the mode. The mode survives session resume: toggles
+are replayed from the branch, and delivered reminders are counted so a resumed session continues the
 cadence instead of re-announcing.
+
+**Ultracode is also an effort level.** `/thinking` lists what the current model supports and then
+`ultracode — xhigh + workflow orchestration, this session only`, and picking it is `/ultracode on`:
+xhigh (or as close as the model goes) plus the standing opt-in. Picking any plain level from the
+same list leaves the mode again, keeping the level you just chose rather than restoring the
+pre-ultracode one — the choice that got you there is the choice.
+
+```
+Effort level
+  off       No reasoning
+  low       Light reasoning (~2k tokens)
+  medium    Moderate reasoning (~8k tokens)
+  high      Deep reasoning (~16k tokens)
+  xhigh     Extra-high reasoning (~32k tokens)
+  ultracode xhigh + workflow orchestration, this session only
+```
+
+It is a separate command rather than a row in pi's own picker because it cannot be one: pi's
+`ThinkingLevel` is a closed union in `pi-agent-core`, and the selector is constructed inside
+interactive mode from the model's supported levels, so an extension has no way to add a row to it or
+to the cycle key. `/thinking` is the same choice under a name this extension owns. `ultracode` sits
+last in the list rather than in effort order, because it is not a point on the same scale — picking
+it changes what the session *does*, not only how hard it thinks — and a row that starts spending
+money should not sit where a neighbouring keystroke lands on it.
+
+**A model that cannot reach xhigh gets the mode anyway.** This used to refuse — *"Ultracode runs at
+xhigh effort, which <model> doesn't support"* — and revert the level, which made the mode
+unreachable on those models for the half of it that has nothing to do with effort. Ultracode is
+xhigh **and** standing orchestration; the second half works at any level. So the request is clamped
+by pi as usual and the notice says where it landed (`high + workflow orchestration — plain-model
+tops out below xhigh`) instead of pretending nothing happened.
+
+**The mode now asks for a verdict before it asks for a fleet.** The entry reminder gained one line:
+judge whether the task's shape needs a fleet and *say which*, in one line, before acting. That is
+there because the mode is reachable as an effort level now — something you set once and stop
+thinking about — where before it was a verb typed at the task in front of you. A standing opt-in
+with no moment of judgement in it decays into "the mode is on, so run a fleet"; making the model
+state the verdict before it acts is what puts that moment back. The keyword reminder has always
+asked for it on the inline side ("say so in one line"); this asks for it both ways.
 
 **What the mode means was rewritten after measuring it.** It used to say *"optimize for the most
 exhaustive, correct answer"*, *"use the Workflow tool on every substantive task"* and *"token cost
@@ -1815,7 +1855,7 @@ the model to always await.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Triggers, `/ultracode`, `/workflows`, the `shift+↓` gesture, panel wiring, resume restore |
+| `index.ts` | Triggers, `/ultracode`, `/thinking`, `/workflows`, the `shift+↓` gesture, panel wiring, resume restore |
 | `keyword.ts` | The keyword detector (pure) |
 | `reminders.ts` | The reminder texts |
 | `mode.ts` | The session-mode reminder cadence (pure) |

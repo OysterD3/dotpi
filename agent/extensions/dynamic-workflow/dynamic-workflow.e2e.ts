@@ -108,6 +108,8 @@ function makeCtx(
 		authedModels?: any[];
 		idle?: boolean;
 		dead?: () => boolean;
+		/** Index the fake ui.select answers with; undefined cancels. */
+		pick?: number;
 		/** Make ui.custom reject, to check the panel hands the footer back anyway. */
 		customRejects?: boolean;
 		/** Resolve the panel with a PanelResult, as `R` (resume) does. */
@@ -120,6 +122,7 @@ function makeCtx(
 	const statuses: Array<{ key: string; text: string | undefined }> = [];
 	const widgets: Array<{ key: string; lines: string[] | undefined }> = [];
 	const customs: Array<{ options: any }> = [];
+	const selections: Array<{ title: string; options: string[] }> = [];
 	const editorText: string[] = [];
 	// pi's context getters call assertActive() and THROW once the session they
 	// belong to is replaced; `dead` reproduces that.
@@ -164,6 +167,12 @@ function makeCtx(
 		},
 		ui: {
 			notify: (message: string, type = "info") => notices.push({ message, type }),
+			// Records what was offered and answers with whatever the test told it
+			// to pick; undefined is a cancel, which every caller must honour.
+			select: async (title: string, choices: string[]) => {
+				selections.push({ title, options: choices });
+				return options.pick === undefined ? undefined : choices[options.pick];
+			},
 			setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
 			setWidget: (key: string, lines: string[] | undefined) => widgets.push({ key, lines }),
 			setEditorText: (text: string) => editorText.push(text),
@@ -188,7 +197,7 @@ function makeCtx(
 			},
 		},
 	};
-	return { ctx, notices, statuses, widgets, customs, editorText };
+	return { ctx, notices, statuses, widgets, customs, selections, editorText };
 }
 
 /** What pi puts back in the prompt on the way out of an overlay:false component. */
@@ -345,6 +354,7 @@ check("no promise of context budgeting", description.includes("Context is budget
 check("and the absence is stated", description.includes("Nothing here is truncated"), true);
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
+check("/thinking registered", commands.has("thinking"), true);
 check("shift+down registered", shortcuts.has("shift+down"), true);
 // /hotkeys prints this string; an empty one would list the key with no meaning.
 check("the gesture describes itself", (shortcuts.get("shift+down")?.description?.length ?? 0) > 0, true);
@@ -484,16 +494,28 @@ writeSettings({});
 
 console.log("\n--- /ultracode guards ---");
 {
-	// pi clamps xhigh below the bar on this model: refuse and revert.
+	// pi clamps xhigh below the bar on this model: take what it gives and say so.
+	// This used to refuse and revert, which made the mode unreachable on a model
+	// that cannot think that hard — for the half of it that is not about effort
+	// at all. Ultracode is xhigh AND standing orchestration; the second half
+	// works at any level.
 	clampLevel = (level) => (level === "xhigh" ? "high" : level);
 	thinkingLevel = "medium";
 	thinkingLog.length = 0;
 	const { ctx, notices } = makeCtx({ model: NO_REASONING });
 	events.get("session_start")!({}, ctx);
 	await commands.get("ultracode")!.handler("on", ctx);
-	check("clamped-below-xhigh model refused", notices.at(-1)?.message.includes("doesn't support"), true);
-	check("level reverted", thinkingLevel, "medium");
-	check("mode not entered", await turn("hello"), undefined);
+	check(
+		"a model that cannot reach xhigh gets the mode anyway, capped honestly",
+		notices.at(-1)?.message,
+		`Set effort level to dynamic workflow (this session only): high + workflow orchestration — ${NO_REASONING.id} tops out below xhigh`,
+	);
+	check("the level is the model's best, not the request", thinkingLevel, "high");
+	check("and the mode IS entered", (await turn("hello"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	// Off restores what was there before, from the capped level as from any other.
+	await commands.get("ultracode")!.handler("off", ctx);
+	check("off restores the pre-ultracode level", thinkingLevel, "medium");
+	await turn("drain the exit notice");
 	clampLevel = (level) => level;
 }
 {
@@ -532,6 +554,55 @@ console.log("\n--- /ultracode guards ---");
 	events.get("session_start")!({}, ctx);
 	await commands.get("ultracode")!.handler("sideways", ctx);
 	check("invalid argument message", notices.at(-1)?.message, "Invalid argument: sideways. Valid options are: on, off, status");
+}
+
+console.log("\n--- /thinking: the effort list, with ultracode in it ---");
+{
+	// pi's own selector is built from a closed union inside interactive mode, so
+	// the level cannot be added there; this is the same choice under a name the
+	// extension owns. What matters is that ultracode is ONE OF THE LEVELS rather
+	// than a separate verb, and that picking a plain level leaves the mode.
+	const { ctx, notices, selections } = makeCtx({ model: MODEL, pick: 0 });
+	events.get("session_start")!({}, ctx);
+	thinkingLevel = "medium";
+
+	await commands.get("thinking")!.handler("", ctx);
+	const offered = selections.at(-1)!;
+	check("the list is titled as an effort choice", offered.title, "Effort level");
+	check("it offers what the model supports", offered.options.some((option) => option.startsWith("high — ")), true);
+	check("and nothing it does not", offered.options.some((option) => option.startsWith("xhigh — ")), false);
+	check("ultracode is a row in that list", offered.options.at(-1), "ultracode — xhigh + workflow orchestration, this session only");
+	check("picking row 0 applies it", thinkingLevel, "off");
+
+	// Cancelling changes nothing.
+	{
+		const cancelled = makeCtx({ model: MODEL });
+		await commands.get("thinking")!.handler("", cancelled.ctx);
+		check("cancelling the list is not a choice", thinkingLevel, "off");
+	}
+
+	// Typed straight through, no list.
+	await commands.get("thinking")!.handler("high", ctx);
+	check("a typed level is applied", thinkingLevel, "high");
+	await commands.get("thinking")!.handler("nonsense", ctx);
+	check("an unknown level is refused, with the options", notices.at(-1)?.message.startsWith("Unknown effort level: nonsense. Options: "), true);
+	check("and changes nothing", thinkingLevel, "high");
+
+	// ultracode by name is the mode, not just a level.
+	thinkingLog.length = 0;
+	await commands.get("thinking")!.handler("ultracode", ctx);
+	check("ultracode asks for xhigh", thinkingLog, ["xhigh"]);
+	check("mode entered from the level list", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+
+	// And picking a plain level from the SAME list leaves it again — the exit
+	// the thinking_level_select handler already owns, reached the new way.
+	await commands.get("thinking")!.handler("medium", ctx);
+	check("a plain level takes the session back out", (await turn("and again"))?.message?.content, `<system-reminder>\n${EXIT}\n</system-reminder>`);
+
+	// A model with no reasoning at all still has a list, and ultracode is on it.
+	const plain = makeCtx({ model: NO_REASONING, pick: 0 });
+	await commands.get("thinking")!.handler("", plain.ctx);
+	check("a non-reasoning model offers off and ultracode", plain.selections.at(-1)?.options.map((option) => option.split(" — ")[0]), ["off", "ultracode"]);
 }
 
 console.log("\n--- thinking change exits the mode ---");

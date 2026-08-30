@@ -43,9 +43,17 @@ export const AFTER_RUN =
  * came out one agent wide, or split along backend/frontend/cli, which is an
  * org chart rather than this task's seams. It states the same counting rule
  * the description does, so the two cannot drift into different criteria.
+ *
+ * The one-line verdict is the newest part, and it is there because the mode is
+ * now reachable as an effort LEVEL — something you set once and forget you set
+ * — where before it was a verb you typed at the task in front of you. A
+ * standing opt-in with no moment of judgement in it decays into "the mode is
+ * on, so run a fleet". Making the model say which way it went, before it goes,
+ * is what puts that moment back; the keyword reminder has always asked for it
+ * on the inline side ("say so in one line"), and this asks for it both ways.
  */
 export const ENTER_FULL =
-	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
+	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. Judge that before you act, and say the verdict in ONE line: name the task's seams and why they need a fleet, or say why the task has none and work inline. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
 
 /**
  * The sparse reminder repeats the two rules that actually change behaviour
