@@ -38,10 +38,9 @@ export interface DietStep {
 	/** Present only on the calls where a round ran. */
 	entry?: DietEntry;
 	/**
-	 * Present on the one round per turn where roundsThisTurn first reaches
-	 * `escalateAfterRounds`. index.ts turns this into the hidden follow-up and
-	 * the ctx.ui.notify warning; this module only decides *when*, once, per
-	 * turn — see escalatedThisTurn below.
+	 * Present on the one round per turn where the EVICTION count first reaches
+	 * `escalateAfterRounds`. index.ts arms the hidden reminder from this; this
+	 * module only decides *when*, once, per turn — see escalatedThisTurn below.
 	 */
 	escalation?: { roundsThisTurn: number; tokensThisTurn: number };
 }
@@ -53,6 +52,21 @@ export interface Diet {
 	readonly pinnedSize: number;
 	/** Diet rounds that have fired since the last turnBoundary(). */
 	readonly roundsThisTurn: number;
+	/**
+	 * Of those, the ones that actually evicted a result.
+	 *
+	 * Separate because the escalation counts these and not the rest. With
+	 * `dropOldReasoning` on, a round fires on EVERY call once the context is
+	 * over the high-water mark: each call appends one assistant message, which
+	 * pushes exactly one more out of the `keepRecentReasoning` window, so
+	 * collectReasoningDrops always has one new key to give. Counting those,
+	 * the threshold was reached three calls after crossing the mark — every
+	 * long turn, whatever the model was doing — and the reminder then told a
+	 * model that had re-read nothing that it was "reading faster than the
+	 * window holds". The sweep ticking is the diet's own bookkeeping; only an
+	 * eviction is evidence of the behaviour the reminder is about.
+	 */
+	readonly evictionRoundsThisTurn: number;
 	/** Diet rounds that have fired for the life of this session. */
 	readonly roundsThisSession: number;
 	/** Forget everything, for when the message list underneath is replaced wholesale. */
@@ -92,6 +106,7 @@ export function createDiet(settings: DietSettings): Diet {
 	const pinned = new Map<string, true>();
 
 	let roundsThisTurn = 0;
+	let evictionRoundsThisTurn = 0;
 	let roundsThisSession = 0;
 	let tokensThisTurn = 0;
 	// Latches the escalation so a turn that keeps firing rounds past the
@@ -114,6 +129,9 @@ export function createDiet(settings: DietSettings): Diet {
 		get roundsThisTurn() {
 			return roundsThisTurn;
 		},
+		get evictionRoundsThisTurn() {
+			return evictionRoundsThisTurn;
+		},
 		get roundsThisSession() {
 			return roundsThisSession;
 		},
@@ -123,6 +141,7 @@ export function createDiet(settings: DietSettings): Diet {
 			reasoningDropped.clear();
 			pinned.clear();
 			roundsThisTurn = 0;
+			evictionRoundsThisTurn = 0;
 			roundsThisSession = 0;
 			tokensThisTurn = 0;
 			escalatedThisTurn = false;
@@ -142,6 +161,7 @@ export function createDiet(settings: DietSettings): Diet {
 
 		turnBoundary() {
 			roundsThisTurn = 0;
+			evictionRoundsThisTurn = 0;
 			tokensThisTurn = 0;
 			escalatedThisTurn = false;
 		},
@@ -211,14 +231,17 @@ export function createDiet(settings: DietSettings): Diet {
 				};
 
 				// A round just fired: count it against both budgets before deciding
-				// whether this turn has earned the escalation reminder.
+				// whether this turn has earned the escalation reminder. Only a
+				// round that EVICTED something counts toward that decision — see
+				// evictionRoundsThisTurn for why a reasoning-only sweep must not.
 				roundsThisTurn++;
 				roundsThisSession++;
+				if (plan) evictionRoundsThisTurn++;
 				tokensThisTurn += Math.max(0, fromTokens - toTokens);
 
-				if (settings.escalateAfterRounds > 0 && roundsThisTurn >= settings.escalateAfterRounds && !escalatedThisTurn) {
+				if (settings.escalateAfterRounds > 0 && evictionRoundsThisTurn >= settings.escalateAfterRounds && !escalatedThisTurn) {
 					escalatedThisTurn = true;
-					escalation = { roundsThisTurn, tokensThisTurn };
+					escalation = { roundsThisTurn: evictionRoundsThisTurn, tokensThisTurn };
 				}
 			}
 

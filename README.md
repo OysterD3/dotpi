@@ -2358,6 +2358,41 @@ restart. Rounds written before the fields existed cannot be rebuilt; they make t
 the billed anchor once and measure the raw history instead, which is what the replay of both sessions
 now does: a round fires on the resumed call and the request leaves trimmed.
 
+**The escalation reminder was answered instead of acted on.** Past `escalateAfterRounds` rounds in
+one turn the model is told once, directly, to change strategy — and unexplained `Understood.` replies
+started appearing in transcripts. Two separate defects, and they compounded.
+
+*It fired far too often.* Any round counted, and with `dropOldReasoning` on a round fires on **every
+single call** once the context is over the mark: each call appends one assistant message, which pushes
+exactly one more out of the `keepRecentReasoning` window, so the reasoning sweep always has one new key
+to hand back. The threshold was therefore reached three calls after crossing the mark, on every long
+turn, and told a model that had re-read nothing that it was "reading faster than the window holds".
+Only rounds that actually **evict a result** count now; a reasoning-only sweep is still a round in the
+transcript, but it is the diet's own bookkeeping ticking, not evidence of the behaviour the reminder is
+about.
+
+*And it was sent from the wrong place.* The reminder went out from inside the `context` hook, which is
+inside a model call. A steering message enqueued during a turn's **last** call is not consumed by that
+call: `agent-loop.js` drains the steer queue after every turn and re-enters on
+`while (hasMoreToolCalls || pendingMessages.length > 0)`, so a turn that was finishing ran one extra
+assistant call carrying nothing but the reminder — which reaches the model as a plain **user** message,
+since custom messages convert to `role: "user"`. A user message carrying only instructions gets
+answered. `Understood.` And because the reminder is `display: false`, the user saw an assistant message
+replying to nothing.
+
+It is now **armed** in the `context` hook and **delivered from the next `tool_call`** — the only moment
+that proves the turn is still going and guarantees another model call for the steer to land before. A
+turn that ends first sends nothing: it stopped, which is what the reminder was asking for. The
+`ctx.ui.notify` moved with it, so "Told the model to change strategy" is only printed when the model
+was actually told, and the reminder itself now ends with *"this is a notice, not a request: do not
+reply to it"* — belt and braces for the one case the gate cannot cover, a tool batch that terminates
+the turn after delivery.
+
+Sibling extensions share the `ctx.isIdle() ? triggerTurn : deliverAs` idiom and so share the shape of
+this hazard — `ask-user`'s nudge, `background-shell`'s exit message, `dynamic-workflow`'s edit-streak
+nudge, `test-streak`. None of them is fixed here; the difference is that this one fires from a hook
+that runs on *every* model call, so it is the one that lands on a turn's last call by default.
+
 Replaying `019fcad1` through it, charging each round's cache break in full:
 
 | | real | with the diet |
@@ -2377,10 +2412,11 @@ empty.
 | `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
 | `session.ts` | The per-session eviction sets — stickiness and hysteresis (pure) |
 | `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
-| `index.ts` | The `context` hook, the `recall` tool's registration, the resets, and the restore that rebuilds the set from the branch |
+| `index.ts` | The `context` hook, the escalation's arm-and-deliver gate, the `recall` tool's registration, the resets, and the restore that rebuilds the set from the branch |
 | `render.ts` | The one-line transcript entry |
 | `recall.ts` | The `recall` tool's lookup — the stored body behind a stub's id (pure) |
-| `context-diet.test.ts` | 162 checks, both invariants included. Imports pi for types only, so it runs from a bare checkout |
+| `context-diet.test.ts` | Both invariants included. Imports pi for types only, so it runs from a bare checkout |
+| `context-diet.e2e.ts` | The wiring the unit suite cannot see: **when** the escalation is delivered. Imports `index.ts`, so it needs pi's runtime |
 
 **`agent/extensions/test-streak/`** — says something when the suite is being re-run instead of read.
 

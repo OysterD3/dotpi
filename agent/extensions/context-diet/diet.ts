@@ -400,7 +400,13 @@ export function escalationReminder(roundsThisTurn: number, tokensThisTurn: numbe
 		`Context has been trimmed ${roundsThisTurn} times this turn (~${formatTokens(tokensThisTurn)} tokens dropped). ` +
 		"You are reading faster than the window holds. Change strategy: delegate self-contained subtasks (if the " +
 		"Workflow tool is available), or finish and verify the current item before opening new files. " +
-		"Recalling or re-reading dropped results will re-trigger trimming.";
+		"Recalling or re-reading dropped results will re-trigger trimming. " +
+		// The last line is not decoration. This arrives as a user-role message,
+		// and a user-role message that only carries instructions is answered:
+		// the model said "Understood." and stopped, which the user saw as a
+		// reply to nothing, since the reminder itself is display: false. The
+		// delivery gate in index.ts makes that rare; this makes it harmless.
+		"This is a notice, not a request: do not reply to it, and do not stop for it — carry on with the work.";
 	return `<system-reminder>\n${body}\n</system-reminder>`;
 }
 

@@ -308,9 +308,17 @@ console.log("\n--- escalation wording ---");
 		"<system-reminder>\n" +
 			"Context has been trimmed 3 times this turn (~221k tokens dropped). You are reading faster than the window holds. " +
 			"Change strategy: delegate self-contained subtasks (if the Workflow tool is available), or finish and verify the " +
-			"current item before opening new files. Recalling or re-reading dropped results will re-trigger trimming.\n" +
+			"current item before opening new files. Recalling or re-reading dropped results will re-trigger trimming. " +
+			"This is a notice, not a request: do not reply to it, and do not stop for it — carry on with the work.\n" +
 			"</system-reminder>",
 	);
+	// The last sentence is load-bearing, not politeness. This text arrives as a
+	// user-role message, and a user-role message carrying only instructions gets
+	// answered — "Understood." — which the user then sees as a reply to nothing,
+	// because the reminder is display: false. index.ts's tool_call gate makes
+	// that rare; this sentence is what makes it harmless when it happens anyway
+	// (a tool batch that terminates the turn, say).
+	check("tells the model not to answer it", reminder.includes("do not reply to it"), true);
 	// No singular/plural branch, unlike dietLine — the spec's wording is a fixed
 	// template and escalateAfterRounds defaults to 3, so N is never 1 in practice.
 	check("count is substituted verbatim, no plural handling", escalationReminder(1, 500).includes("trimmed 1 times this turn"), true);
@@ -477,6 +485,60 @@ console.log("\n--- round counters and escalation ---");
 	// is told once, not on every round after — see escalatedThisTurn in
 	// session.ts for why re-telling it every round would just be more noise.
 	check("no repeat escalation later in the same turn", rounds.slice(3).every((r) => r.escalation === undefined), true);
+}
+
+console.log("\n--- a reasoning-only sweep is a round, but not an escalation ---");
+{
+	// The frequency bug. With dropOldReasoning on, a round fires on EVERY call
+	// once the context is over the mark: each call appends one assistant message,
+	// which pushes exactly one more out of the keepRecentReasoning window, so
+	// collectReasoningDrops always has one new key to hand back. Counting those
+	// toward the escalation reached the threshold three calls after crossing the
+	// mark — on every long turn — and told a model that had re-read nothing that
+	// it was reading faster than the window holds.
+	//
+	// Nothing here is evictable: minResultBytes is above every body, so plan is
+	// always null and the ONLY thing each round does is strip reasoning.
+	const settings = { ...DEFAULT_SETTINGS, dropOldReasoning: true, keepRecentReasoning: 2, minResultBytes: 10_000_000, escalateAfterRounds: 3 };
+	const diet = createDiet(settings);
+
+	const steps = [];
+	for (let calls = 6; calls <= 13; calls++) {
+		// A conversation that grows by one assistant message per call, which is
+		// what an ordinary tool-calling turn does.
+		steps.push(diet.step({ messages: conversation(calls, 100, { thinking: 4000 }), contextWindow: 272_000, reportedTokens: 260_000 }));
+	}
+
+	check("every call still counts as a round", diet.roundsThisTurn, steps.length);
+	// The first call sweeps everything already outside the window; every call
+	// after it finds exactly one new key — the message the previous call added,
+	// now aged out. That "exactly one, every time" is the whole mechanism.
+	check("the first call sweeps the backlog", steps[0]?.entry?.reasoningDropped, 4);
+	check("and every call after it finds exactly the one that just aged out", steps.slice(1).every((step) => step.entry?.reasoningDropped === 1), true);
+	check("and evicts nothing, because there is nothing evictable", steps.every((step) => step.entry?.dropped === 0), true);
+	check("so no round counts toward the escalation", diet.evictionRoundsThisTurn, 0);
+	check("and the model is never told to change strategy", steps.every((step) => step.escalation === undefined), true);
+}
+
+console.log("\n--- the escalation counts evictions, and reports that count ---");
+{
+	// The other side of the same rule: real evictions still escalate, and the
+	// number the reminder quotes is the eviction count, not the round count —
+	// "trimmed 3 times" has to mean three trims.
+	const settings = { ...SETTINGS, dropOldReasoning: true, keepRecentReasoning: 2, escalateAfterRounds: 3 };
+	const diet = createDiet(settings);
+	const messages = conversation(100, 40_000, { thinking: 4000 });
+
+	const escalations = [];
+	for (let i = 0; i < 4; i++) {
+		escalations.push(diet.step({ messages, contextWindow: 272_000, reportedTokens: 260_000 }).escalation);
+	}
+	check("evictions are counted", diet.evictionRoundsThisTurn, 4);
+	check("and still escalate on the third", escalations.map((escalation) => (escalation ? escalation.roundsThisTurn : undefined)), [undefined, undefined, 3, undefined]);
+
+	// A turn boundary clears both counters and the latch.
+	diet.turnBoundary();
+	check("the turn boundary resets the eviction count too", diet.evictionRoundsThisTurn, 0);
 }
 {
 	// Running out of candidates stops producing rounds, but does not touch the

@@ -69,10 +69,33 @@
  *     about to fill up again, and the turn eventually hit the provider's own
  *     "input exceeds the context window" error — the failure `highWaterRatio`
  *     exists to pre-empt, except it cannot once the model keeps re-opening
- *     what a round just dropped. Past `escalateAfterRounds` rounds in one
- *     turn, the model is told directly, once, and an attended user gets the
- *     same news as a ctx.ui.notify warning rather than a muted transcript
+ *     what a round just dropped. Past `escalateAfterRounds` EVICTION rounds in
+ *     one turn, the model is told directly, once, and an attended user gets
+ *     the same news as a ctx.ui.notify warning rather than a muted transcript
  *     line.
+ *
+ *     Both halves of that sentence were wrong once, and together they put
+ *     unexplained "Understood." replies in the transcript.
+ *
+ *     It counted every round, and with `dropOldReasoning` on a round fires on
+ *     every single call once the context is over the mark — each call appends
+ *     one assistant message, which pushes exactly one more out of the
+ *     `keepRecentReasoning` window, so the sweep always has one new key. The
+ *     threshold was therefore reached three calls after crossing the mark, on
+ *     every long turn, and told a model that had re-read nothing that it was
+ *     reading too fast. Only rounds that actually evict now count (see
+ *     evictionRoundsThisTurn in session.ts).
+ *
+ *     And it was SENT from the `context` hook, which is inside a model call.
+ *     A steering message enqueued during a turn's last call is not consumed by
+ *     that call: agent-loop.js drains the steer queue after every turn and
+ *     re-enters on `while (hasMoreToolCalls || pendingMessages.length > 0)`,
+ *     so a turn that was finishing ran one extra assistant call carrying
+ *     nothing but this reminder — which arrives as a plain user message, since
+ *     custom messages convert to role "user". The model answered it, and
+ *     because the reminder is display: false the user saw a reply to nothing.
+ *     It is now armed in the hook and delivered from the next `tool_call`,
+ *     which is the only moment that proves the turn is still going.
  *   - Pinning. Other extensions can protect a specific result from every
  *     eviction rule — including the keepImages sweep, which only spares the
  *     newest few screenshots — by emitting `pi.events.emit("context-diet:pin",
@@ -161,6 +184,29 @@ export default function (pi: ExtensionAPI) {
 	// to catch a single turn running long.
 	let turnActive = false;
 
+	/**
+	 * The escalation, decided but not yet sent.
+	 *
+	 * It used to be sent from inside the `context` hook, and that is what put
+	 * bare "Understood." replies in the transcript. A steering message enqueued
+	 * during a turn's LAST model call is not consumed by that call: the loop
+	 * drains the steer queue after every turn and re-enters on
+	 * `while (hasMoreToolCalls || pendingMessages.length > 0)` — so a turn that
+	 * was finishing ran one EXTRA assistant call whose only new input was this
+	 * reminder, which reaches the model as a plain user message (custom
+	 * messages convert to role "user"). The model answered it, and because the
+	 * reminder is display: false the user saw an assistant message replying to
+	 * nothing.
+	 *
+	 * So it is armed here and sent from the next tool_call instead. A tool call
+	 * proves the turn is continuing and guarantees another model call after it,
+	 * which is where a steer belongs and the only place this reminder was ever
+	 * meant to land — the turn it exists to interrupt is by definition one that
+	 * keeps calling tools. A turn that ends first sends nothing: it stopped,
+	 * which is the outcome the reminder was asking for.
+	 */
+	let armed: { roundsThisTurn: number; tokensThisTurn: number } | undefined;
+
 	pi.registerEntryRenderer<DietEntry>(ENTRY_TYPE, (entry, _options, theme) => (entry.data ? renderDiet(entry.data, theme) : undefined));
 
 	// Cleared whenever the message list underneath has been replaced wholesale:
@@ -172,6 +218,7 @@ export default function (pi: ExtensionAPI) {
 	const reset = () => {
 		diet.reset();
 		turnActive = false;
+		armed = undefined;
 	};
 	// ...and rebuilt from the new list once it is in place. The set is
 	// memory-only, and session_start fires on every process start, resume and
@@ -196,10 +243,37 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", () => {
 		if (turnActive) return;
 		turnActive = true;
+		// Disarmed with the counters it was derived from: "trimmed 3 times this
+		// turn" is a claim about the turn that has just ended, and delivering it
+		// into the next one would be false as well as unexplained.
+		armed = undefined;
 		diet.turnBoundary();
 	});
 	pi.on("agent_settled", () => {
 		turnActive = false;
+		armed = undefined;
+	});
+
+	// The delivery gate. Reached only while the turn is still calling tools, so
+	// the steer lands before the next model call rather than forcing one.
+	pi.on("tool_call", (_event, ctx) => {
+		if (!armed) return;
+		const { roundsThisTurn, tokensThisTurn } = armed;
+		armed = undefined;
+		// "steer", not "followUp": followUp only drains once the model stops
+		// calling tools on its own (agent-loop.js's runLoop checks that queue
+		// only when hasMoreToolCalls is false), which is exactly the behaviour
+		// this reminder exists to interrupt — a turn that never stops calling
+		// tools would never see it. No triggerTurn branch either: a tool call is
+		// mid-turn by construction, so the idle case cannot arise here.
+		pi.sendMessage(
+			{ customType: ESCALATION_MESSAGE, content: escalationReminder(roundsThisTurn, tokensThisTurn), display: false },
+			{ deliverAs: "steer" },
+		);
+		// Notified here rather than where the round fired, so the line the user
+		// reads ("Told the model to change strategy") is only ever printed when
+		// the model was actually told.
+		ctx.ui.notify(escalationNotice(roundsThisTurn, tokensThisTurn), "warning");
 	});
 
 	// Producer side lives wherever another extension calls pi.events.emit on
@@ -218,26 +292,8 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (step.entry) pi.appendEntry<DietEntry>(ENTRY_TYPE, step.entry);
 
-		if (step.escalation) {
-			// deliverAs "steer", not "followUp": followUp only drains once the
-			// model stops calling tools on its own (agent-loop.js's runLoop checks
-			// the followUp queue only when hasMoreToolCalls is false), which is
-			// exactly the behaviour this reminder exists to interrupt — a turn
-			// that never stops calling tools would never see it. "steer" is
-			// polled every round, right after the current round's tool results
-			// and before the next LLM call, which is the earliest the model can
-			// act on it and lines up with where the round that triggered this
-			// just landed.
-			pi.sendMessage(
-				{
-					customType: ESCALATION_MESSAGE,
-					content: escalationReminder(step.escalation.roundsThisTurn, step.escalation.tokensThisTurn),
-					display: false,
-				},
-				ctx.isIdle() ? { triggerTurn: true } : { deliverAs: "steer" },
-			);
-			ctx.ui.notify(escalationNotice(step.escalation.roundsThisTurn, step.escalation.tokensThisTurn), "warning");
-		}
+		// Armed, not sent — see `armed` above for what sending from in here did.
+		if (step.escalation) armed = step.escalation;
 
 		return step.messages ? { messages: step.messages } : undefined;
 	});
