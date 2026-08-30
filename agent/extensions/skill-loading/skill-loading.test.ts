@@ -38,7 +38,7 @@ const { defaultSettings } = await import("./config.ts");
 const { findSkillsSection, renderSection, unescapeXml } = await import("./parse.ts");
 const { modeFor } = await import("./select.ts");
 const { stripFrontmatter, loadBodies, renderBodies } = await import("./body.ts");
-const { read, write, storePath } = await import("./store.ts");
+const { read, write, settingsPath } = await import("./store.ts");
 const { apply, buildRows } = await import("./index.ts");
 
 let failures = 0;
@@ -237,47 +237,71 @@ eq("a skill absent from the block still gets a row", withHiddenSkill.length, 5);
 eq("costing nothing", withHiddenSkill.find((r) => r.name === "never-listed")?.chars, 0);
 
 // ---------------------------------------------------------------------------
-console.log("store — the machine-local preferences file");
+console.log("store — the skillOverride block in settings.json");
 
-const STORE = join(ROOT, "config", "pi", "skill-loading.json");
+const SETTINGS = join(ROOT, "store-agent", "settings.json");
+mkdirSync(dirname(SETTINGS), { recursive: true });
+const STORE = dirname(SETTINGS);
+const settingsFile = () => JSON.parse(readFileSync(SETTINGS, "utf8"));
 
-eq("respects XDG_CONFIG_HOME", storePath({ XDG_CONFIG_HOME: "/x/cfg" } as never), "/x/cfg/pi/skill-loading.json");
-check("falls back to ~/.config", storePath({} as never).endsWith("/.config/pi/skill-loading.json"));
-// The whole point of the relocation: not inside this repo, so `git clean`, a
-// re-clone, or `git add -A` can neither discard nor publish it.
-check("and never lands inside the agent dir", !storePath({} as never).startsWith(AGENT));
+eq("the block lives beside settings.json", settingsPath("/a/agent"), "/a/agent/settings.json");
 
-eq("a missing store reads as defaults", read(STORE).default, "name");
-eq("and is not enabled-off by being missing", read(STORE).enabled, true);
+// Everything else in the file is the reason the writer must merge rather than
+// serialise: these keys belong to pi and to other extensions, and a save that
+// dropped them would take the whole configuration with it.
+const FOREIGN = {
+	theme: "one-dark-pro",
+	permissions: { defaultMode: "auto", allow: ["Bash(git status *)"] },
+	packages: ["npm:pi-web-access"],
+	contextDiet: { dropOldReasoning: false },
+};
+writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
 
-write(settingsWith({ skills: { pptx: "command", dataviz: "preload" } }), STORE);
+eq("no block at all reads as defaults", read(STORE).default, "name");
+eq("and is not enabled-off by being absent", read(STORE).enabled, true);
+
+check("a toggle saves", write(settingsWith({ skills: { pptx: "command", dataviz: "preload" } }), STORE).ok);
 eq("modes round-trip", read(STORE).skills.pptx, "command");
 eq("...both of them", read(STORE).skills.dataviz, "preload");
-eq("defaults are not restated in the file", JSON.parse(readFileSync(STORE, "utf8")).maxChars, undefined);
-eq("but the version is", JSON.parse(readFileSync(STORE, "utf8")).version, 1);
+// The invariant the old machine-local file never had to have.
+eq("every foreign key survives the write", JSON.stringify({ ...settingsFile(), skillOverride: undefined }), JSON.stringify({ ...FOREIGN, skillOverride: undefined }));
+eq("under the key the user asked for", typeof settingsFile().skillOverride, "object");
+eq("defaults are not restated in the file", settingsFile().skillOverride.maxChars, undefined);
 
 write(settingsWith({ default: "command", maxChars: 500 }), STORE);
 eq("a non-default default is written", read(STORE).default, "command");
 eq("and a non-default budget", read(STORE).maxChars, 500);
+eq("the permissions block is still there three writes later", settingsFile().permissions.allow[0], "Bash(git status *)");
 
 // Dropped, not defaulted: someone who wrote "hidden" believed they turned it
 // off, and silently giving them `name` is the one outcome they did not ask for.
-writeFileSync(STORE, JSON.stringify({ version: 1, modes: { pptx: "hidden", dataviz: "command" } }));
+writeFileSync(SETTINGS, JSON.stringify({ skillOverride: { skills: { pptx: "hidden", dataviz: "command" } } }));
 eq("an unknown mode is dropped", read(STORE).skills.pptx, undefined);
 eq("its neighbours still load", read(STORE).skills.dataviz, "command");
 
-writeFileSync(STORE, JSON.stringify({ version: 1, default: "nonsense", maxChars: -5 }));
+writeFileSync(SETTINGS, JSON.stringify({ skillOverride: { default: "nonsense", maxChars: -5 } }));
 eq("an unknown default falls back", read(STORE).default, "name");
 eq("a negative budget falls back", read(STORE).maxChars, defaultSettings().maxChars);
 
-writeFileSync(STORE, "{ not json");
-eq("an unparseable store does not hide every skill", read(STORE).default, "name");
-eq("nor disable the extension", read(STORE).enabled, true);
+// A block of the wrong shape is not a block. Reading `skills` off an array
+// would give undefined and quietly un-hide everything.
+writeFileSync(SETTINGS, JSON.stringify({ skillOverride: ["pptx"] }));
+eq("a non-object block reads as defaults", read(STORE).default, "name");
 
-// Written through a rename, so a crash mid-save cannot leave truncated JSON
-// that would read as "no preferences" and silently un-hide everything.
+writeFileSync(SETTINGS, "{ not json");
+eq("an unparseable file does not hide every skill", read(STORE).default, "name");
+eq("nor disable the extension", read(STORE).enabled, true);
+// And is not overwritten. This file holds everything; a writer that treated a
+// typo as "no preferences" and started fresh would delete the lot.
+const refused = write(settingsWith({ skills: { a: "command" } }), STORE);
+check("a save into an unparseable settings.json is refused", !refused.ok);
+check("with a reason the picker can show", !refused.ok && refused.error.includes("cannot read"));
+eq("and the file is left exactly as it was", readFileSync(SETTINGS, "utf8"), "{ not json");
+
+// Written through a rename, so a crash mid-save cannot leave truncated JSON.
+writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
 write(settingsWith({ skills: { a: "command" } }), STORE);
-eq("no temp file is left behind", readdirSync(dirname(STORE)).filter((f) => f.includes(".tmp")).length, 0);
+eq("no temp file is left behind", readdirSync(STORE).filter((f) => f.includes(".tmp")).length, 0);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
 if (failures > 0) process.exitCode = 1;

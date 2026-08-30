@@ -114,5 +114,13 @@
     "minResultBytes": 512,
     "dropOldReasoning": false,
     "keepRecentReasoning": 10
+  },
+  "skillOverride": {
+    "default": "name",
+    "skills": {
+      "pptx": "command",
+      "chrome-devtools-mcp:*": "command",
+      "dataviz": "preload"
+    }
   }
 }

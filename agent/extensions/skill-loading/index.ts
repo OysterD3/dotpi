@@ -23,19 +23,24 @@
  * you already know when you want it.
  *
  *   config.ts   the modes, and what each one costs
- *   store.ts    the machine-local preferences file, and why it is not in settings
+ *   store.ts    the `skillOverride` block in settings.json, and how it is written
  *   parse.ts    finding and rewriting pi's `<available_skills>` block (pure)
  *   select.ts   name and glob patterns to a mode (pure)
  *   body.ts     reading preloaded bodies within a budget
  *
- * ## Configured by picker, not by hand
+ * ## Configured by picker, or by hand
  *
  * `/skills` opens a list of every skill with what it is currently doing to your
  * context; pick one, pick a mode, and it is saved and in force for the next
- * request. Nothing to look up, nothing to spell correctly, and no settings file
- * to edit — which matters because the natural home for this, `agent/settings.json`,
- * is tracked in git and would publish one person's
- * preferences to everyone who clones this config. See store.ts.
+ * request. Nothing to look up and nothing to spell correctly.
+ *
+ * What it saves into is the `skillOverride` block in `agent/settings.json`, so
+ * the same choices can be written by hand, read by opening the one file that
+ * describes this agent, and reproduced on a new machine from a clone. That is a
+ * reversal — these modes used to be kept in a machine-local file specifically so
+ * a toggle would not be a diff in a tracked file — and store.ts records the
+ * argument on both sides. The picker saves after every toggle, which is why the
+ * write it does has to merge rather than replace; store.ts again.
  *
  * The picker's skill list comes from `ctx.getSystemPromptOptions().skills` — pi's
  * own loaded list, before any extension touched it. That is what lets the picker
@@ -44,12 +49,12 @@
  * ones would be unreachable, which is the bug that makes a toggle one-way.
  */
 
-import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadBodies, renderBodies } from "./body.ts";
-import { MODE_HELP, MODES, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { MODE_HELP, MODES, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
 import { findSkillsSection, renderSection, stripDescription } from "./parse.ts";
 import { decide, modeFor } from "./select.ts";
-import { read, storePath, write } from "./store.ts";
+import { read, settingsPath, write } from "./store.ts";
 
 export type Applied = {
 	prompt: string;
@@ -139,7 +144,29 @@ function rowLabel(row: Row): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	let settings = read();
+	const agentDir = getAgentDir();
+	let settings = read(agentDir);
+
+	/** Where the picker tells you your choices went. */
+	const where = `${settingsPath(agentDir)} ("${SETTINGS_KEY}")`;
+
+	/**
+	 * Save, and say so when it fails.
+	 *
+	 * The store refuses to write over a settings.json it cannot parse, and a
+	 * toggle that silently did nothing would be worse than one that errors: the
+	 * picker would keep showing the new mode while the next request kept using
+	 * the old one.
+	 */
+	const save = (next: SkillLoadingSettings, ctx: ExtensionCommandContext): boolean => {
+		const result = write(next, agentDir);
+		if (!result.ok) {
+			ctx.ui.notify(`Could not save: ${result.error}`, "error");
+			return false;
+		}
+		settings = next;
+		return true;
+	};
 
 	/** The skills the last rewrite saw, for the summary `/skills` prints. */
 	let last: Applied | undefined;
@@ -158,8 +185,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", () => {
 		// Re-read rather than trust the in-memory copy: another pi window may have
-		// changed the store since this one started, and the file is the truth.
-		settings = read();
+		// changed the file since this one started, and the file is the truth.
+		settings = read(agentDir);
 		last = undefined;
 		unedited = undefined;
 	});
@@ -177,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("skills", {
 		description: "Choose what each skill costs your context (/skills)",
 		handler: async (_args, ctx) => {
-			settings = read();
+			settings = read(agentDir);
 
 			if (!ctx.hasUI) {
 				ctx.ui.notify(summary(ctx), "info");
@@ -210,7 +237,7 @@ export default function (pi: ExtensionAPI) {
 					...MODES.map((mode) => `  ${mode.padEnd(9)} ${MODE_HELP[mode]}`),
 					"",
 					footer,
-					`Saved in ${storePath()}`,
+					`Saved in ${where}`,
 				].join("\n"),
 				[...labels, RESET, DONE],
 			);
@@ -218,9 +245,9 @@ export default function (pi: ExtensionAPI) {
 			if (picked === undefined || picked === DONE) return;
 
 			if (picked === RESET) {
-				settings = { ...settings, skills: {} };
-				write(settings);
-				ctx.ui.notify(`Every skill is back to ${settings.default}. Takes effect on the next request.`, "info");
+				if (save({ ...settings, skills: {} }, ctx)) {
+					ctx.ui.notify(`Every skill is back to ${settings.default}. Takes effect on the next request.`, "info");
+				}
 				continue;
 			}
 
@@ -239,9 +266,9 @@ export default function (pi: ExtensionAPI) {
 			// An exact entry, always — even when it matches what a glob already said.
 			// Writing it down is what makes the next glob edit not silently move this
 			// skill, and it is what the picker just promised the user it did.
-			settings = { ...settings, skills: { ...settings.skills, [row.name]: mode } };
-			write(settings);
-			ctx.ui.notify(`${row.name} → ${mode}. Takes effect on the next request.`, "info");
+			if (save({ ...settings, skills: { ...settings.skills, [row.name]: mode } }, ctx)) {
+				ctx.ui.notify(`${row.name} → ${mode}. Takes effect on the next request.`, "info");
+			}
 		}
 	};
 
@@ -279,7 +306,7 @@ export default function (pi: ExtensionAPI) {
 					: "No change to pi's own prompt yet.",
 		);
 		lines.push("Hidden skills are still available as /skill:<name>.");
-		lines.push(`Preferences: ${storePath()}`);
+		lines.push(`Preferences: ${where}`);
 		return lines.join("\n");
 	};
 }

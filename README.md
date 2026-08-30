@@ -1020,7 +1020,7 @@ mostly handled, and this extension is not a fix for a leak. What it addresses is
 listing is fixed cost, paid on every request, for skills this session was never going to touch. Six
 skills from one MCP package is a few hundred tokens a turn to advertise things you invoke by hand.
 
-**You configure it in the picker, not in a settings file.** `/skills` lists every skill with what
+**You configure it in the picker, or in `settings.json`.** `/skills` lists every skill with what
 it is currently costing you; pick one, pick a mode, and it is saved and in force for the next
 request:
 
@@ -1033,7 +1033,7 @@ Skill loading — pick a skill to change what it costs
   preload   Listed, and its whole body is in the prompt already.
 
 Default for anything unlisted: name
-Saved in /Users/me/.config/pi/skill-loading.json
+Saved in /Users/me/.pi/agent/settings.json ("skillOverride")
 
   [name]    dataviz                             —  412 chars
   [command] pptx                                —  240 chars
@@ -1042,16 +1042,42 @@ Saved in /Users/me/.config/pi/skill-loading.json
   Done
 ```
 
-**The preferences live at `~/.config/pi/skill-loading.json`, deliberately outside this repo.**
-`agent/settings.json` is the natural home and the wrong one: it is tracked, so it would commit one
-person's preferences to a config other people clone, and every toggle would be a diff in a file pi
-already rewrites and conflicts on during `git pull`. A gitignored `*.local.json` inside the repo
-would have worked too; going all the way out to `$XDG_CONFIG_HOME` means `git clean`, a re-clone, or
-a stray `git add -A` can neither discard nor publish your choices. Written through a rename, because
-the picker saves after every toggle and a truncated file would read as "no preferences" and silently
-un-hide everything.
+**The modes live in the `skillOverride` block of `agent/settings.json`**, beside every other
+extension's block:
 
-The file is plain enough to edit by hand when you want a glob — `"chrome-devtools-mcp:*":
+```json
+"skillOverride": {
+  "default": "name",
+  "skills": {
+    "pptx": "command",
+    "chrome-devtools-mcp:*": "command",
+    "dataviz": "preload"
+  }
+}
+```
+
+**That reverses an earlier decision, and the argument it lost to is worth keeping.** These modes used
+to live at `~/.config/pi/skill-loading.json`, outside this repo entirely, because `agent/settings.json`
+is tracked: putting them there commits one person's preferences to a config other people clone, and
+makes every toggle a diff in a file pi already rewrites and conflicts on during `git pull`. All of
+that is still true. It optimised for the wrong half — everything else about this setup is in
+`settings.json` *precisely* so a new machine reproduces it from a clone, and skill loading is
+configuration in the same sense the permissions policy and the context-diet budgets are. A preference
+kept where `git clean` cannot reach is also one a re-clone silently forgets, and one you cannot find
+by opening the single file that is supposed to describe this agent. So the consequence is accepted
+rather than avoided: a toggle is a diff, and a clone inherits these modes. A leftover
+`~/.config/pi/skill-loading.json` is no longer read and can be deleted.
+
+Living in the shared file costs the writer three invariants it did not need before, all copied from
+`/provider`, the other thing here that writes `settings.json`: the whole parsed object is written
+back so **every unknown key survives**, the swap is a **temp file and a rename** so a torn write
+cannot truncate the one file that holds everything, and the read happens **immediately before** the
+write so a change pi made in between is carried forward. One is new: an **unparseable settings.json
+refuses the save** and the picker says why. The old store treated a malformed file as "no
+preferences" and wrote a fresh one over it — right for a file holding nothing else, destructive for
+this one.
+
+The block is plain enough to edit by hand when you want a glob — `"chrome-devtools-mcp:*":
 "command"` covers a whole plugin family including members it does not have yet. Exact names beat
 globs, longer globs beat shorter ones, and the picker always writes an exact name so a later glob
 edit cannot silently move a skill you pinned.
@@ -1099,7 +1125,7 @@ the number you are deciding on.
 | File | Role |
 | --- | --- |
 | `index.ts` | The rewrite, and the `/skills` picker |
-| `store.ts` | The machine-local preferences file, and why it is not in settings |
+| `store.ts` | The `skillOverride` block: reading it, and merging a toggle back into `settings.json` |
 | `parse.ts` | Finding and rewriting the `<available_skills>` block (pure) |
 | `select.ts` | Names and globs to a mode, most specific first (pure) |
 | `body.ts` | Preloaded bodies, frontmatter-stripped and budgeted |
@@ -2478,7 +2504,9 @@ The **`memory` tool** is the write path: `write` replaces a whole fact file, `de
 The model maintains `MEMORY.md` through the same `write` action, as the format expects.
 
 **The first write forks.** pi's own store is `<XDG_CONFIG_HOME or ~/.config>/pi/memory/<slug>/` —
-outside this repo, for the same reasons as skill-loading's store. Before that first write there is
+outside this repo, so `git clean`, a re-clone or a stray `git add -A` can neither discard what the
+agent remembered nor publish it. (skill-loading's modes used to cite the same argument and no longer
+do — they are configuration, which belongs in a tracked file; these are not.) Before that first write there is
 nothing there and the other agent's directory is read in place, untouched. On the first write every
 `*.md` is cloned across, atomically (staged in a temp sibling and renamed, so a crashed clone can
 never leave a half-copied directory that wins precedence and hides the rest), and `.origin.json`

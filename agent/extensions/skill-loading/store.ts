@@ -1,68 +1,92 @@
 /**
- * Where the per-skill modes live: a machine-local file, outside this repo.
+ * Where the per-skill modes live: the `skillOverride` block in
+ * `agent/settings.json`, beside every other extension's block.
  *
- * ## Why not settings.json
+ * ## This used to be a machine-local file, and the reasoning is worth keeping
  *
- * `agent/settings.json` is tracked, deliberately — that is what makes a new
- * machine reproduce this setup from a clone. Which skills *you* find worth
- * advertising is the opposite kind of fact: it depends on what you work on this
- * month, it changes when you toggle it in the picker, and it is nobody else's
- * default. Putting it there would commit one person's preferences to a repo
- * others clone, and make every toggle a diff in a tracked file that pi is
- * already known to rewrite and conflict on during `git pull`.
+ * The modes lived in `~/.config/pi/skill-loading.json`, outside this repo
+ * entirely, on the argument that which skills *you* find worth advertising is a
+ * per-machine preference nobody should inherit from a clone — and that putting
+ * it in a tracked file would turn every toggle in the picker into a diff in a
+ * file `git pull` already conflicts on.
  *
- * A `.local.json` inside the repo would be gitignored and would technically
- * work. This goes further out on purpose: `~/.config/pi/` is not in the repo at
- * all, so `git clean`, a re-clone, or moving this config to a new machine cannot
- * quietly discard your choices, and no `git add -A` can publish them.
+ * That argument is real and it lost anyway. It optimised for the wrong half:
+ * everything else about this setup is in `settings.json` precisely so a new
+ * machine reproduces it from a clone, and skill loading is configuration in
+ * exactly the same sense the permissions policy and the context-diet budgets
+ * are. A preference kept somewhere `git clean` cannot reach is also a
+ * preference a re-clone silently forgets, and one you cannot read by opening
+ * the one file that is supposed to describe this agent. One file that says
+ * everything beats two files where the second is invisible.
  *
- * `$XDG_CONFIG_HOME` is honoured when set. The fallback is `~/.config/pi`
- * everywhere, including macOS: `~/Library/Application Support` is the platform
- * convention for applications, but this is a dotfile for a terminal tool, and
- * every other terminal tool the user already has puts it in `~/.config`.
+ * So the consequence is accepted rather than avoided: a toggle is a diff, and a
+ * clone inherits these modes. The old path is no longer read — a
+ * `~/.config/pi/skill-loading.json` left over from before this change does
+ * nothing and can be deleted.
  *
  * ## Shape
  *
- *   { "version": 1,
+ *   "skillOverride": {
  *     "default": "name",
- *     "modes": { "pptx": "command", "chrome-devtools-mcp:*": "command" },
- *     "maxCharsPerSkill": 12000, "maxChars": 24000 }
+ *     "skills": { "pptx": "command", "chrome-devtools-mcp:*": "command" }
+ *   }
  *
- * `version` is there so a future format change has something to branch on rather
- * than having to guess from the shape.
+ * `enabled`, `maxCharsPerSkill` and `maxChars` are accepted too and default to
+ * what config.ts says. An absent block is defaults, which is what makes
+ * installing this extension and configuring nothing a no-op.
+ *
+ * ## Writing
+ *
+ * The picker saves after every toggle, and the file it is saving into holds the
+ * entire configuration — so the three invariants provider/settings.ts spells
+ * out are load-bearing here for the same reasons, and are copied rather than
+ * improvised:
+ *
+ *   - **Everything unknown survives.** Parse the file, set one key, write the
+ *     whole object back. A writer that serialised its own idea of the schema
+ *     would delete the permissions block and every key a future extension adds.
+ *   - **The write is atomic.** Temp file in the same directory, then rename. pi
+ *     rewrites this file too (a theme or model change), so a torn write is not
+ *     hypothetical, and settings.json is the file that loses everything if it
+ *     is truncated.
+ *   - **Read immediately before the write.** Never from a copy cached at
+ *     startup, so a change pi or another window made in between is carried
+ *     forward instead of reverted.
+ *
+ * And one that is specific to living here: an unreadable settings.json REFUSES
+ * the write. The old store treated a missing or malformed file as "no
+ * preferences" and wrote a fresh one over it, which was right for a file that
+ * held nothing else and is destructive for this one.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { defaultSettings, isMode, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { defaultSettings, isMode, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
 
-export const VERSION = 1;
-
-/** `<XDG_CONFIG_HOME or ~/.config>/pi/skill-loading.json`. */
-export function storePath(env: NodeJS.ProcessEnv = process.env): string {
-	const xdg = env.XDG_CONFIG_HOME?.trim();
-	const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".config");
-	return join(base, "pi", "skill-loading.json");
+export function settingsPath(agentDir: string): string {
+	return join(agentDir, "settings.json");
 }
 
 /**
- * Read the store. A missing, unreadable or malformed file reads as defaults —
- * this is a preferences file, and the only thing worse than losing it is
- * refusing to start because of it.
+ * Read the block. A missing, unreadable or malformed file reads as defaults —
+ * these are preferences, and the only thing worse than losing them is refusing
+ * to start because of them.
  */
-export function read(path: string = storePath()): SkillLoadingSettings {
+export function read(agentDir: string): SkillLoadingSettings {
 	const base = defaultSettings();
 
-	let raw: Record<string, unknown>;
+	let block: Record<string, unknown>;
 	try {
-		raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		const parsed = JSON.parse(readFileSync(settingsPath(agentDir), "utf8")) as Record<string, unknown>;
+		const raw = parsed?.[SETTINGS_KEY];
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
+		block = raw as Record<string, unknown>;
 	} catch {
 		return base;
 	}
 
 	const modes: Record<string, Mode> = {};
-	const configured = raw?.modes;
+	const configured = block.skills;
 	if (configured && typeof configured === "object" && !Array.isArray(configured)) {
 		for (const [pattern, mode] of Object.entries(configured as Record<string, unknown>)) {
 			// An unrecognised mode is dropped rather than defaulted. Defaulting would
@@ -76,40 +100,58 @@ export function read(path: string = storePath()): SkillLoadingSettings {
 		typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 
 	return {
-		enabled: typeof raw?.enabled === "boolean" ? raw.enabled : base.enabled,
-		default: isMode(raw?.default) ? raw.default : base.default,
+		enabled: typeof block.enabled === "boolean" ? block.enabled : base.enabled,
+		default: isMode(block.default) ? block.default : base.default,
 		skills: modes,
-		maxCharsPerSkill: positive(raw?.maxCharsPerSkill, base.maxCharsPerSkill),
-		maxChars: positive(raw?.maxChars, base.maxChars),
+		maxCharsPerSkill: positive(block.maxCharsPerSkill, base.maxCharsPerSkill),
+		maxChars: positive(block.maxChars, base.maxChars),
 	};
 }
 
+export type WriteResult = { ok: true } | { ok: false; error: string };
+
 /**
- * Write the store, atomically.
+ * Merge the block back into settings.json.
  *
- * Through a temp file in the same directory and a rename, because the picker
- * saves after every single toggle: a crash or a full disk partway through a
- * plain write would leave truncated JSON, which `read` would then treat as "no
- * preferences" and silently un-hide everything.
- *
- * Only non-default fields are written. A store that says `{"version":1,
- * "modes":{}}` is one you can read and understand; one that restates every
- * built-in budget invites editing a number that was never the problem.
+ * Only non-default fields are written. A block that says
+ * `{"skills":{"pptx":"command"}}` is one you can read and understand; one that
+ * restates every built-in budget invites editing a number that was never the
+ * problem.
  */
-export function write(settings: SkillLoadingSettings, path: string = storePath()): void {
+export function write(settings: SkillLoadingSettings, agentDir: string): WriteResult {
+	const path = settingsPath(agentDir);
+
+	let current: Record<string, unknown>;
+	try {
+		current = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	} catch (error) {
+		// Refuse rather than start fresh. An unreadable settings.json is a file
+		// with a typo in it, and overwriting it with a one-key object would throw
+		// away everything the user has configured.
+		return { ok: false, error: `cannot read ${path}: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	if (!current || typeof current !== "object" || Array.isArray(current)) {
+		return { ok: false, error: `${path} is not a JSON object` };
+	}
+
 	const base = defaultSettings();
-	const body: Record<string, unknown> = { version: VERSION };
+	const block: Record<string, unknown> = {};
+	if (settings.enabled !== base.enabled) block.enabled = settings.enabled;
+	if (settings.default !== base.default) block.default = settings.default;
+	block.skills = settings.skills;
+	if (settings.maxCharsPerSkill !== base.maxCharsPerSkill) block.maxCharsPerSkill = settings.maxCharsPerSkill;
+	if (settings.maxChars !== base.maxChars) block.maxChars = settings.maxChars;
+	current[SETTINGS_KEY] = block;
 
-	if (settings.enabled !== base.enabled) body.enabled = settings.enabled;
-	if (settings.default !== base.default) body.default = settings.default;
-	body.modes = settings.skills;
-	if (settings.maxCharsPerSkill !== base.maxCharsPerSkill) body.maxCharsPerSkill = settings.maxCharsPerSkill;
-	if (settings.maxChars !== base.maxChars) body.maxChars = settings.maxChars;
-
-	const text = `${JSON.stringify(body, null, 2)}\n`;
-	mkdirSync(dirname(path), { recursive: true });
-
-	const temp = `${path}.${process.pid}.tmp`;
-	writeFileSync(temp, text, { mode: 0o600 });
-	renameSync(temp, path);
+	const temporary = `${path}.skill-loading-${process.pid}.tmp`;
+	try {
+		writeFileSync(temporary, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+		renameSync(temporary, path);
+		return { ok: true };
+	} catch (error) {
+		try {
+			unlinkSync(temporary);
+		} catch {}
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
 }

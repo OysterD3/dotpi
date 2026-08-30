@@ -1,11 +1,14 @@
 /**
  * The modes, and the shape of the preferences that pick between them.
  *
- * These are not read from `agent/settings.json`. That file is tracked, and which
- * skills you find worth advertising is a per-machine, per-month preference
- * nobody should inherit from a clone — see store.ts, which owns the file these
- * live in and explains where it went instead.
+ * These are read from the `skillOverride` block in `agent/settings.json`,
+ * beside every other extension's block. They used to live in a machine-local
+ * file outside this repo; store.ts owns the reader and records why that
+ * changed.
  */
+
+/** The settings.json block these live in. */
+export const SETTINGS_KEY = "skillOverride";
 
 /**
  * What a skill costs the conversation, and what it takes to reach it.
