@@ -1020,9 +1020,9 @@ mostly handled, and this extension is not a fix for a leak. What it addresses is
 listing is fixed cost, paid on every request, for skills this session was never going to touch. Six
 skills from one MCP package is a few hundred tokens a turn to advertise things you invoke by hand.
 
-**You configure it in the picker, or in `settings.json`.** `/skills` lists every skill with what
-it is currently costing you; pick one, pick a mode, and it is saved and in force for the next
-request:
+**You configure it in the picker, or in `settings.json`.** `/skills` lists every skill with what it
+is currently costing you. **Space** cycles the one under the cursor through the five states in
+place, **Esc** saves — Claude Code's interaction, for the same reason the settings key is its key:
 
 ```
 Skill loading — pick a skill to change what it costs
@@ -1032,15 +1032,36 @@ Skill loading — pick a skill to change what it costs
   command   Hidden from the prompt. Still reachable with /skill:<name>.
   preload   Listed, and its whole body is in the prompt already.
 
-A skill not in the map is "on". Use "*" as a key to change that.
-Saved in /Users/me/.pi/agent/settings.json ("skillOverrides")
+✦ Skills   2 changes · esc to save
 
-  [on]         dataviz                          —  412 chars
-  [user-only]  pptx                             —  240 chars
-  [on]         skill-creator                    —  388 chars
-  Reset every skill to the default
-  Done
+  [on]         dataviz              412 chars
+▸ [name-only]  pptx                 240 chars
+  [on]         skill-creator        388 chars
+  [off]        deploy               not listed
+  ──────────────────────────────────────────
+  [on]         *  (everything else)
+
+space/→ cycle  ·  ← back  ·  r reset all  ·  esc save  ·  q cancel
 ```
+
+It replaced two nested `ui.select` dialogs — pick a skill, pick a state from a five-item list, land
+back on the first dialog — which cost four keystrokes and a screen change per skill, and made
+"set six of these" a chore you did once and never revisited.
+
+**One Esc is one write.** The old flow saved after every toggle, which was right when a toggle was a
+whole dialog round trip and wrong now: cycling one skill through to `preload` passes four
+intermediate states, and writing each would be four writes and four diffs for one decision. `q` and
+ctrl+c leave without writing, which is what makes cycling through to read the options safe.
+
+**Only what you changed is written**, and that is the part with a wrong answer in it. The rows show
+each skill's *resolved* state, globs included — which is what you want to see, and a trap for the
+save: writing every row back as an exact key would expand `"chrome-devtools-mcp:*": "off"` into six
+exact entries the first time anyone pressed Esc, and the glob would never match a seventh member
+again. So an untouched row writes nothing at all, and a row cycled all the way round to where it
+started counts as untouched.
+
+**The `*` row** sits last, under a rule: the default for everything not named. Without it the only
+way to set a default would be to hand-edit the file the picker exists to save you from.
 
 **The states live in the `skillOverrides` block of `agent/settings.json`** — Claude Code's key, its
 shape and its four value names, so the setting reads the same in both places:
@@ -1149,8 +1170,9 @@ the number you are deciding on.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | The rewrite, and the `/skills` picker |
-| `store.ts` | The `skillOverrides` block: reading it, and merging a toggle back into `settings.json` |
+| `index.ts` | The prompt rewrite, the `/` menu filter, and mounting the picker |
+| `picker.ts` | **The `/skills` menu** — space cycles, esc saves, and what a save is allowed to write |
+| `store.ts` | The `skillOverrides` block: reading it, and merging a save back into `settings.json` |
 | `parse.ts` | Finding and rewriting the `<available_skills>` block (pure) |
 | `select.ts` | Names and globs to a mode, most specific first (pure) |
 | `body.ts` | Preloaded bodies, frontmatter-stripped and budgeted |

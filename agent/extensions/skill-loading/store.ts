@@ -47,10 +47,9 @@
  *
  * ## Writing
  *
- * The picker saves after every toggle, and the file it is saving into holds the
- * entire configuration — so the three invariants provider/settings.ts spells
- * out are load-bearing here for the same reasons, and are copied rather than
- * improvised:
+ * The file being written holds the entire configuration — so the three
+ * invariants provider/settings.ts spells out are load-bearing here for the same
+ * reasons, and are copied rather than improvised:
  *
  *   - **Everything unknown survives.** Parse the file, set one key, write the
  *     whole object back. A writer that serialised its own idea of the schema

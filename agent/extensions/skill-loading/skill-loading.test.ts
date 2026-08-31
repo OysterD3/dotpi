@@ -34,12 +34,14 @@ const { formatSkillsForPrompt } = await import(
 	join(REPO, "node_modules/@earendil-works/pi-coding-agent/dist/core/skills.js")
 );
 
-const { defaultSettings } = await import("./config.ts");
+const { defaultSettings, MODES } = await import("./config.ts");
+const { visibleWidth } = await import("@earendil-works/pi-tui");
 const { findSkillsSection, renderSection, unescapeXml } = await import("./parse.ts");
 const { modeFor } = await import("./select.ts");
 const { stripFrontmatter, loadBodies, renderBodies } = await import("./body.ts");
 const { read, write, settingsPath } = await import("./store.ts");
 const { apply, buildRows, dropOffSkills } = await import("./index.ts");
+const { cycle, nextSkills, pickerRows, SkillsPicker, DEFAULT_ROW } = await import("./picker.ts");
 
 let failures = 0;
 
@@ -237,6 +239,93 @@ eq("and the cost it would save if hidden", pptxRow.chars, hiddenOnly.delta);
 const withHiddenSkill = buildRows([...skills, { name: "never-listed" }], FULL, defaultSettings());
 eq("a skill absent from the block still gets a row", withHiddenSkill.length, 5);
 eq("costing nothing", withHiddenSkill.find((r) => r.name === "never-listed")?.chars, 0);
+
+// ---------------------------------------------------------------------------
+console.log("picker — space cycles, esc saves, and globs survive it");
+
+eq("space walks the states in order", cycle("on", 1), "name-only");
+eq("...and wraps at the end", cycle("preload", 1), "on");
+eq("left walks them back", cycle("on", -1), "preload");
+eq("a full lap returns to where it started", MODES.reduce((m: any) => cycle(m, 1), "on"), "on");
+
+// The trap. Rows show the RESOLVED state, globs included, so writing every row
+// back would expand one glob into an exact entry per member and the glob would
+// never match a new member again.
+const globRows = [
+	{ name: "chrome-devtools-mcp:a11y", mode: "off" as const, chars: 0 },
+	{ name: "chrome-devtools-mcp:perf", mode: "off" as const, chars: 0 },
+	{ name: "dataviz", mode: "on" as const, chars: 400 },
+];
+const globMap = { "chrome-devtools-mcp:*": "off" as const };
+eq("an untouched row writes nothing at all", JSON.stringify(nextSkills(globRows, globMap, ["off", "off", "on"])), JSON.stringify(globMap));
+eq(
+	"a touched one writes an exact key, and the glob stays whole",
+	JSON.stringify(nextSkills(globRows, globMap, ["preload", "off", "on"])),
+	JSON.stringify({ "chrome-devtools-mcp:*": "off", "chrome-devtools-mcp:a11y": "preload" }),
+);
+// Cycling all the way round and back is not a change.
+eq("a row cycled back to where it started is untouched", JSON.stringify(nextSkills(globRows, globMap, ["off", "off", "on"])), JSON.stringify(globMap));
+
+// The `*` row is the default, and is the only way to set one from in here.
+const withDefault = pickerRows(globRows, "on");
+eq("the default row goes last", withDefault.at(-1)?.name, DEFAULT_ROW);
+eq(
+	"and saves under the * key",
+	JSON.stringify(nextSkills(withDefault, {}, ["off", "off", "on", "name-only"])),
+	JSON.stringify({ "*": "name-only" }),
+);
+
+{
+	const theme = { fg: (_k: string, t: string) => t, bold: (t: string) => t } as any;
+	let handed: unknown = "open";
+	const rows = pickerRows([{ name: "dataviz", mode: "on" as const, chars: 400 }, { name: "pptx", mode: "off" as const, chars: 0 }], "on");
+	const picker = new SkillsPicker(rows, { pptx: "off" }, theme, () => 40, (r: unknown) => void (handed = r));
+	const text = () => picker.render(80).join("\n");
+
+	check("every state is on one line, no dialog", text().includes("dataviz") && text().includes("pptx"));
+	check("the default row is shown too", text().includes("everything else"));
+	check("and the keys are advertised", text().includes("space/→ cycle") && text().includes("esc save"));
+
+	picker.handleInput(" ");
+	check("space cycles the row under the cursor", text().includes("[name-only]"));
+	check("and marks the list dirty", text().includes("1 change"));
+	picker.handleInput("\x1b[D"); // left
+	check("left walks it back", text().includes("[on]") && !text().includes("1 change"));
+
+	// Cursor moves, then a cycle lands on the OTHER row.
+	picker.handleInput("\x1b[B"); // down
+	picker.handleInput(" ");
+	picker.handleInput("\x1b"); // escape saves
+	eq("esc hands back only what changed", JSON.stringify(handed), JSON.stringify({ pptx: "preload" }));
+
+	// q walks away from staged edits.
+	handed = "open";
+	const cancelling = new SkillsPicker(rows, {}, theme, () => 40, (r: unknown) => void (handed = r));
+	cancelling.handleInput(" ");
+	cancelling.handleInput("q");
+	eq("q discards them", handed, undefined);
+
+	// Esc with nothing staged is not a write.
+	handed = "open";
+	const untouched = new SkillsPicker(rows, {}, theme, () => 40, (r: unknown) => void (handed = r));
+	untouched.handleInput("\x1b");
+	eq("esc with no edits asks for no write", handed, undefined);
+
+	// r stages, it does not save — so q still walks away from it.
+	handed = "open";
+	const reset = new SkillsPicker(rows, { pptx: "off" }, theme, () => 40, (r: unknown) => void (handed = r));
+	reset.handleInput("r");
+	check("r stages every row at the default", reset.render(80).join("\n").includes("1 change"));
+	reset.handleInput("\x1b");
+	eq("and esc writes that", JSON.stringify(handed), JSON.stringify({ pptx: "on" }));
+
+	// A line wider than the terminal tears down the TUI in the editor slot.
+	const narrow = new SkillsPicker(pickerRows(Array.from({ length: 40 }, (_, i) => ({ name: `skill-with-a-long-name-${i}`, mode: "on" as const, chars: 400 })), "on"), {}, theme, () => 12, () => {});
+	for (const width of [40, 80, 120]) {
+		check(`nothing overflows at width ${width}`, narrow.render(width).every((l) => visibleWidth(l) <= width));
+	}
+	check("and a short terminal still draws a window with its markers", narrow.render(80).join("\n").includes("more"));
+}
 
 // ---------------------------------------------------------------------------
 console.log("dropOffSkills — what `off` takes out of the / menu");

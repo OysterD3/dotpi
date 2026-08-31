@@ -31,16 +31,19 @@
  * ## Configured by picker, or by hand
  *
  * `/skills` opens a list of every skill with what it is currently doing to your
- * context; pick one, pick a mode, and it is saved and in force for the next
- * request. Nothing to look up and nothing to spell correctly.
+ * context. Space cycles the one under the cursor through the five states in
+ * place, Esc saves the lot — Claude Code's interaction, for the same reason the
+ * settings key is its key. Nothing to look up and nothing to spell correctly.
  *
  * What it saves into is the `skillOverrides` block in `agent/settings.json`, so
  * the same choices can be written by hand, read by opening the one file that
  * describes this agent, and reproduced on a new machine from a clone. That is a
  * reversal — these modes used to be kept in a machine-local file specifically so
  * a toggle would not be a diff in a tracked file — and store.ts records the
- * argument on both sides. The picker saves after every toggle, which is why the
- * write it does has to merge rather than replace; store.ts again.
+ * argument on both sides. One Esc is one write, and it has to merge rather than
+ * replace, because the file it lands in holds everything else too; store.ts
+ * again. The `*` row at the bottom of the list is how the default is set, since
+ * a flat map of skill names has nowhere else to put one.
  *
  * The picker's skill list comes from `ctx.getSystemPromptOptions().skills` — pi's
  * own loaded list, before any extension touched it. That is what lets the picker
@@ -51,8 +54,9 @@
 
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadBodies, renderBodies } from "./body.ts";
-import { CONFIG, DEFAULT_MODE, MODE_HELP, MODE_LABEL, MODES, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { CONFIG, DEFAULT_MODE, MODE_HELP, MODES, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
 import { findSkillsSection, renderSection, stripDescription } from "./parse.ts";
+import { DEFAULT_ROW, PICKER_ROWS_FALLBACK, pickerRows, SkillsPicker, type PickerResult } from "./picker.ts";
 import { decide, modeFor } from "./select.ts";
 import { read, settingsPath, write } from "./store.ts";
 
@@ -164,16 +168,7 @@ export function buildRows(
 	}));
 }
 
-const DONE = "Done";
-const RESET = "Reset every skill to the default";
 
-function rowLabel(row: Row): string {
-	const cost = row.chars > 0 ? `${row.chars} chars` : "not listed";
-	// MODE_LABEL, not the raw state: `user-invocable-only` in a bracket at the
-	// head of every row would push the name and its cost off a narrow terminal,
-	// which is why Claude Code's own menu shortens it too.
-	return `[${MODE_LABEL[row.mode]}]`.padEnd(13) + `${row.name}  —  ${cost}`;
-}
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
@@ -286,61 +281,37 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	/** The picker loop: a list, a mode, saved, back to the list. */
+	/**
+	 * The picker: one list, Space cycles, Esc saves.
+	 *
+	 * Everything about the interaction is in picker.ts; this is the mount and the
+	 * one write. `overlay: false` puts it in the editor's slot, the same place
+	 * pi's own selector and `/workflows` go — a list you scroll and type at wants
+	 * the bottom of the screen, not a box over the middle of the transcript.
+	 */
 	const pick = async (ctx: ExtensionCommandContext): Promise<void> => {
-		for (;;) {
-			const skills = loadedSkills(ctx);
-			if (skills.length === 0) {
-				ctx.ui.notify("No skills are loaded, so there is nothing to tune.", "info");
-				return;
-			}
+		const skills = loadedSkills(ctx);
+		if (skills.length === 0) {
+			ctx.ui.notify("No skills are loaded, so there is nothing to tune.", "info");
+			return;
+		}
 
-			// Before the first turn nothing has been edited yet, so pi's live prompt
-			// is already the unedited one — the fallback is correct, not a guess.
-			const rows = buildRows(skills, unedited ?? ctx.getSystemPrompt(), settings);
-			const labels = rows.map(rowLabel);
-			const footer = `A skill not in the map is "${DEFAULT_MODE}". Use "*" as a key to change that.`;
+		// Before the first turn nothing has been edited yet, so pi's live prompt
+		// is already the unedited one — the fallback is correct, not a guess.
+		const rows = pickerRows(buildRows(skills, unedited ?? ctx.getSystemPrompt(), settings), modeFor(DEFAULT_ROW, settings));
 
-			const picked = await ctx.ui.select(
-				[
-					"Skill loading — pick a skill to change what it costs",
-					"",
-					...MODES.map((mode) => `  ${mode.padEnd(20)} ${MODE_HELP[mode]}`),
-					"",
-					footer,
-					`Saved in ${where}`,
-				].join("\n"),
-				[...labels, RESET, DONE],
-			);
+		const result = await ctx.ui.custom<PickerResult>(
+			(tui, theme, _keybindings, done) =>
+				new SkillsPicker(rows, settings.skills, theme, () => tui.terminal?.rows ?? PICKER_ROWS_FALLBACK, done),
+			{ overlay: false },
+		);
+		// Undefined is both "cancelled" and "saved with nothing changed", and both
+		// want the same thing: leave the file alone.
+		if (!result) return;
 
-			if (picked === undefined || picked === DONE) return;
-
-			if (picked === RESET) {
-				if (save({ ...settings, skills: {} }, ctx)) {
-					ctx.ui.notify(`Every skill is back to ${DEFAULT_MODE}. Takes effect on the next request.`, "info");
-				}
-				continue;
-			}
-
-			const row = rows[labels.indexOf(picked)];
-			if (!row) return;
-
-			const modeLabels = MODES.map((mode) => `${mode.padEnd(20)} ${MODE_HELP[mode]}`);
-			const chosen = await ctx.ui.select(`${row.name}\n\nCurrently ${row.mode}.`, modeLabels);
-			if (chosen === undefined) continue;
-
-			// By position, not by prefix. The states are no longer mutually
-			// non-prefixing words, and matching on startsWith would be one rename
-			// away from silently picking the wrong one.
-			const mode = MODES[modeLabels.indexOf(chosen)];
-			if (!mode) continue;
-
-			// An exact entry, always — even when it matches what a glob already said.
-			// Writing it down is what makes the next glob edit not silently move this
-			// skill, and it is what the picker just promised the user it did.
-			if (save({ ...settings, skills: { ...settings.skills, [row.name]: mode } }, ctx)) {
-				ctx.ui.notify(`${row.name} → ${mode}. Takes effect on the next request.`, "info");
-			}
+		if (save({ skills: result }, ctx)) {
+			const changed = rows.filter((row, index) => (result[row.name] ?? DEFAULT_MODE) !== row.mode).length;
+			ctx.ui.notify(`${changed} skill${changed === 1 ? "" : "s"} updated. Takes effect on the next request.`, "info");
 		}
 	};
 
