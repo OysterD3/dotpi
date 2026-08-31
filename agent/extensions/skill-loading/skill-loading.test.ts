@@ -39,7 +39,7 @@ const { findSkillsSection, renderSection, unescapeXml } = await import("./parse.
 const { modeFor } = await import("./select.ts");
 const { stripFrontmatter, loadBodies, renderBodies } = await import("./body.ts");
 const { read, write, settingsPath } = await import("./store.ts");
-const { apply, buildRows } = await import("./index.ts");
+const { apply, buildRows, dropOffSkills } = await import("./index.ts");
 
 let failures = 0;
 
@@ -123,17 +123,20 @@ console.log("modeFor — exact names, globs, and which wins");
 
 const globbed = settingsWith({
 	default: "name",
-	skills: { "chrome-devtools-mcp:*": "command", "chrome-devtools-mcp:perf": "preload", "*": "command", pptx: "command" },
+	skills: { "chrome-devtools-mcp:*": "user-invocable-only", "chrome-devtools-mcp:perf": "preload", "*": "user-invocable-only", pptx: "user-invocable-only" },
 });
 
 eq("an exact name beats every glob", modeFor("chrome-devtools-mcp:perf", globbed), "preload");
-eq("a family glob covers its members", modeFor("chrome-devtools-mcp:a11y", globbed), "command");
+eq("a family glob covers its members", modeFor("chrome-devtools-mcp:a11y", globbed), "user-invocable-only");
 // The member that does not exist yet is the reason globs are supported at all.
-eq("...including ones added later", modeFor("chrome-devtools-mcp:brand-new", globbed), "command");
-eq("a longer glob beats a shorter one", modeFor("chrome-devtools-mcp:x", settingsWith({ skills: { "*": "preload", "chrome-*": "command" } })), "command");
-eq("a bare name still matches", modeFor("pptx", globbed), "command");
-eq("catch-all applies to the rest", modeFor("anything-else", globbed), "command");
-eq("no pattern falls through to default", modeFor("dataviz", settingsWith({ default: "preload" })), "preload");
+eq("...including ones added later", modeFor("chrome-devtools-mcp:brand-new", globbed), "user-invocable-only");
+eq("a longer glob beats a shorter one", modeFor("chrome-devtools-mcp:x", settingsWith({ skills: { "*": "preload", "chrome-*": "user-invocable-only" } })), "user-invocable-only");
+eq("a bare name still matches", modeFor("pptx", globbed), "user-invocable-only");
+eq("catch-all applies to the rest", modeFor("anything-else", globbed), "user-invocable-only");
+eq("no pattern at all falls through to on", modeFor("dataviz", settingsWith({ skills: {} })), "on");
+// `"*"` is the default now — the shortest glob, so everything beats it.
+eq("a bare * is the default", modeFor("dataviz", settingsWith({ skills: { "*": "preload" } })), "preload");
+eq("and an exact name still beats it", modeFor("dataviz", settingsWith({ skills: { "*": "preload", dataviz: "off" } })), "off");
 
 // ---------------------------------------------------------------------------
 console.log("stripFrontmatter — the fields already in the prompt");
@@ -172,18 +175,17 @@ eq("nothing preloaded renders nothing", renderBodies([]), "");
 console.log("apply — the whole rewrite");
 
 eq("no configuration leaves the prompt untouched", apply(FULL, defaultSettings()), undefined);
-eq("disabled leaves the prompt untouched", apply(FULL, settingsWith({ enabled: false, skills: { pptx: "command" } })), undefined);
-eq("a prompt with no block is untouched", apply(BASE, settingsWith({ skills: { pptx: "command" } })), undefined);
+eq("a prompt with no block is untouched", apply(BASE, settingsWith({ skills: { pptx: "user-invocable-only" } })), undefined);
 
-const hidden = apply(FULL, settingsWith({ skills: { "chrome-devtools-mcp:*": "command", pptx: "command" } }))!;
+const hidden = apply(FULL, settingsWith({ skills: { "chrome-devtools-mcp:*": "user-invocable-only", pptx: "user-invocable-only" } }))!;
 check("hiding shortens the prompt", hidden.delta > 0);
 check("the hidden skill is gone from the listing", !hidden.prompt.includes("<name>pptx</name>"));
 check("the kept skill is still listed", hidden.prompt.includes("<name>dataviz</name>"));
 check("the rest of the prompt is intact", hidden.prompt.startsWith(BASE) && hidden.prompt.endsWith(TAIL));
 eq("every skill is still accounted for", hidden.decided.length, 4);
-eq("with its resolved mode", hidden.decided.find((d) => d.name === "pptx")?.mode, "command");
+eq("with its resolved mode", hidden.decided.find((d) => d.name === "pptx")?.mode, "user-invocable-only");
 
-const everythingHidden = apply(FULL, settingsWith({ default: "command" }))!;
+const everythingHidden = apply(FULL, settingsWith({ skills: { "*": "user-invocable-only" } }))!;
 eq("hiding all of them removes the section entirely", everythingHidden.prompt, BASE + TAIL);
 
 const preloaded = apply(FULL, settingsWith({ skills: { dataviz: "preload" } }))!;
@@ -193,7 +195,7 @@ check("and the entry is still listed", preloaded.prompt.includes("<name>dataviz<
 check("the model is told not to read it again", preloaded.prompt.includes("without reading their files first"));
 check("the rest of the prompt is intact", preloaded.prompt.startsWith(BASE) && preloaded.prompt.endsWith(TAIL));
 
-const brief = apply(FULL, settingsWith({ skills: { pptx: "brief" } }))!;
+const brief = apply(FULL, settingsWith({ skills: { pptx: "name-only" } }))!;
 const briefEntry = /<skill>\s*<name>pptx<\/name>[\s\S]*?<\/skill>/.exec(brief.prompt)?.[0] ?? "";
 check("dropping a description shortens the prompt", brief.delta > 0);
 check("the skill is still listed", briefEntry.includes("<name>pptx</name>"));
@@ -209,11 +211,11 @@ eq(
 	(FULL.match(/<description>/g) ?? []).length - 1,
 );
 check("the rest of the prompt is intact", brief.prompt.startsWith(BASE) && brief.prompt.endsWith(TAIL));
-eq("and the mode is reported", brief.decided.find((d) => d.name === "pptx")?.mode, "brief");
+eq("and the mode is reported", brief.decided.find((d) => d.name === "pptx")?.mode, "name-only");
 
 // The combination is the point: hide the ones you invoke by hand, inline the one
 // you always want, shorten the ones whose names say enough, list the rest.
-const mixed = apply(FULL, settingsWith({ skills: { dataviz: "preload", "chrome-devtools-mcp:*": "command" } }))!;
+const mixed = apply(FULL, settingsWith({ skills: { dataviz: "preload", "chrome-devtools-mcp:*": "user-invocable-only" } }))!;
 check("a hidden skill is out", !mixed.prompt.includes("<name>chrome-devtools-mcp:a11y</name>"));
 check("a preloaded skill is in, with its body", mixed.prompt.includes("Use a bar chart."));
 check("a defaulted skill is still just listed", mixed.prompt.includes("<name>pptx</name>") && !mixed.prompt.includes("Make slides."));
@@ -221,13 +223,13 @@ check("a defaulted skill is still just listed", mixed.prompt.includes("<name>ppt
 // ---------------------------------------------------------------------------
 console.log("buildRows — what the picker shows");
 
-const rows = buildRows(skills, FULL, settingsWith({ skills: { pptx: "command" } }));
+const rows = buildRows(skills, FULL, settingsWith({ skills: { pptx: "user-invocable-only" } }));
 eq("every loaded skill gets a row", rows.length, 4);
-eq("with its resolved mode", rows.find((r) => r.name === "pptx")?.mode, "command");
+eq("with its resolved mode", rows.find((r) => r.name === "pptx")?.mode, "user-invocable-only");
 // Measured from pi's own block, not estimated, so the number beside a skill is
 // the number that actually goes away when you hide it.
 const pptxRow = rows.find((r) => r.name === "pptx")!;
-const hiddenOnly = apply(FULL, settingsWith({ skills: { pptx: "command" } }))!;
+const hiddenOnly = apply(FULL, settingsWith({ skills: { pptx: "user-invocable-only" } }))!;
 eq("and the cost it would save if hidden", pptxRow.chars, hiddenOnly.delta);
 
 // A skill pi loaded but did not list is still reachable as /skill:<name>, so
@@ -237,7 +239,39 @@ eq("a skill absent from the block still gets a row", withHiddenSkill.length, 5);
 eq("costing nothing", withHiddenSkill.find((r) => r.name === "never-listed")?.chars, 0);
 
 // ---------------------------------------------------------------------------
-console.log("store — the skillOverride block in settings.json");
+console.log("dropOffSkills — what `off` takes out of the / menu");
+
+// `off` differs from `user-invocable-only` only here: both are hidden from the
+// model, and only this one is hidden from you too.
+const menu = {
+	prefix: "/",
+	items: [
+		{ value: "skill:pptx", label: "skill:pptx" },
+		{ value: "skill:dataviz", label: "skill:dataviz" },
+		{ value: "workflows", label: "workflows" },
+		{ value: "skill:chrome-devtools-mcp:a11y", label: "skill:chrome-devtools-mcp:a11y" },
+	],
+};
+const offOnly = settingsWith({ skills: { pptx: "off", dataviz: "user-invocable-only", "chrome-devtools-mcp:*": "off" } });
+const filtered = dropOffSkills(menu, offOnly)!;
+eq("an off skill leaves the menu", filtered.items.some((i) => i.value === "skill:pptx"), false);
+eq("a glob reaches it too", filtered.items.some((i) => i.value === "skill:chrome-devtools-mcp:a11y"), false);
+// The whole point of the pair: user-invocable-only is still reachable from here.
+eq("user-invocable-only stays in the menu", filtered.items.some((i) => i.value === "skill:dataviz"), true);
+eq("and a command that is not a skill is untouched", filtered.items.some((i) => i.value === "workflows"), true);
+eq("the prefix rides along", filtered.prefix, "/");
+
+// Nothing matched means the input comes back BY IDENTITY, so the common
+// keystroke allocates nothing.
+check("no off skills returns the very same object", dropOffSkills(menu, settingsWith({ skills: { pptx: "name-only" } })) === menu);
+eq("null passes straight through", dropOffSkills(null, offOnly), null);
+eq("so does an empty list", dropOffSkills({ prefix: "/", items: [] }, offOnly)!.items.length, 0);
+// A skill named for a state must not be confused with one: the key is matched
+// against the name after `skill:`, never against the raw value.
+eq("a plain command called skill-something is not a skill row", dropOffSkills({ prefix: "/", items: [{ value: "skills" }] }, settingsWith({ skills: { "*": "off" } }))!.items.length, 1);
+
+// ---------------------------------------------------------------------------
+console.log("store — the skillOverrides block in settings.json");
 
 const SETTINGS = join(ROOT, "store-agent", "settings.json");
 mkdirSync(dirname(SETTINGS), { recursive: true });
@@ -255,52 +289,54 @@ const FOREIGN = {
 	packages: ["npm:pi-web-access"],
 	contextDiet: { dropOldReasoning: false },
 };
-writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
+const writeForeign = () => writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
+const withoutBlock = (o: Record<string, unknown>) => JSON.stringify({ ...o, skillOverrides: undefined });
+writeForeign();
 
-eq("no block at all reads as defaults", read(STORE).default, "name");
-eq("and is not enabled-off by being absent", read(STORE).enabled, true);
+eq("no block at all is an empty map", Object.keys(read(STORE).skills).length, 0);
+eq("which resolves to the default state", modeFor("anything", read(STORE)), "on");
 
-check("a toggle saves", write(settingsWith({ skills: { pptx: "command", dataviz: "preload" } }), STORE).ok);
-eq("modes round-trip", read(STORE).skills.pptx, "command");
+check("a toggle saves", write(settingsWith({ skills: { pptx: "user-invocable-only", dataviz: "preload" } }), STORE).ok);
+eq("states round-trip", read(STORE).skills.pptx, "user-invocable-only");
 eq("...both of them", read(STORE).skills.dataviz, "preload");
 // The invariant the old machine-local file never had to have.
-eq("every foreign key survives the write", JSON.stringify({ ...settingsFile(), skillOverride: undefined }), JSON.stringify({ ...FOREIGN, skillOverride: undefined }));
-eq("under the key the user asked for", typeof settingsFile().skillOverride, "object");
-eq("defaults are not restated in the file", settingsFile().skillOverride.maxChars, undefined);
+eq("every foreign key survives the write", withoutBlock(settingsFile()), withoutBlock(FOREIGN));
+// Flat: the values sit directly under the key, Claude Code's shape, with no
+// nesting to reach through and nowhere for a non-skill key to hide.
+eq("the block is a flat name -> state map", JSON.stringify(settingsFile().skillOverrides), JSON.stringify({ pptx: "user-invocable-only", dataviz: "preload" }));
 
-write(settingsWith({ default: "command", maxChars: 500 }), STORE);
-eq("a non-default default is written", read(STORE).default, "command");
-eq("and a non-default budget", read(STORE).maxChars, 500);
-eq("the permissions block is still there three writes later", settingsFile().permissions.allow[0], "Bash(git status *)");
+// Reset writes no key at all. Absent and empty mean the same thing, and absent
+// is the documented one — `"skillOverrides": {}` is a line that says nothing.
+check("a reset saves", write(settingsWith({ skills: {} }), STORE).ok);
+eq("and removes the key rather than emptying it", "skillOverrides" in settingsFile(), false);
+eq("with the rest of the file still intact", settingsFile().permissions.allow[0], "Bash(git status *)");
 
 // Dropped, not defaulted: someone who wrote "hidden" believed they turned it
-// off, and silently giving them `name` is the one outcome they did not ask for.
-writeFileSync(SETTINGS, JSON.stringify({ skillOverride: { skills: { pptx: "hidden", dataviz: "command" } } }));
-eq("an unknown mode is dropped", read(STORE).skills.pptx, undefined);
-eq("its neighbours still load", read(STORE).skills.dataviz, "command");
+// off, and silently giving them `on` is the one outcome they did not ask for.
+// It is also what makes a state only a newer Claude Code knows about read as
+// "leave this alone" rather than "show it".
+writeFileSync(SETTINGS, JSON.stringify({ skillOverrides: { pptx: "hidden", dataviz: "off" } }));
+eq("an unknown state is dropped", read(STORE).skills.pptx, undefined);
+eq("its neighbours still load", read(STORE).skills.dataviz, "off");
+eq("and the dropped one falls back to the default", modeFor("pptx", read(STORE)), "on");
 
-writeFileSync(SETTINGS, JSON.stringify({ skillOverride: { default: "nonsense", maxChars: -5 } }));
-eq("an unknown default falls back", read(STORE).default, "name");
-eq("a negative budget falls back", read(STORE).maxChars, defaultSettings().maxChars);
-
-// A block of the wrong shape is not a block. Reading `skills` off an array
-// would give undefined and quietly un-hide everything.
-writeFileSync(SETTINGS, JSON.stringify({ skillOverride: ["pptx"] }));
-eq("a non-object block reads as defaults", read(STORE).default, "name");
+// A block of the wrong shape is not a block. Reading entries off an array would
+// give integer keys and quietly un-hide everything.
+writeFileSync(SETTINGS, JSON.stringify({ skillOverrides: ["pptx"] }));
+eq("a non-object block reads as no overrides", Object.keys(read(STORE).skills).length, 0);
 
 writeFileSync(SETTINGS, "{ not json");
-eq("an unparseable file does not hide every skill", read(STORE).default, "name");
-eq("nor disable the extension", read(STORE).enabled, true);
+eq("an unparseable file does not hide every skill", modeFor("pptx", read(STORE)), "on");
 // And is not overwritten. This file holds everything; a writer that treated a
 // typo as "no preferences" and started fresh would delete the lot.
-const refused = write(settingsWith({ skills: { a: "command" } }), STORE);
+const refused = write(settingsWith({ skills: { a: "off" } }), STORE);
 check("a save into an unparseable settings.json is refused", !refused.ok);
 check("with a reason the picker can show", !refused.ok && refused.error.includes("cannot read"));
 eq("and the file is left exactly as it was", readFileSync(SETTINGS, "utf8"), "{ not json");
 
 // Written through a rename, so a crash mid-save cannot leave truncated JSON.
-writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
-write(settingsWith({ skills: { a: "command" } }), STORE);
+writeForeign();
+write(settingsWith({ skills: { a: "off" } }), STORE);
 eq("no temp file is left behind", readdirSync(STORE).filter((f) => f.includes(".tmp")).length, 0);
 
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);

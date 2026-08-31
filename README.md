@@ -996,11 +996,11 @@ told about it.
 `/skills`:
 
 ```
-name (2) — Listed for the model to find and read. pi's default.
+on (2) — Name, description and path. pi's default.
   dataviz
   skill-creator
 
-command (6) — Hidden from the prompt. Still reachable with /skill:<name>.
+user-invocable-only (6) — Hidden from the model. Still reachable with /skill:<name>.
   chrome-devtools-mcp:a11y-debugging
   chrome-devtools-mcp:troubleshooting
   pptx
@@ -1032,29 +1032,54 @@ Skill loading — pick a skill to change what it costs
   command   Hidden from the prompt. Still reachable with /skill:<name>.
   preload   Listed, and its whole body is in the prompt already.
 
-Default for anything unlisted: name
-Saved in /Users/me/.pi/agent/settings.json ("skillOverride")
+A skill not in the map is "on". Use "*" as a key to change that.
+Saved in /Users/me/.pi/agent/settings.json ("skillOverrides")
 
-  [name]    dataviz                             —  412 chars
-  [command] pptx                                —  240 chars
-  [name]    skill-creator                       —  388 chars
+  [on]         dataviz                          —  412 chars
+  [user-only]  pptx                             —  240 chars
+  [on]         skill-creator                    —  388 chars
   Reset every skill to the default
   Done
 ```
 
-**The modes live in the `skillOverride` block of `agent/settings.json`**, beside every other
-extension's block:
+**The states live in the `skillOverrides` block of `agent/settings.json`** — Claude Code's key, its
+shape and its four value names, so the setting reads the same in both places:
 
 ```json
-"skillOverride": {
-  "default": "name",
-  "skills": {
-    "pptx": "command",
-    "chrome-devtools-mcp:*": "command",
-    "dataviz": "preload"
-  }
+"skillOverrides": {
+  "legacy-context": "name-only",
+  "chrome-devtools-mcp:*": "user-invocable-only",
+  "deploy": "off",
+  "dataviz": "preload"
 }
 ```
+
+| Value | Listed to the model | In the `/` menu |
+| --- | --- | --- |
+| `on` | Name, description and path | Yes |
+| `name-only` | Name and path | Yes |
+| `user-invocable-only` | Hidden | Yes |
+| `off` | Hidden | Hidden |
+| `preload` | Name, description, path **and the whole body** | Yes |
+
+A skill absent from the map is `on`, same as Claude Code. The picker labels `user-invocable-only` as
+`user-only`, also same.
+
+**Three things are pi's, inside the same shape.** `preload` is a fifth value with no Claude Code
+equivalent — and not really a visibility state at all, since the other four decide how much of an
+*entry* you pay for and this one puts the body in the prompt; it is kept because it is the only mode
+that buys something rather than saving something. Keys may be **globs**, so
+`"chrome-devtools-mcp:*": "off"` covers a plugin family including members it does not have yet.
+And `"*"` is how you change the default, since a flat map of skill names has nowhere to put a
+`default` key that a skill could not also be called — it is the shortest possible glob, so every
+longer glob and every exact name already beats it.
+
+**`off` hides, and does not block.** Claude Code's `off` also refuses the invocation; here it filters
+the `skill:<name>` row out of the `/` menu (a wrapper on the autocomplete provider) but typing
+`/skill:<name>` in full still runs it. pi builds those commands from its own loaded list inside
+interactive-mode and keeps the map private, so there is nothing further an extension can reach. That
+is the one place this vocabulary is not literally Claude Code's, and it is written down rather than
+papered over.
 
 **That reverses an earlier decision, and the argument it lost to is worth keeping.** These modes used
 to live at `~/.config/pi/skill-loading.json`, outside this repo entirely, because `agent/settings.json`
@@ -1077,28 +1102,28 @@ refuses the save** and the picker says why. The old store treated a malformed fi
 preferences" and wrote a fresh one over it — right for a file holding nothing else, destructive for
 this one.
 
-The block is plain enough to edit by hand when you want a glob — `"chrome-devtools-mcp:*":
-"command"` covers a whole plugin family including members it does not have yet. Exact names beat
-globs, longer globs beat shorter ones, and the picker always writes an exact name so a later glob
-edit cannot silently move a skill you pinned.
+Exact names beat globs, longer globs beat shorter ones, and the picker always writes an exact name
+so a later glob edit cannot silently move a skill you pinned.
 
-`brief` sits between the two cheap ends. An entry is a name, a description and a path, and the
+`name-only` sits between the two cheap ends. An entry is a name, a description and a path, and the
 description — the sentence or three saying when the skill applies — is most of what it costs; the
-path is one line. So `brief` cuts the description and keeps the rest, which leaves the model knowing
+path is one line. So `name-only` cuts the description and keeps the rest, which leaves the model knowing
 the skill exists and able to open it, having paid almost nothing to be told. That is the right trade
 for a skill whose name already says when you want it (`pptx`, `chrome-devtools-mcp:a11y-debugging`)
 and the wrong one for a skill whose value is that the model recognises the *situation* from the
 description without being told. The cut is made on the entry's own text rather than by rebuilding
 it, so the path, the indentation and anything in pi's format this repo does not model survive it.
 
-`command` is the one that reads wrong at first, because "hidden" sounds like "disabled" and is not.
+`user-invocable-only` is the one that reads wrong at first, because "hidden" sounds like "disabled" and is not.
 pi builds its `/skill:<name>` commands from the loaded skill list, not from what reached the prompt
 (`modes/interactive/interactive-mode.js`), so hiding costs the model the ability to *notice* the
 skill and costs you nothing else. For a deck generator or a scaffolder that is the whole
-transaction: you already know when you want it. `preload` goes the other way and inlines the body,
-so the model can act without stopping to read — worth it for the one skill that applies to nearly
-every turn, and budgeted (12k chars per skill, 24k total) because a preloaded body is re-sent
-forever.
+transaction: you already know when you want it. `off` is the same absence plus one more: the row goes
+from the `/` menu too, for a skill you never invoke by hand either. `preload` goes the other way and
+inlines the body, so the model can act without stopping to read — worth it for the one skill that
+applies to nearly every turn, and budgeted (12k chars per skill, 24k total) because a preloaded body
+is re-sent forever. Those two numbers are constants rather than settings now: a flat map of skill
+names has nowhere to put a `maxChars` key that a skill could not also be called.
 
 **It edits pi's own block rather than reimplementing discovery.** pi has no hook that removes a
 skill — `resources_discover` only *adds* paths, and `skillsOverride` is an SDK option an extension
@@ -1125,7 +1150,7 @@ the number you are deciding on.
 | File | Role |
 | --- | --- |
 | `index.ts` | The rewrite, and the `/skills` picker |
-| `store.ts` | The `skillOverride` block: reading it, and merging a toggle back into `settings.json` |
+| `store.ts` | The `skillOverrides` block: reading it, and merging a toggle back into `settings.json` |
 | `parse.ts` | Finding and rewriting the `<available_skills>` block (pure) |
 | `select.ts` | Names and globs to a mode, most specific first (pure) |
 | `body.ts` | Preloaded bodies, frontmatter-stripped and budgeted |

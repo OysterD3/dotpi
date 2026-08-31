@@ -115,12 +115,10 @@
     "dropOldReasoning": false,
     "keepRecentReasoning": 10
   },
-  "skillOverride": {
-    "default": "name",
-    "skills": {
-      "pptx": "command",
-      "chrome-devtools-mcp:*": "command",
-      "dataviz": "preload"
-    }
+  "skillOverrides": {
+    "legacy-context": "name-only",
+    "chrome-devtools-mcp:*": "user-invocable-only",
+    "deploy": "off",
+    "dataviz": "preload"
   }
 }

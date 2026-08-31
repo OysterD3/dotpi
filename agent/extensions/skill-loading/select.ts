@@ -15,12 +15,19 @@
  *   1. an exact name
  *   2. the longest matching glob (measured by its literal characters, so
  *      `chrome-devtools-mcp:*` beats `*`)
- *   3. `default`
+ *   3. DEFAULT_MODE
+ *
+ * There is no separate `default` setting, and there does not need to be: the map
+ * is flat — skill name to state, Claude Code's shape — so a key that is not a
+ * skill name would be ambiguous with one that is. `"*"` does the job instead,
+ * for free. It is the shortest possible glob, so every other pattern and every
+ * exact name already beats it under the rule above, which is exactly what a
+ * default has to do.
  *
  * Pure: no filesystem, no pi APIs.
  */
 
-import { isMode, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { DEFAULT_MODE, isMode, type Mode, type SkillLoadingSettings } from "./config.ts";
 
 /** `*` matches any run of characters; everything else is literal. */
 function globToRegExp(pattern: string): RegExp {
@@ -51,7 +58,7 @@ export function modeFor(name: string, settings: SkillLoadingSettings): Mode {
 		if (!best || length > best.length) best = { mode, length };
 	}
 
-	return best?.mode ?? settings.default;
+	return best?.mode ?? DEFAULT_MODE;
 }
 
 export type Decided<T> = { entry: T; mode: Mode };

@@ -23,7 +23,7 @@
  * you already know when you want it.
  *
  *   config.ts   the modes, and what each one costs
- *   store.ts    the `skillOverride` block in settings.json, and how it is written
+ *   store.ts    the `skillOverrides` block in settings.json, and how it is written
  *   parse.ts    finding and rewriting pi's `<available_skills>` block (pure)
  *   select.ts   name and glob patterns to a mode (pure)
  *   body.ts     reading preloaded bodies within a budget
@@ -34,7 +34,7 @@
  * context; pick one, pick a mode, and it is saved and in force for the next
  * request. Nothing to look up and nothing to spell correctly.
  *
- * What it saves into is the `skillOverride` block in `agent/settings.json`, so
+ * What it saves into is the `skillOverrides` block in `agent/settings.json`, so
  * the same choices can be written by hand, read by opening the one file that
  * describes this agent, and reproduced on a new machine from a clone. That is a
  * reversal — these modes used to be kept in a machine-local file specifically so
@@ -51,10 +51,13 @@
 
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { loadBodies, renderBodies } from "./body.ts";
-import { MODE_HELP, MODES, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
+import { CONFIG, DEFAULT_MODE, MODE_HELP, MODE_LABEL, MODES, SETTINGS_KEY, type Mode, type SkillLoadingSettings } from "./config.ts";
 import { findSkillsSection, renderSection, stripDescription } from "./parse.ts";
 import { decide, modeFor } from "./select.ts";
 import { read, settingsPath, write } from "./store.ts";
+
+/** States that keep a skill out of the model's prompt entirely. */
+const HIDDEN = new Set<Mode>(["user-invocable-only", "off"]);
 
 export type Applied = {
 	prompt: string;
@@ -68,19 +71,21 @@ export type Applied = {
  * which is also what an unrecognised prompt gets — see parse.ts on failing open.
  */
 export function apply(prompt: string, settings: SkillLoadingSettings): Applied | undefined {
-	if (!settings.enabled) return undefined;
-
 	const section = findSkillsSection(prompt);
 	if (!section) return undefined;
 
 	const decided = decide(section.entries, settings);
-	// `brief` keeps its entry and loses its description; the cut is made on the
-	// entry's own text so everything else pi wrote survives it.
+	// `user-invocable-only` and `off` differ only in whether YOU can still see
+	// the skill in the `/` menu; to the model they are the same absence, so the
+	// prompt rewrite treats them together and the menu half lives on its own in
+	// the autocomplete filter below.
 	const kept = decided
-		.filter((d) => d.mode !== "command")
-		.map((d) => (d.mode === "brief" ? { ...d.entry, raw: stripDescription(d.entry.raw) } : d.entry));
+		.filter((d) => !HIDDEN.has(d.mode))
+		// `name-only` keeps its entry and loses its description; the cut is made on
+		// the entry's own text so everything else pi wrote survives it.
+		.map((d) => (d.mode === "name-only" ? { ...d.entry, raw: stripDescription(d.entry.raw) } : d.entry));
 	const preloaded = decided.filter((d) => d.mode === "preload").map((d) => d.entry);
-	const briefed = decided.filter((d) => d.mode === "brief").length;
+	const briefed = decided.filter((d) => d.mode === "name-only").length;
 
 	// Nothing hidden, shortened or preloaded is pi's own prompt. Returning it
 	// unmodified rather than a rebuilt copy keeps the no-configuration case
@@ -90,7 +95,7 @@ export function apply(prompt: string, settings: SkillLoadingSettings): Applied |
 
 	const bodies =
 		preloaded.length > 0
-			? loadBodies(preloaded, { maxCharsPerSkill: settings.maxCharsPerSkill, maxChars: settings.maxChars })
+			? loadBodies(preloaded, { maxCharsPerSkill: CONFIG.maxCharsPerSkill, maxChars: CONFIG.maxChars })
 			: [];
 
 	const replacement = renderSection(prompt, section, kept) + renderBodies(bodies);
@@ -101,6 +106,30 @@ export function apply(prompt: string, settings: SkillLoadingSettings): Applied |
 		decided: decided.map((d) => ({ name: d.entry.name, mode: d.mode, location: d.entry.location })),
 		delta: original.length - replacement.length,
 	};
+}
+
+/**
+ * Drop the `/skill:<name>` rows of every `off` skill from a suggestion list.
+ *
+ * Pure, and exported, so the one thing worth asserting about the menu filter —
+ * that it removes exactly those rows and leaves every other suggestion alone —
+ * can be checked without a terminal. The value pi puts on a slash-command
+ * suggestion is the bare command name, no leading slash (pi-tui's
+ * CombinedAutocompleteProvider), so `skill:` is the whole prefix to match.
+ *
+ * Returns the input unchanged when nothing matched, so the common keystroke
+ * allocates nothing and a null (pi's "no suggestions") passes straight through.
+ */
+export function dropOffSkills<T extends { items: Array<{ value?: string }> } | null | undefined>(
+	suggestions: T,
+	settings: SkillLoadingSettings,
+): T {
+	if (!suggestions?.items?.length) return suggestions;
+	const items = suggestions.items.filter((item) => {
+		if (typeof item.value !== "string" || !item.value.startsWith("skill:")) return true;
+		return modeFor(item.value.slice("skill:".length), settings) !== "off";
+	});
+	return items.length === suggestions.items.length ? suggestions : ({ ...suggestions, items } as T);
 }
 
 /** One row of the picker: a skill, its mode, and what it is costing right now. */
@@ -140,7 +169,10 @@ const RESET = "Reset every skill to the default";
 
 function rowLabel(row: Row): string {
 	const cost = row.chars > 0 ? `${row.chars} chars` : "not listed";
-	return `[${row.mode}]`.padEnd(10) + `${row.name}  —  ${cost}`;
+	// MODE_LABEL, not the raw state: `user-invocable-only` in a bracket at the
+	// head of every row would push the name and its cost off a narrow terminal,
+	// which is why Claude Code's own menu shortens it too.
+	return `[${MODE_LABEL[row.mode]}]`.padEnd(13) + `${row.name}  —  ${cost}`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -183,12 +215,51 @@ export default function (pi: ExtensionAPI) {
 	 */
 	let unedited: string | undefined;
 
-	pi.on("session_start", () => {
+	/**
+	 * `off` also takes the skill out of the `/` menu — the half of the state that
+	 * `user-invocable-only` does not do.
+	 *
+	 * Done by stacking a wrapper on the autocomplete provider and dropping the
+	 * `skill:<name>` items an `off` skill contributes. pi builds those from its
+	 * own loaded skill list inside interactive-mode, so there is nothing else an
+	 * extension can reach: the wrapper filters what is offered, and everything
+	 * else — applyCompletion, the trigger characters, file completion — is
+	 * delegated untouched, so a bug here can hide a row but cannot break
+	 * completion.
+	 *
+	 * **It hides, it does not block.** Claude Code's `off` refuses the invocation
+	 * too; pi's `skillCommands` map is private to interactive-mode, so typing
+	 * `/skill:<name>` in full still runs an `off` skill here. That is the one
+	 * place this vocabulary is not literally Claude Code's, and it is documented
+	 * rather than papered over.
+	 *
+	 * Installed once per process, not per session_start — that event fires on
+	 * every resume and reload, and stacking a wrapper each time would leave a
+	 * chain of them filtering the same list.
+	 */
+	let filterInstalled = false;
+	const installMenuFilter = (ctx: { ui: { addAutocompleteProvider?: (factory: unknown) => void } }) => {
+		if (filterInstalled || typeof ctx.ui.addAutocompleteProvider !== "function") return;
+		filterInstalled = true;
+		ctx.ui.addAutocompleteProvider((current: any) => ({
+			...current,
+			// Bound, not spread: these are prototype methods on pi's own provider
+			// and would lose `this` if they were copied off it by the spread above.
+			applyCompletion: (...args: unknown[]) => current.applyCompletion(...args),
+			shouldTriggerFileCompletion: current.shouldTriggerFileCompletion?.bind(current),
+			// `settings` is read live rather than captured, so a toggle in the
+			// picker takes the row out of the menu without a restart.
+			getSuggestions: async (...args: unknown[]) => dropOffSkills(await current.getSuggestions(...args), settings),
+		}));
+	};
+
+	pi.on("session_start", (_event, ctx) => {
 		// Re-read rather than trust the in-memory copy: another pi window may have
 		// changed the file since this one started, and the file is the truth.
 		settings = read(agentDir);
 		last = undefined;
 		unedited = undefined;
+		installMenuFilter(ctx as never);
 	});
 
 	pi.on("before_agent_start", (event) => {
@@ -228,13 +299,13 @@ export default function (pi: ExtensionAPI) {
 			// is already the unedited one — the fallback is correct, not a guess.
 			const rows = buildRows(skills, unedited ?? ctx.getSystemPrompt(), settings);
 			const labels = rows.map(rowLabel);
-			const footer = `Default for anything unlisted: ${settings.default}`;
+			const footer = `A skill not in the map is "${DEFAULT_MODE}". Use "*" as a key to change that.`;
 
 			const picked = await ctx.ui.select(
 				[
 					"Skill loading — pick a skill to change what it costs",
 					"",
-					...MODES.map((mode) => `  ${mode.padEnd(9)} ${MODE_HELP[mode]}`),
+					...MODES.map((mode) => `  ${mode.padEnd(20)} ${MODE_HELP[mode]}`),
 					"",
 					footer,
 					`Saved in ${where}`,
@@ -246,7 +317,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (picked === RESET) {
 				if (save({ ...settings, skills: {} }, ctx)) {
-					ctx.ui.notify(`Every skill is back to ${settings.default}. Takes effect on the next request.`, "info");
+					ctx.ui.notify(`Every skill is back to ${DEFAULT_MODE}. Takes effect on the next request.`, "info");
 				}
 				continue;
 			}
@@ -254,13 +325,14 @@ export default function (pi: ExtensionAPI) {
 			const row = rows[labels.indexOf(picked)];
 			if (!row) return;
 
-			const chosen = await ctx.ui.select(
-				`${row.name}\n\nCurrently ${row.mode}.`,
-				MODES.map((mode) => `${mode.padEnd(9)} ${MODE_HELP[mode]}`),
-			);
+			const modeLabels = MODES.map((mode) => `${mode.padEnd(20)} ${MODE_HELP[mode]}`);
+			const chosen = await ctx.ui.select(`${row.name}\n\nCurrently ${row.mode}.`, modeLabels);
 			if (chosen === undefined) continue;
 
-			const mode = MODES[MODES.findIndex((m) => chosen.startsWith(m))];
+			// By position, not by prefix. The states are no longer mutually
+			// non-prefixing words, and matching on startsWith would be one rename
+			// away from silently picking the wrong one.
+			const mode = MODES[modeLabels.indexOf(chosen)];
 			if (!mode) continue;
 
 			// An exact entry, always — even when it matches what a glob already said.
@@ -283,8 +355,6 @@ export default function (pi: ExtensionAPI) {
 
 	/** The read-only report, for print/JSON mode where there are no dialogs. */
 	const summary = (ctx: ExtensionCommandContext): string => {
-		if (!settings.enabled) return "Skill loading is off — pi lists every skill.";
-
 		const rows = buildRows(loadedSkills(ctx), unedited ?? ctx.getSystemPrompt(), settings);
 		if (rows.length === 0) return "No skills are loaded.";
 

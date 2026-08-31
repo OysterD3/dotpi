@@ -1,5 +1,5 @@
 /**
- * Where the per-skill modes live: the `skillOverride` block in
+ * Where the per-skill modes live: the `skillOverrides` block in
  * `agent/settings.json`, beside every other extension's block.
  *
  * ## This used to be a machine-local file, and the reasoning is worth keeping
@@ -26,14 +26,24 @@
  *
  * ## Shape
  *
- *   "skillOverride": {
- *     "default": "name",
- *     "skills": { "pptx": "command", "chrome-devtools-mcp:*": "command" }
+ *   "skillOverrides": {
+ *     "legacy-context": "name-only",
+ *     "chrome-devtools-mcp:*": "user-invocable-only",
+ *     "deploy": "off"
  *   }
  *
- * `enabled`, `maxCharsPerSkill` and `maxChars` are accepted too and default to
- * what config.ts says. An absent block is defaults, which is what makes
- * installing this extension and configuring nothing a no-op.
+ * Claude Code's `skillOverrides`, key for key: a FLAT map of skill name to
+ * state, with a skill absent from it treated as `on`. That flatness is the whole
+ * schema — there is nowhere to put a `default` or a budget, because any key that
+ * is not a skill name would be ambiguous with one that is, so those went (see
+ * select.ts on `"*"`, and config.ts on the budgets).
+ *
+ * Two things pi adds inside the same shape: glob keys, so a plugin family that
+ * arrives with six skills and grows to eight is one line rather than eight, and
+ * the `preload` state. Both are values in the map, so neither breaks the schema.
+ *
+ * An absent block is defaults, which is what makes installing this extension and
+ * configuring nothing a no-op.
  *
  * ## Writing
  *
@@ -86,26 +96,16 @@ export function read(agentDir: string): SkillLoadingSettings {
 	}
 
 	const modes: Record<string, Mode> = {};
-	const configured = block.skills;
-	if (configured && typeof configured === "object" && !Array.isArray(configured)) {
-		for (const [pattern, mode] of Object.entries(configured as Record<string, unknown>)) {
-			// An unrecognised mode is dropped rather than defaulted. Defaulting would
-			// silently give `name` to a skill someone wrote "hidden" for and believed
-			// they had turned off.
-			if (isMode(mode) && pattern.trim().length > 0) modes[pattern.trim()] = mode;
-		}
+	for (const [pattern, mode] of Object.entries(block)) {
+		// An unrecognised value is dropped rather than defaulted. Defaulting would
+		// silently give `on` to a skill someone wrote "hidden" for and believed
+		// they had turned off — and dropping is also what makes a state this
+		// version has never heard of read as "leave it alone" rather than "show
+		// it", which is the safer of the two when the map is shared with a newer
+		// Claude Code.
+		if (isMode(mode) && pattern.trim().length > 0) modes[pattern.trim()] = mode;
 	}
-
-	const positive = (value: unknown, fallback: number) =>
-		typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-
-	return {
-		enabled: typeof block.enabled === "boolean" ? block.enabled : base.enabled,
-		default: isMode(block.default) ? block.default : base.default,
-		skills: modes,
-		maxCharsPerSkill: positive(block.maxCharsPerSkill, base.maxCharsPerSkill),
-		maxChars: positive(block.maxChars, base.maxChars),
-	};
+	return { ...base, skills: modes };
 }
 
 export type WriteResult = { ok: true } | { ok: false; error: string };
@@ -113,10 +113,10 @@ export type WriteResult = { ok: true } | { ok: false; error: string };
 /**
  * Merge the block back into settings.json.
  *
- * Only non-default fields are written. A block that says
- * `{"skills":{"pptx":"command"}}` is one you can read and understand; one that
- * restates every built-in budget invites editing a number that was never the
- * problem.
+ * An empty map removes the key outright rather than writing `{}`. Absent and
+ * empty mean the same thing to the reader, and the documented state for "no
+ * overrides" is absent — leaving `"skillOverrides": {}` behind after a reset
+ * would be a line in a tracked file that says nothing.
  */
 export function write(settings: SkillLoadingSettings, agentDir: string): WriteResult {
 	const path = settingsPath(agentDir);
@@ -134,14 +134,8 @@ export function write(settings: SkillLoadingSettings, agentDir: string): WriteRe
 		return { ok: false, error: `${path} is not a JSON object` };
 	}
 
-	const base = defaultSettings();
-	const block: Record<string, unknown> = {};
-	if (settings.enabled !== base.enabled) block.enabled = settings.enabled;
-	if (settings.default !== base.default) block.default = settings.default;
-	block.skills = settings.skills;
-	if (settings.maxCharsPerSkill !== base.maxCharsPerSkill) block.maxCharsPerSkill = settings.maxCharsPerSkill;
-	if (settings.maxChars !== base.maxChars) block.maxChars = settings.maxChars;
-	current[SETTINGS_KEY] = block;
+	if (Object.keys(settings.skills).length > 0) current[SETTINGS_KEY] = { ...settings.skills };
+	else delete current[SETTINGS_KEY];
 
 	const temporary = `${path}.skill-loading-${process.pid}.tmp`;
 	try {
