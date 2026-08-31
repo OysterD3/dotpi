@@ -1,0 +1,55 @@
+# gitleaks configuration for this repo.
+#
+# Two scanners read this file: the opt-in pre-commit hook in .githooks/, and the
+# GitHub Actions backstop in .github/workflows/gitleaks.yml. Neither is worth
+# having if it cries wolf — a scanner that fails on something known-safe teaches
+# you to push past it, which is the habit that lets a real credential through.
+#
+# `useDefault = true` keeps gitleaks' entire built-in ruleset. Everything below
+# only ever SUBTRACTS.
+
+[extend]
+useDefault = true
+
+# One exemption: the Chrome MV3 `key` in agent/extensions/pointer/chrome/
+# manifest.json. gitleaks' generic-api-key rule sees a 392-character
+# high-entropy string and calls it a credential; it is an RSA PUBLIC key.
+#
+# The field exists so an unpacked extension keeps a stable ID across reloads:
+# Chrome derives the extension ID from a SHA-256 of this key, so without it the
+# ID changes every load and the native-messaging host manifest — which names the
+# extension by ID in allowed_origins — stops matching. Every extension in the
+# Chrome Web Store ships one. The private half never existed in this repo.
+#
+# Checkable rather than asserted:
+#
+#     python3 -c "import base64,json,sys; sys.stdout.buffer.write(base64.b64decode(
+#       json.load(open('agent/extensions/pointer/chrome/manifest.json'))['key']))" \
+#       | openssl pkey -pubin -inform DER -text -noout
+#
+# prints "Public-Key: (2048 bit)".
+#
+# ## Why this matches the VALUE and not the path
+#
+# The obvious form is a path allowlist scoped to one rule:
+#
+#     [allowlist]
+#     targetRules = ["generic-api-key"]
+#     paths = ['''agent/extensions/pointer/chrome/manifest\.json$''']
+#
+# It does not do what it says. Measured against gitleaks 8.24.3 — the version
+# the action pins — `targetRules` is IGNORED in the singular `[allowlist]`
+# table, and the `[[allowlists]]` array form that does support it is not merged
+# in from an extending config at all (it silently exempts nothing, so the scan
+# still fails). What that first block actually installs is a blanket exemption
+# on the whole file: an AWS key planted in the same manifest went undetected.
+#
+# So the exemption is pinned to the key material instead. The prefix is the
+# ASN.1 SubjectPublicKeyInfo header for a 2048-bit RSA public key — the OID for
+# rsaEncryption and nothing else — so this pattern cannot cover a private key,
+# a token, or any other high-entropy string, in this file or any other. The
+# same planted AWS key IS still reported under this config, which is the
+# property being bought.
+[allowlist]
+description = "Chrome MV3 manifest key — an RSA public key, not a credential"
+regexes = ['''MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A[A-Za-z0-9+/]{300,}={0,2}''']
