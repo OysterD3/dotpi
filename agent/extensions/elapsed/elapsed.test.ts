@@ -21,7 +21,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { formatDuration } = await import("./duration.ts");
-const { pickVerbIndex, turnDurationLine, verbFor } = await import("./render.ts");
+const { finishedAtLabel, pickVerbIndex, turnDurationLine, verbFor } = await import("./render.ts");
 const { ASK_CHANNEL, CONFIG, PERMISSION_ANSWERED_CHANNEL, PERMISSION_CHANNEL } = await import("./config.ts");
 const { WaitClock, workedMs } = await import("./waiting.ts");
 
@@ -74,6 +74,28 @@ check("short turn", turnDurationLine({ durationMs: 12_000, verbIndex: 2 }), "Chu
 check("the verb pool", [...CONFIG.verbs], ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"]);
 check("index wraps rather than breaking", verbFor(CONFIG.verbs.length), "Baked");
 check("negative index is still a verb", verbFor(-1), "Worked");
+
+// The finish time. Built from a fixed epoch and compared against the same
+// Intl call the renderer makes, so the assertion holds in any timezone and
+// under either clock convention rather than pinning one machine's locale.
+const ENDED = Date.parse("2026-08-31T03:03:00Z");
+const clock = new Date(ENDED).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+check("the finish time is the reader's own clock", finishedAtLabel(ENDED), clock);
+check(
+	"and rides after the duration",
+	turnDurationLine({ durationMs: 367_000, verbIndex: 7, endedAt: ENDED }),
+	`Worked for 6m 7s · done ${clock}`,
+);
+// Entries written before the field existed still render, minus the clock —
+// these are persisted and redrawn on every resume, so the old ones outnumber
+// the new for a while.
+check("an entry with no finish time is unchanged", turnDurationLine({ durationMs: 64_000, verbIndex: 4 }), "Cooked for 1m 4s");
+// "done Invalid Date" is worse than no clock, and a half-written entry is the
+// way to get one.
+check("a broken timestamp is dropped, not printed", turnDurationLine({ durationMs: 64_000, verbIndex: 4, endedAt: Number.NaN }), "Cooked for 1m 4s");
+// 0 is a real epoch, so it must NOT be treated as absent the way a truthy
+// check would.
+check("epoch zero still prints", turnDurationLine({ durationMs: 1000, verbIndex: 7, endedAt: 0 }).includes("· done "), true);
 check("lowest random picks the first", pickVerbIndex(() => 0), 0);
 check("highest random stays in range", pickVerbIndex(() => 0.999999), CONFIG.verbs.length - 1);
 

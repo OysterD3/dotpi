@@ -2018,14 +2018,23 @@ for two seconds or two minutes, and nothing records the cost of a turn once it f
 filled in:
 
 ```
-⠋ Working... 1m 4s          while the agent runs, updated once a second
-✻ Cooked for 1m 4s          when the turn settles, dimmed, in the transcript
+⠋ Working... 1m 4s                     while the agent runs, updated once a second
+✻ Cooked for 1m 4s · done 11:03 AM     when the turn settles, dimmed, in the transcript
 ```
 
 The duration format has a hard cut at one minute, seconds **floored** below it (a ticking counter
 never shows a second that has not fully passed) and **rounded with carry** above it, and days never
 showing seconds. The end-of-turn verb is drawn from a pool — Baked, Brewed, Churned, Cogitated,
 Cooked, Crunched, Sautéed, Worked.
+
+**The duration and the finish time answer different questions.** "6m 7s" says how long you waited;
+`done 11:03 AM` says *when*, which is the one you want coming back to a terminal you walked away
+from, reading down a scrollback of turns. It is written in your own clock convention — `toLocale`
+with no fixed locale, so 24-hour machines get `11:03` — and it is **stored on the entry, not read
+when the line is drawn**: these entries persist and are redrawn on every resume and branch replay, so
+a clock consulted at render time would report when you reopened the transcript rather than when the
+work finished. Entries written before the field existed have no time to show and render as they
+always did, duration alone.
 
 That line is a display-only custom entry, so it stays in your scrollback and never enters the
 model's context: how long a turn took is information for you, not for it. Timing runs from the

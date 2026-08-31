@@ -290,6 +290,6 @@ export default function (pi: ExtensionAPI) {
 		if (started === undefined) return;
 
 		if (!settings.showTurnDuration || durationMs < settings.minTurnMs) return;
-		pi.appendEntry<TurnDurationDetails>(ENTRY_TYPE, { durationMs, verbIndex: pickVerbIndex() });
+		pi.appendEntry<TurnDurationDetails>(ENTRY_TYPE, { durationMs, verbIndex: pickVerbIndex(), endedAt: Date.now() });
 	});
 }
