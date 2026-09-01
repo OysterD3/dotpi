@@ -1911,12 +1911,32 @@ of letting a fleet spawn and die one agent at a time.
 
 ```jsonc
 {
-  "ultracode": {
+  "dynamicWorkflow": {
     "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
+    "alwaysOn": false,        // optional; start every session in the mode
     "model": "fast"           // optional default for agents no request routes; a role or a reference
   }
 }
 ```
+
+(The pre-rename `ultracode` block is still read, per field, so an older settings.json keeps working.)
+
+**`alwaysOn` makes ultracode the standing default** rather than something you type at the top of
+every session. The per-session opt-in is deliberate — the mode spends money, and a decision you have
+to make is a decision you actually take — but where the answer is always the same one, typing it is a
+ritual and not a choice.
+
+It is a default, not a lock: turning the mode off in a session turns it off, and resuming that
+session keeps it off. The branch records what was chosen and the default only applies where nothing
+was, which is the difference between the two. Nothing is announced at startup either — the
+`✦ dynamic workflow` badge is the surface, and a notice on every session start is exactly the noise a
+standing default exists to remove.
+
+One consequence worth stating: an `alwaysOn` session records **no** level to restore, so
+`/ultracode off` drops the orchestration and leaves the thinking level where it is. There is nothing
+to go back to — ultracode *is* the configured default — and recording one would corrupt it anyway,
+because pi persists every `setThinkingLevel` into `defaultThinkingLevel` and the next session would
+"restore" to the xhigh the last one wrote.
 
 Saved workflows live in `~/.pi/agent/workflows/<name>.js` and run by `name`; any file on disk runs
 by `scriptPath`.

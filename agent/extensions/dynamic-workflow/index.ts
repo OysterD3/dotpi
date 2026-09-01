@@ -71,6 +71,10 @@
  *
  * Settings (agent settings.json):
  *   dynamicWorkflow.keywordTrigger  boolean, default true
+ *   dynamicWorkflow.alwaysOn        boolean, default false — start every
+ *                                   session in the mode. A default, not a lock:
+ *                                   a session toggled off stays off, resumes
+ *                                   included. See the setting in config.ts.
  *   dynamicWorkflow.model           "provider/model-id" for workflow subagents;
  *                                   defaults to the session model
  *   The pre-rename `ultracode.*` block is still read, per field, as a fallback.
@@ -164,6 +168,7 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 		};
 		return {
 			keywordTrigger: read<boolean>("keywordTrigger", (v) => typeof v === "boolean") ?? DEFAULT_SETTINGS.keywordTrigger,
+			alwaysOn: read<boolean>("alwaysOn", (v) => typeof v === "boolean") ?? DEFAULT_SETTINGS.alwaysOn,
 			model: read<string>("model", (v) => typeof v === "string"),
 		};
 	} catch {
@@ -234,6 +239,15 @@ export interface RestoredBranchState {
 	/** Thinking level to restore on /ultracode off, if the mode is on. */
 	previousLevel: string | undefined;
 	/**
+	 * Whether this branch contains a toggle at all, either way.
+	 *
+	 * What `alwaysOn` keys off. A session that has been toggled has an answer
+	 * already — including "off", which a default that reapplied itself on every
+	 * resume would silently overrule — and one that has not is where a default
+	 * belongs.
+	 */
+	toggled: boolean;
+	/**
 	 * Whether the keyword reminder has gone out at least once this session.
 	 * Read alongside hasMessageSinceLastUserTurn to decide whether a turn
 	 * following a workflow-result delivery is still opted in.
@@ -252,8 +266,10 @@ export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<stri
 	let turns = 0;
 	let previousLevel: string | undefined;
 	let keywordFired = false;
+	let toggled = false;
 	for (const entry of branch) {
 		if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
+			toggled = true;
 			const data = entry.data as ToggleEntry | undefined;
 			on = data?.action === "on";
 			previousLevel = on ? data?.previousLevel : undefined;
@@ -288,7 +304,7 @@ export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<stri
 	// A pending exit: the mode is off but the model was told it is on and the
 	// exit notice never went out before the session ended.
 	mode.restore({ on, announced, turnsSinceReminder: turns, exitPending: announced });
-	return { previousLevel: on ? previousLevel : undefined, keywordFired };
+	return { previousLevel: on ? previousLevel : undefined, keywordFired, toggled };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -474,6 +490,14 @@ export default function (pi: ExtensionAPI) {
 		editStreak.restore(editState.count);
 		workflowRanThisSession = editState.workflowRan;
 		appliedLevel = mode.isOn() ? pi.getThinkingLevel() : undefined;
+		// The standing default, applied only where this branch has not already
+		// answered the question — see RestoredBranchState.toggled. A session the
+		// user turned the mode OFF in keeps it off through every resume, which is
+		// the difference between a default and a lock.
+		if (settings.alwaysOn && !restored.toggled && !mode.isOn()) {
+			enable(ctx, true);
+			appliedLevel = pi.getThinkingLevel();
+		}
 		// Background runs do not survive a session ending. The store records
 		// which ones died with their process, so the correction can be said out
 		// loud — and, unlike before, each one names a resumable run id.
@@ -662,9 +686,20 @@ export default function (pi: ExtensionAPI) {
 	const currentLevelLabel = () =>
 		mode.isOn() ? `dynamic workflow (${appliedLevel ?? pi.getThinkingLevel()} + workflow orchestration)` : pi.getThinkingLevel();
 
-	const enable = (ctx: ExtensionContext) => {
+	/**
+	 * @param asDefault true when `alwaysOn` is turning the mode on at startup
+	 *   rather than a person asking for it. Two differences, both about not
+	 *   lying: nothing is announced (the badge is the surface, and a notice on
+	 *   every session start is the noise a standing default exists to avoid),
+	 *   and NO previousLevel is recorded — there is no level to go back to,
+	 *   because ultracode IS the configured default. Recording one would also
+	 *   corrupt it: pi persists every setThinkingLevel into
+	 *   `defaultThinkingLevel`, so the second session would "restore" to the
+	 *   xhigh the first one wrote and the real preference would be gone.
+	 */
+	const enable = (ctx: ExtensionContext, asDefault = false) => {
 		if (mode.isOn()) {
-			ctx.ui.notify("Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)", "info");
+			if (!asDefault) ctx.ui.notify("Current effort level: dynamic workflow (xhigh + workflow orchestration)", "info");
 			return;
 		}
 		const model = ctx.model;
@@ -683,11 +718,12 @@ export default function (pi: ExtensionAPI) {
 		const before = pi.getThinkingLevel();
 		setLevel("xhigh");
 		const applied = pi.getThinkingLevel();
-		previousLevel = before;
+		previousLevel = asDefault ? undefined : before;
 		appliedLevel = applied;
 		mode.enable();
 		pi.appendEntry<ToggleEntry>(ENTRY_TYPE, { action: "on", previousLevel });
 		setBadge(ctx);
+		if (asDefault) return;
 		const capped = applied !== "xhigh" && applied !== "max" ? ` — ${model.id} tops out below xhigh` : "";
 		ctx.ui.notify(`Set effort level to dynamic workflow (this session only): ${applied} + workflow orchestration${capped}`, "info");
 	};

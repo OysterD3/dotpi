@@ -368,6 +368,59 @@ for (const name of ["session_start", "input", "before_agent_start", "thinking_le
 	check(`hooks ${name}`, events.has(name), true);
 }
 
+console.log("\n--- alwaysOn: the mode as a standing default ---");
+{
+	// The opt-in is per-session on purpose, because the mode costs money. This is
+	// for the case where the answer is always the same one and typing it at the
+	// top of every session is a ritual rather than a decision.
+	writeSettings({ alwaysOn: true });
+	thinkingLevel = "medium";
+	thinkingLog.length = 0;
+	const { ctx, notices, statuses } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+
+	check("a fresh session starts in the mode", thinkingLog, ["xhigh"]);
+	check("and the model is told so on its first turn", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	// The badge is the surface. A notice on every single session start is exactly
+	// the noise a standing default exists to remove.
+	check("nothing is announced at startup", notices.length, 0);
+	check("the badge says it instead", statuses.at(-1)?.text, "✦ dynamic workflow");
+
+	// Off still works, and stays off — a default is not a lock.
+	await commands.get("ultracode")!.handler("off", ctx);
+	check("turning it off works", notices.at(-1)?.message, "Dynamic workflow off");
+	// No previousLevel was recorded, because there is no level to go back to:
+	// ultracode IS the configured default. Recording one would also corrupt it,
+	// since pi persists every level change into defaultThinkingLevel and the next
+	// session would "restore" to the xhigh this one wrote.
+	check("and does not pretend to restore a level", thinkingLevel, "xhigh");
+	await turn("drain the exit notice");
+}
+{
+	// A branch that has already answered the question keeps its answer. Without
+	// this, every resume of a session the user had turned OFF would turn it back
+	// on, which is a lock wearing a default's clothes.
+	writeSettings({ alwaysOn: true });
+	thinkingLevel = "medium";
+	thinkingLog.length = 0;
+	const branch = [{ type: "custom", customType: "ultracode", data: { action: "off" } }];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	check("a session turned off stays off through a resume", thinkingLog, []);
+	check("and the model is told nothing", await turn("quiet"), undefined);
+}
+{
+	// The default is off, so nothing in this repo changes for anyone who has not
+	// asked for it.
+	writeSettings({});
+	thinkingLevel = "medium";
+	thinkingLog.length = 0;
+	const { ctx } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	check("without the setting a session starts plain", thinkingLog, []);
+	check("with nothing said to the model", await turn("hello"), undefined);
+}
+
 console.log("\n--- routing named in the triggering prompt ---");
 writeSettings({});
 {

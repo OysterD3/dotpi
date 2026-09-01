@@ -3752,13 +3752,21 @@ console.log("--- settings: dynamicWorkflow.* wins, ultracode.* still read ---");
 		const write = (o: unknown) => writeFileSync(join(dir, "settings.json"), JSON.stringify(o));
 
 		write({ ultracode: { keywordTrigger: false, model: "old/model" } });
-		check("legacy block is still honoured", loadSettings(dir), { keywordTrigger: false, model: "old/model" });
+		check("legacy block is still honoured", loadSettings(dir), { keywordTrigger: false, alwaysOn: false, model: "old/model" });
 
 		write({ dynamicWorkflow: { keywordTrigger: false, model: "new/model" } });
-		check("new block works", loadSettings(dir), { keywordTrigger: false, model: "new/model" });
+		check("new block works", loadSettings(dir), { keywordTrigger: false, alwaysOn: false, model: "new/model" });
 
 		write({ ultracode: { keywordTrigger: false, model: "old/model" }, dynamicWorkflow: { model: "new/model" } });
-		check("new key wins per FIELD, legacy fills the rest", loadSettings(dir), { keywordTrigger: false, model: "new/model" });
+		check("new key wins per FIELD, legacy fills the rest", loadSettings(dir), { keywordTrigger: false, alwaysOn: false, model: "new/model" });
+
+		// alwaysOn reads per-field like the rest, from either block.
+		write({ ultracode: { alwaysOn: true } });
+		check("alwaysOn is read from the legacy block too", loadSettings(dir).alwaysOn, true);
+		write({ dynamicWorkflow: { alwaysOn: true } });
+		check("and from the current one", loadSettings(dir).alwaysOn, true);
+		write({ dynamicWorkflow: { alwaysOn: "yes" } });
+		check("a non-boolean falls back rather than reading as truthy", loadSettings(dir).alwaysOn, false);
 
 		write({});
 		check("neither block falls back to defaults", loadSettings(dir), { ...DEFAULT_SETTINGS, model: undefined });

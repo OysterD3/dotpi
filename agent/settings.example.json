@@ -115,6 +115,10 @@
     "dropOldReasoning": false,
     "keepRecentReasoning": 10
   },
+  "dynamicWorkflow": {
+    "keywordTrigger": true,
+    "alwaysOn": false
+  },
   "skillOverrides": {
     "legacy-context": "name-only",
     "chrome-devtools-mcp:*": "user-invocable-only",

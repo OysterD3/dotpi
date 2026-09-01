@@ -196,6 +196,21 @@ export interface UltracodeSettings {
 	/** Whether the "ultracode" keyword opts a turn in; default true. */
 	keywordTrigger: boolean;
 	/**
+	 * Start every session in the mode, rather than waiting to be asked; default
+	 * false.
+	 *
+	 * `/effort ultracode` and `/dynamic-workflow` are per-session on purpose —
+	 * the mode costs money and an opt-in you have to make is a decision you
+	 * actually take. This is for the case where that decision is always the same
+	 * one, and typing it at the top of every session is a ritual rather than a
+	 * choice.
+	 *
+	 * It is a default, not a lock. Turning the mode off in a session turns it off
+	 * for that session, and a resume of that session keeps it off — the branch
+	 * records what was chosen, and this only applies where nothing was.
+	 */
+	alwaysOn: boolean;
+	/**
 	 * Default model reference for workflow subagents when a request does not
 	 * name one; falls back to the session model. Per-workflow routing is said
 	 * in the triggering request, not configured here — see routing.ts.
@@ -205,4 +220,6 @@ export interface UltracodeSettings {
 
 export const DEFAULT_SETTINGS: UltracodeSettings = {
 	keywordTrigger: true,
+	// Off: a mode that spends money is opted into, not inherited from a clone.
+	alwaysOn: false,
 };
