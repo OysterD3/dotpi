@@ -354,7 +354,11 @@ check("no promise of context budgeting", description.includes("Context is budget
 check("and the absence is stated", description.includes("Nothing here is truncated"), true);
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
-check("/thinking registered", commands.has("thinking"), true);
+check("/effort registered", commands.has("effort"), true);
+// NOT "thinking". pi added a built-in /thinking in 0.84.x, and a colliding
+// extension command is dropped from autocomplete with a startup warning rather
+// than shadowing it — so this name has to stay out of pi's own list.
+check("and does not collide with pi's own /thinking", commands.has("thinking"), false);
 check("shift+down registered", shortcuts.has("shift+down"), true);
 // /hotkeys prints this string; an empty one would list the key with no meaning.
 check("the gesture describes itself", (shortcuts.get("shift+down")?.description?.length ?? 0) > 0, true);
@@ -556,7 +560,7 @@ console.log("\n--- /ultracode guards ---");
 	check("invalid argument message", notices.at(-1)?.message, "Invalid argument: sideways. Valid options are: on, off, status");
 }
 
-console.log("\n--- /thinking: the effort list, with ultracode in it ---");
+console.log("\n--- /effort: the effort list, with ultracode in it ---");
 {
 	// pi's own selector is built from a closed union inside interactive mode, so
 	// the level cannot be added there; this is the same choice under a name the
@@ -566,7 +570,7 @@ console.log("\n--- /thinking: the effort list, with ultracode in it ---");
 	events.get("session_start")!({}, ctx);
 	thinkingLevel = "medium";
 
-	await commands.get("thinking")!.handler("", ctx);
+	await commands.get("effort")!.handler("", ctx);
 	const offered = selections.at(-1)!;
 	check("the list is titled as an effort choice", offered.title, "Effort level");
 	check("it offers what the model supports", offered.options.some((option) => option.startsWith("high — ")), true);
@@ -577,31 +581,31 @@ console.log("\n--- /thinking: the effort list, with ultracode in it ---");
 	// Cancelling changes nothing.
 	{
 		const cancelled = makeCtx({ model: MODEL });
-		await commands.get("thinking")!.handler("", cancelled.ctx);
+		await commands.get("effort")!.handler("", cancelled.ctx);
 		check("cancelling the list is not a choice", thinkingLevel, "off");
 	}
 
 	// Typed straight through, no list.
-	await commands.get("thinking")!.handler("high", ctx);
+	await commands.get("effort")!.handler("high", ctx);
 	check("a typed level is applied", thinkingLevel, "high");
-	await commands.get("thinking")!.handler("nonsense", ctx);
+	await commands.get("effort")!.handler("nonsense", ctx);
 	check("an unknown level is refused, with the options", notices.at(-1)?.message.startsWith("Unknown effort level: nonsense. Options: "), true);
 	check("and changes nothing", thinkingLevel, "high");
 
 	// ultracode by name is the mode, not just a level.
 	thinkingLog.length = 0;
-	await commands.get("thinking")!.handler("ultracode", ctx);
+	await commands.get("effort")!.handler("ultracode", ctx);
 	check("ultracode asks for xhigh", thinkingLog, ["xhigh"]);
 	check("mode entered from the level list", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
 
 	// And picking a plain level from the SAME list leaves it again — the exit
 	// the thinking_level_select handler already owns, reached the new way.
-	await commands.get("thinking")!.handler("medium", ctx);
+	await commands.get("effort")!.handler("medium", ctx);
 	check("a plain level takes the session back out", (await turn("and again"))?.message?.content, `<system-reminder>\n${EXIT}\n</system-reminder>`);
 
 	// A model with no reasoning at all still has a list, and ultracode is on it.
 	const plain = makeCtx({ model: NO_REASONING, pick: 0 });
-	await commands.get("thinking")!.handler("", plain.ctx);
+	await commands.get("effort")!.handler("", plain.ctx);
 	check("a non-reasoning model offers off and ultracode", plain.selections.at(-1)?.options.map((option) => option.split(" — ")[0]), ["off", "ultracode"]);
 }
 

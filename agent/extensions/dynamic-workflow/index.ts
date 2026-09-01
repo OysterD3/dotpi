@@ -34,12 +34,13 @@
  *        and standing reminders follow a fixed cadence — full on entry, "still
  *        on" every 10th user turn, exit notice once when it goes off. Changing
  *        the thinking level away from the applied one exits the mode;
- *      - `/thinking` offers the same thing as an effort LEVEL: the model's own
+ *      - `/effort` offers the same thing as an effort LEVEL: the model's own
  *        levels plus "ultracode", which resolves to xhigh AND the standing
- *        opt-in. pi's built-in picker cannot carry it — ThinkingLevel is a
- *        closed union in pi-agent-core and the picker is built inside
- *        interactive mode — so this is the same choice under a name the
- *        extension owns, and picking a plain level from it leaves the mode.
+ *        opt-in. pi's own picker cannot carry it — ThinkingLevel is a closed
+ *        union in pi-agent-core and the picker is built inside interactive mode
+ *        — so this is the same choice under a name the extension owns, and
+ *        picking a plain level from it leaves the mode. Named `/effort` and not
+ *        `/thinking` because pi has its own `/thinking` now; see the command.
  *
  * Reminders are injected as hidden custom messages (display: false) via
  * before_agent_start — pi's own plan-mode pattern — so they reach the model as
@@ -174,13 +175,13 @@ export function loadSettings(agentDir: string): UltracodeSettings {
  * The name ultracode answers to in the effort list.
  *
  * Not a ThinkingLevel — that union is closed in pi-agent-core and this is not a
- * seventh member of it. It is a row in `/thinking`'s list that resolves to
+ * seventh member of it. It is a row in `/effort`'s list that resolves to
  * xhigh plus the standing opt-in; see the command's own comment.
  */
 export const ULTRACODE_LEVEL = "ultracode";
 
 /**
- * pi's own wording for each level, so `/thinking` reads like the built-in
+ * pi's own wording for each level, so `/effort` reads like the built-in
  * picker rather than like a second, differently-described list. Copied rather
  * than imported: the descriptions live in an interactive-mode component pi does
  * not export as data, and one line of drift here is cosmetic.
@@ -204,7 +205,7 @@ export interface ThinkingChoice {
 }
 
 /**
- * The rows `/thinking` offers: what the current model supports, then ultracode.
+ * The rows `/effort` offers: what the current model supports, then ultracode.
  *
  * Ultracode goes LAST rather than in effort order, because it is not a point on
  * the same scale — picking it changes what the session does, not only how hard
@@ -626,7 +627,7 @@ export default function (pi: ExtensionAPI) {
 	 * that got us here is the choice, and undoing it would be the extension
 	 * arguing with it.
 	 *
-	 * Shared by the event above and `/thinking` below, which reaches the same
+	 * Shared by the event above and `/effort` below, which reaches the same
 	 * state by a different road — one place, so the two cannot drift into
 	 * leaving the mode in different states.
 	 */
@@ -883,24 +884,34 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// `/thinking` — the effort selector with "ultracode" in it.
+	// `/effort` — the level list with "ultracode" in it.
 	//
-	// pi's own selector cannot carry it. ThinkingLevel is a closed union in
-	// pi-agent-core and the built-in picker is constructed inside interactive
-	// mode from the MODEL's supported levels, so an extension has no way to add
-	// a row to it, and the cycle key walks the same closed list. What an
-	// extension can do is offer the same choice under a name of its own — which
-	// is also why the command is `/thinking` and not a fourth alias for
-	// `/dynamic-workflow`: the thing being chosen is an effort level, and it
-	// belongs in the list of effort levels rather than behind a verb.
+	// pi's own surfaces cannot carry it. ThinkingLevel is a closed union in
+	// pi-agent-core, the built-in picker is constructed inside interactive mode
+	// from the MODEL's supported levels, and the cycle key walks the same closed
+	// list — so an extension has no way to add a row to any of them. What an
+	// extension can do is offer the same choice under a name of its own, which
+	// is why this is a command and not a fourth alias for `/dynamic-workflow`:
+	// the thing being chosen is an effort level, and it belongs in a list of
+	// effort levels rather than behind a verb.
+	//
+	// NOT `/thinking`, which is what this was called first. pi added a built-in
+	// `/thinking` ("Set thinking level") in 0.84.x, and a colliding extension
+	// command is dropped from autocomplete with a startup warning rather than
+	// shadowing it — so the command was unreachable in exactly the pi it was
+	// written for. The name was checked, and checked against the wrong copy:
+	// `BUILTIN_SLASH_COMMANDS` in this repo's node_modules is older than the pi
+	// that actually runs, and the two had diverged. Anything named here is worth
+	// checking against `pi --version`'s own list, not the one that resolves in a
+	// test.
 	//
 	// "ultracode" is not a seventh level pretending to be one of the six. It
 	// resolves to xhigh (or as close as the model goes) and turns the mode on,
 	// so what it adds to the list is a level that also standing-opts the session
 	// into orchestration — see enable() for what that costs and reminders.ts for
 	// what it asks of the model.
-	pi.registerCommand("thinking", {
-		description: "Set the effort level — the model's own levels, plus ultracode (xhigh + workflow orchestration)",
+	pi.registerCommand("effort", {
+		description: "Set the effort level — everything pi's own /thinking offers, plus ultracode (xhigh + workflow orchestration)",
 		getArgumentCompletions: (prefix: string) =>
 			thinkingChoices(uiCtx)
 				.filter((choice) => choice.value.startsWith(prefix.trim().toLowerCase()))
@@ -909,7 +920,7 @@ export default function (pi: ExtensionAPI) {
 			uiCtx = ctx;
 			const choices = thinkingChoices(ctx);
 			const argument = args.trim().toLowerCase();
-			// Typed straight through (`/thinking ultracode`), or picked from the
+			// Typed straight through (`/effort ultracode`), or picked from the
 			// list when nothing was typed. A headless context has no list to show,
 			// so there the argument is the only route in.
 			let picked = argument;

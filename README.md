@@ -1436,7 +1436,7 @@ subagents from a script, and the triggers that opt the model into using it.
 ```
 ultracode find every place this event is mishandled     # keyword: opts in this one turn
 /ultracode                                              # session mode: on until turned off
-/thinking ultracode                                     # the same, chosen as an effort level
+/effort ultracode                                       # the same, chosen as an effort level
 ```
 
 The **keyword** is matched on whole words, so a whole-word "ultracode" triggers it but
@@ -1451,7 +1451,7 @@ thinking level away from the applied one exits the mode. The mode survives sessi
 are replayed from the branch, and delivered reminders are counted so a resumed session continues the
 cadence instead of re-announcing.
 
-**Ultracode is also an effort level.** `/thinking` lists what the current model supports and then
+**Ultracode is also an effort level.** `/effort` lists what the current model supports and then
 `ultracode — xhigh + workflow orchestration, this session only`, and picking it is `/ultracode on`:
 xhigh (or as close as the model goes) plus the standing opt-in. Picking any plain level from the
 same list leaves the mode again, keeping the level you just chose rather than restoring the
@@ -1470,10 +1470,20 @@ Effort level
 It is a separate command rather than a row in pi's own picker because it cannot be one: pi's
 `ThinkingLevel` is a closed union in `pi-agent-core`, and the selector is constructed inside
 interactive mode from the model's supported levels, so an extension has no way to add a row to it or
-to the cycle key. `/thinking` is the same choice under a name this extension owns. `ultracode` sits
+to the cycle key. `/effort` is the same choice under a name this extension owns. `ultracode` sits
 last in the list rather than in effort order, because it is not a point on the same scale — picking
 it changes what the session *does*, not only how hard it thinks — and a row that starts spending
 money should not sit where a neighbouring keystroke lands on it.
+
+**It was called `/thinking` for one commit, and pi already owns that name.** pi 0.84.x ships a
+built-in `/thinking` ("Set thinking level"), and a colliding extension command does not shadow it —
+pi drops it from autocomplete and prints `Extension command '/thinking' conflicts with built-in
+interactive command` at startup, so the command was unreachable in exactly the pi it was written
+for. The name *was* checked before it was taken, against `BUILTIN_SLASH_COMMANDS` in this repo's
+`node_modules` — which is an older pi than the one that actually runs, and the two had diverged. The
+lesson is the same one the transcript extension already writes down: a name, like a component
+internal, has to be checked against the installed `pi --version`, not against whatever a test
+resolves.
 
 **A model that cannot reach xhigh gets the mode anyway.** This used to refuse — *"Ultracode runs at
 xhigh effort, which <model> doesn't support"* — and revert the level, which made the mode
@@ -1928,7 +1938,7 @@ the model to always await.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Triggers, `/ultracode`, `/thinking`, `/workflows`, the `shift+↓` gesture, panel wiring, resume restore |
+| `index.ts` | Triggers, `/ultracode`, `/effort`, `/workflows`, the `shift+↓` gesture, panel wiring, resume restore |
 | `keyword.ts` | The keyword detector (pure) |
 | `reminders.ts` | The reminder texts |
 | `mode.ts` | The session-mode reminder cadence (pure) |
