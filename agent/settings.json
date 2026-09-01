@@ -60,6 +60,9 @@
   "compaction": {
     "enabled": true
   },
+  "dynamicWorkflow": {
+    "alwaysOn": true
+  },
   "contextDiet": {
     "dropOldReasoning": false
   },
