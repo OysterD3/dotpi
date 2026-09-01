@@ -80,10 +80,26 @@ check("negative index is still a verb", verbFor(-1), "Worked");
 // under either clock convention rather than pinning one machine's locale.
 const ENDED = Date.parse("2026-08-31T03:03:00Z");
 const clock = new Date(ENDED).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-check("the finish time is the reader's own clock", finishedAtLabel(ENDED), clock);
+check("the finish time is the reader's own clock", finishedAtLabel(ENDED, ENDED), clock);
+
+// Day tiers. A bare clock is ambiguous the moment you scroll back past
+// midnight, so today gets the time alone, this week gets a weekday, and older
+// gets a date. Built by walking `now` forward from a fixed stamp, so the
+// assertions do not depend on when the suite runs.
+const DAY = 86_400_000;
+const weekday = new Date(ENDED).toLocaleDateString(undefined, { weekday: "short" });
+const monthDay = new Date(ENDED).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+check("later the same day is still the bare clock", finishedAtLabel(ENDED, ENDED + 6 * 3_600_000), clock);
+check("yesterday's turn names its weekday", finishedAtLabel(ENDED, ENDED + DAY), `${weekday} ${clock}`);
+check("and so does one six days back", finishedAtLabel(ENDED, ENDED + 6 * DAY), `${weekday} ${clock}`);
+// Seven days on, the weekday name has come round again and identifies nothing.
+check("a week back switches to a date", finishedAtLabel(ENDED, ENDED + 7 * DAY), `${monthDay} ${clock}`);
+check("and so does much older", finishedAtLabel(ENDED, ENDED + 400 * DAY), `${monthDay} ${clock}`);
+// A stamp in the future is a clock that moved backwards, not tomorrow's turn.
+check("a future stamp is left bare rather than named a weekday", finishedAtLabel(ENDED, ENDED - 3 * DAY), clock);
 check(
 	"and rides after the duration",
-	turnDurationLine({ durationMs: 367_000, verbIndex: 7, endedAt: ENDED }),
+	turnDurationLine({ durationMs: 367_000, verbIndex: 7, endedAt: ENDED }, ENDED),
 	`Worked for 6m 7s · done ${clock}`,
 );
 // Entries written before the field existed still render, minus the clock —

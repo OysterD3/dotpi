@@ -2036,6 +2036,23 @@ a clock consulted at render time would report when you reopened the transcript r
 work finished. Entries written before the field existed have no time to show and render as they
 always did, duration alone.
 
+**It is qualified by day once the turn is not today's**, because a bare clock is ambiguous the moment
+you scroll back past midnight — `done 11:03 AM` on a three-day-old turn reads as this morning:
+
+```
+✻ Worked for 6m 7s · done 7:34 AM          today
+✻ Worked for 6m 7s · done Mon 8:34 AM      yesterday
+✻ Worked for 6m 7s · done Fri 8:34 AM      four days back
+✻ Worked for 6m 7s · done Aug 11 8:34 AM   three weeks back
+```
+
+Same tiering `/workflows` uses for run start times, with a weekday in the middle, capped at six days
+— on the seventh the weekday name has come round again and identifies nothing, so a date is the only
+thing left that does. The *stamp* stays stored; only the wording of it is decided at render, because
+whether a turn was today is a question about now rather than about the turn. A stamp in the future is
+a clock that moved backwards rather than tomorrow's turn, so it prints bare instead of asserting a
+day that has not happened.
+
 That line is a display-only custom entry, so it stays in your scrollback and never enters the
 model's context: how long a turn took is information for you, not for it. Timing runs from the
 first `agent_start` to `agent_settled`, which is the true end of a run — after retries, compaction,

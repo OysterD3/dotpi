@@ -33,6 +33,14 @@ export interface TurnDurationDetails {
 	endedAt?: number;
 }
 
+/** Midnight of the day a timestamp falls on, for comparing calendar days. */
+function startOfDay(at: Date): number {
+	return new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
+}
+
+/** Days beyond today a weekday name is still unambiguous. Six, so no weekday repeats. */
+const WEEKDAY_DAYS = 6;
+
 /**
  * The finish time, in the reader's own convention: "11:03 AM" where that is how
  * clocks are written, "11:03" where they are not.
@@ -40,9 +48,32 @@ export interface TurnDurationDetails {
  * `undefined` locale rather than a fixed one, the same call panel.ts makes for
  * run start times — a hardcoded en-US here would print AM/PM to someone whose
  * every other clock is 24-hour.
+ *
+ * Qualified by day once the turn is not today's, because a bare clock time is
+ * ambiguous the moment you scroll back past midnight: "done 11:03 AM" on a
+ * three-day-old turn reads as this morning. Same tiering `/workflows` uses for
+ * run start times, with a weekday tier in the middle — capped at six days, past
+ * which "Mon" would be ambiguous between two Mondays and a date is the only
+ * thing that still identifies the day.
+ *
+ * Compared against `now`, which is genuinely a render-time question: whether a
+ * turn was today changes while nothing about the turn does. The STAMP stays
+ * stored (see endedAt); only the wording of it is decided here.
  */
-export function finishedAtLabel(endedAt: number): string {
-	return new Date(endedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+export function finishedAtLabel(endedAt: number, now: number = Date.now()): string {
+	const then = new Date(endedAt);
+	const time = then.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+	// Zero is today. Negative is a stamp in the future, which means a clock that
+	// moved backwards rather than a turn from tomorrow — the bare time is the
+	// least wrong thing to say about it, where a date would assert a day that
+	// has not happened.
+	const days = Math.round((startOfDay(new Date(now)) - startOfDay(then)) / 86_400_000);
+	if (days <= 0) return time;
+	if (days <= WEEKDAY_DAYS) {
+		return `${then.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+	}
+	return `${then.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
 }
 
 export function verbFor(index: number): string {
@@ -55,12 +86,12 @@ export function pickVerbIndex(random = Math.random): number {
 	return Math.floor(random() * CONFIG.verbs.length);
 }
 
-export function turnDurationLine(details: TurnDurationDetails): string {
+export function turnDurationLine(details: TurnDurationDetails, now: number = Date.now()): string {
 	const worked = `${verbFor(details.verbIndex)} for ${formatDuration(details.durationMs)}`;
 	// A finite check, not a truthy one: 0 is a real epoch and NaN is what a
 	// hand-edited or half-written entry produces, and "done Invalid Date" is
 	// worse than no clock at all.
-	return Number.isFinite(details.endedAt) ? `${worked} · done ${finishedAtLabel(details.endedAt!)}` : worked;
+	return Number.isFinite(details.endedAt) ? `${worked} · done ${finishedAtLabel(details.endedAt!, now)}` : worked;
 }
 
 export function renderTurnDuration(details: TurnDurationDetails, theme: Theme): Text {
