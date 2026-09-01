@@ -33,7 +33,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { isBlank, prefix, trimBlank, withGutter } = await import("./render.ts");
-const { applyPatches, setPaint } = await import("./patch.ts");
+const { applyPatches, beginTurn, endTurn, setPaint, withoutThinking } = await import("./patch.ts");
 const { CONFIG } = await import("./config.ts");
 
 initTheme("dark");
@@ -262,6 +262,72 @@ console.log("\n--- applying twice cannot double-mark ---");
 
 applyPatches();
 check("the second call is a no-op", user.render(WIDTH).map(trimmedRight)[0], userLines.map(trimmedRight)[0]);
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- reasoning is retired when the turn is ---");
+
+// The user has hideThinkingBlock on, so pi leaves one italic "Thinking..."
+// label per run of reasoning — a line per assistant message, forever, saying
+// only that something was thought. It earns its place while the thought is
+// happening and not afterwards.
+const THINKING = "Thinking...";
+const reasoned = () =>
+	({
+		role: "assistant",
+		content: [
+			{ type: "thinking", thinking: "weighing the options" },
+			{ type: "text", text: "the answer" },
+		],
+		stopReason: "stop",
+	}) as never;
+
+// Pure first: the filter that does the work, and the two ways it must not fire.
+check("thinking blocks are filtered out", (withoutThinking(reasoned()) as any).content.map((c: any) => c.type).join(), "text");
+check(
+	"a message with no reasoning comes back by identity, so the common case allocates nothing",
+	(() => {
+		const plain = { role: "assistant", content: [{ type: "text", text: "hi" }] };
+		return withoutThinking(plain) === plain;
+	})(),
+	true,
+);
+check("a shape this does not recognise passes through", withoutThinking(undefined), undefined);
+
+{
+	// A turn in flight: the live component shows what pi would show.
+	beginTurn();
+	const live = new AssistantMessageComponent(reasoned(), true, getMarkdownTheme(), THINKING, 1);
+	const during = live.render(WIDTH).join("\n");
+	check("while the turn runs, the label is there", during.includes(THINKING), true);
+	check("along with the answer", during.includes("the answer"), true);
+
+	// ...and is gone once it settles, WITHOUT the session being reloaded. This is
+	// what a flag alone does not buy: updateContent built the children and a
+	// later render only draws them, so endTurn has to rebuild.
+	endTurn();
+	const after = live.render(WIDTH).join("\n");
+	check("once settled, the label is gone", after.includes(THINKING), false);
+	check("and the answer is untouched", after.includes("the answer"), true);
+}
+
+{
+	// Everything rebuilt from history — a resume, a branch replay — has no turn
+	// around it and is stripped from the first frame.
+	const replayed = new AssistantMessageComponent(reasoned(), true, getMarkdownTheme(), THINKING, 1);
+	const text = replayed.render(WIDTH).join("\n");
+	check("a message rebuilt outside a turn never shows it", text.includes(THINKING), false);
+	check("but still shows what was said", text.includes("the answer"), true);
+}
+
+{
+	// hideThinkingBlock OFF is the same complaint at a different volume: the
+	// whole reasoning text stays instead of a label. Stripping the input rather
+	// than the rendered lines answers both without knowing which is set.
+	const shown = new AssistantMessageComponent(reasoned(), false, getMarkdownTheme(), THINKING, 1);
+	const text = shown.render(WIDTH).join("\n");
+	check("with thinking shown, the reasoning is retired too", text.includes("weighing the options"), false);
+	check("and the answer survives", text.includes("the answer"), true);
+}
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

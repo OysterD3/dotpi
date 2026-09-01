@@ -2128,6 +2128,24 @@ inside its result are dropped; `ctrl+r` expands it and puts pi's spacing back. T
 the extension changes what a block looks like rather than only where it sits, and it is reversible
 on one keystroke.
 
+**Reasoning is retired when the turn is.** It is worth reading while it is happening and is noise
+once the answer sits under it — so the message being streamed shows whatever pi would show, and every
+settled one renders as though it never reasoned. With `hideThinkingBlock` on that clears one italic
+`Thinking...` label per assistant message, which is otherwise a permanent line saying only that
+something was thought; with it off it clears the reasoning text itself. Both fall out of the same
+implementation, because what is patched is `updateContent` and it hands pi a message with the
+thinking blocks **filtered out** rather than editing the lines that come back — pi already skips the
+label and its spacing when a message has no reasoning in it, so this reuses that path instead of
+second-guessing it.
+
+Two things had to be true for that to work at all. The live component is identified, not the live
+*turn*: a flag that only said "a turn is running" would un-hide the reasoning of every historical
+message for the length of every new turn and hide it again at the end, which is flicker across the
+whole scrollback rather than a fix. And `agent_settled` **rebuilds** the finished message rather than
+just dropping its exemption — `updateContent` is what turns a message into child components and only
+runs while tokens arrive, so a later render just draws what it already built, and the turn that had
+just ended would have kept its reasoning until the session was reloaded.
+
 **It has to be free per frame, and the first version was not.** pi re-renders the whole transcript
 every frame — `Container.render` walks its children unconditionally — and it gets away with that
 because every leaf caches its own lines and hands back the same strings. The gutter work sat outside

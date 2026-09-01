@@ -131,6 +131,110 @@ export function applyPatches(): void {
 	markBlock(AssistantMessageComponent, CONFIG.assistantMark, CONFIG.assistantColor);
 	markBlock(UserMessageComponent, CONFIG.userMark, CONFIG.userColor);
 	unboxTools();
+	retireThinking();
+}
+
+// ------------------------------------------------------- reasoning, once done
+
+/**
+ * The component pi is currently streaming into, or undefined between turns.
+ *
+ * pi builds one AssistantMessageComponent per assistant message and calls
+ * updateContent on it repeatedly as tokens arrive, so "the live one" is
+ * whichever was updated last while a turn is running. Identifying the COMPONENT
+ * rather than the turn is what keeps the scrollback still: a flag that only said
+ * "a turn is running" would un-hide the reasoning of every historical message
+ * for the length of every new turn and hide it again at the end.
+ */
+let liveMessage: object | undefined;
+let turnRunning = false;
+
+/** Called from index.ts on the first agent_start of a run. */
+export function beginTurn(): void {
+	turnRunning = true;
+}
+
+/**
+ * Called on agent_settled: drop the exemption, then REBUILD the message that
+ * had it.
+ *
+ * Clearing the flag alone is not enough, and the reason is the shape of the
+ * component. `updateContent` is what turns a message into child components, and
+ * it only runs while tokens are arriving — a later `render()` just draws the
+ * children it already built. So the turn that has this moment just finished
+ * would keep its reasoning on screen until something happened to rebuild it,
+ * which in practice means until the session was reloaded.
+ *
+ * Re-running it against pi's own stored `lastMessage` costs one rebuild per
+ * turn and dirties the component, so pi's end-of-turn render picks the change
+ * up without anyone asking for a repaint.
+ */
+export function endTurn(): void {
+	turnRunning = false;
+	const live = liveMessage as { lastMessage?: unknown; updateContent?(message: unknown): void } | undefined;
+	// Cleared FIRST, so the call below takes the stripping path rather than the
+	// exemption it is being called to end.
+	liveMessage = undefined;
+	if (!live?.updateContent || live.lastMessage === undefined) return;
+	try {
+		live.updateContent(live.lastMessage);
+	} catch {
+		/* the reasoning stays on screen; nothing else is disturbed */
+	}
+}
+
+/** Test seam: the patches install once per process and cannot be undone. */
+export function thinkingState(): { turnRunning: boolean; live: boolean } {
+	return { turnRunning, live: liveMessage !== undefined };
+}
+
+/**
+ * Reasoning is worth reading while it happens and is noise once the answer is
+ * there.
+ *
+ * With `hideThinkingBlock` on, pi leaves one italic "Thinking..." label per run
+ * of reasoning, forever — a line per assistant message, saying only that
+ * something was thought. With it off, the whole reasoning text stays. Both are
+ * the same complaint at different volumes, and both are answered here: the live
+ * message renders whatever pi would render, and every settled one renders as
+ * though it never reasoned.
+ *
+ * Done by handing pi a message with the thinking blocks FILTERED OUT rather
+ * than by editing the lines that come back. pi already handles a message with
+ * no reasoning in it — `thinkingBlocks.length === 0` skips the label and the
+ * spacing decision that follows it — so stripping the input reuses that path
+ * instead of second-guessing it, and it behaves the same whichever way
+ * hideThinkingBlock is set.
+ */
+function retireThinking(): void {
+	const cls = AssistantMessageComponent as unknown as {
+		prototype: { updateContent(message: unknown): void };
+	};
+	const original = cls.prototype.updateContent;
+	cls.prototype.updateContent = function patched(this: object, message: unknown): void {
+		try {
+			// Streaming marks this component live; the exemption is released at
+			// agent_settled, not here, so the last frame of a turn still shows it.
+			if (turnRunning) liveMessage = this;
+			if (this === liveMessage) return original.call(this, message);
+			return original.call(this, withoutThinking(message));
+		} catch {
+			return original.call(this, message);
+		}
+	};
+}
+
+/**
+ * A copy of the message with reasoning removed, or the message itself when
+ * there was none — so the overwhelmingly common case allocates nothing and a
+ * shape this does not recognise is passed through untouched.
+ */
+export function withoutThinking<T>(message: T): T {
+	const content = (message as { content?: unknown })?.content;
+	if (!Array.isArray(content)) return message;
+	const kept = content.filter((block) => (block as { type?: unknown })?.type !== "thinking");
+	if (kept.length === content.length) return message;
+	return { ...(message as object), content: kept } as T;
 }
 
 /**

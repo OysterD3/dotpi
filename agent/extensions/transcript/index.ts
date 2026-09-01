@@ -18,10 +18,17 @@
  *
  *       ∟ read src/app/config.py
  *
- * That is what this extension does, and all it does: it reserves a gutter and
- * puts a mark in it, and it steps around the box a tool call is drawn in. The
- * content of every block — pi's markdown, its diffs, its highlighted source,
- * its command output — is untouched.
+ * That is most of what this extension does: it reserves a gutter and puts a
+ * mark in it, and it steps around the box a tool call is drawn in. The content
+ * of every block — pi's markdown, its diffs, its highlighted source, its
+ * command output — is untouched.
+ *
+ * The exception, and the only place content is dropped, is reasoning. It is
+ * worth reading while it is happening and is noise once the answer is under it,
+ * so the message being streamed shows whatever pi would show and every settled
+ * one renders as though it never reasoned. With `hideThinkingBlock` on that
+ * retires a "Thinking..." label per assistant message; with it off it retires
+ * the reasoning text itself. See retireThinking() in patch.ts.
  *
  * ## The mechanism, and what it costs
  *
@@ -51,7 +58,7 @@
  */
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { applyPatches, setPaint } from "./patch.ts";
+import { applyPatches, beginTurn, endTurn, setPaint } from "./patch.ts";
 
 /**
  * pi's live theme, which is a proxy onto whichever theme is current, so a
@@ -71,7 +78,7 @@ async function loadPaint(): Promise<void> {
 	setPaint((color, text) => theme.fg(color, text));
 }
 
-export default function (_pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI) {
 	applyPatches();
 
 	// Fire and forget: the marks render unpainted until this lands, which is
@@ -79,4 +86,24 @@ export default function (_pi: ExtensionAPI) {
 	// that has moved the theme module leaves them unpainted rather than
 	// unrendered.
 	void loadPaint().catch(() => {});
+
+	// Which assistant message is still being written — the one whose reasoning
+	// is worth showing. See retireThinking() in patch.ts.
+	//
+	// agent_start re-fires on retries and on queued continuations inside the
+	// same run, so only the first one opens a turn; the same guard elapsed and
+	// context-diet keep, for the same reason.
+	let turnActive = false;
+	pi.on("agent_start", () => {
+		if (turnActive) return;
+		turnActive = true;
+		beginTurn();
+	});
+	pi.on("agent_settled", () => {
+		turnActive = false;
+		// Rebuilds the finished message without its reasoning, which dirties the
+		// component — so pi's own end-of-turn render shows it and nothing here has
+		// to reach for a repaint.
+		endTurn();
+	});
 }
