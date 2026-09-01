@@ -34,4 +34,14 @@ export const CONFIG = {
 	/** Opens the call's result, indented under it. Text lands at column 5. */
 	resultMark: "  ⎿  ",
 	resultColor: "dim",
+
+	/**
+	 * How many settled tool calls in a row before they collapse to one summary
+	 * line. Two, because one is not "several": a lone call's output is usually
+	 * the thing being looked at, and hiding it would cost more than the line it
+	 * saves. A run of two or more is where the transcript stops being readable.
+	 */
+	collapseFrom: 2,
+	/** Opens a collapsed run. The same dot a call gets — it stands for calls. */
+	summaryColor: "muted",
 } as const;

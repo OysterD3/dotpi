@@ -34,6 +34,8 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { isBlank, prefix, trimBlank, withGutter } = await import("./render.ts");
 const { applyPatches, beginTurn, endTurn, setPaint, withoutThinking } = await import("./patch.ts");
+const { summarise } = await import("./summary.ts");
+const { Container, visibleWidth } = await import("@earendil-works/pi-tui");
 const { CONFIG } = await import("./config.ts");
 
 initTheme("dark");
@@ -327,6 +329,108 @@ check("a shape this does not recognise passes through", withoutThinking(undefine
 	const text = shown.render(WIDTH).join("\n");
 	check("with thinking shown, the reasoning is retired too", text.includes("weighing the options"), false);
 	check("and the answer survives", text.includes("the answer"), true);
+}
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- a run of settled calls collapses to one line ---");
+
+// The wording first, on its own, with no components in the way.
+check("one tool, one phrase", summarise(["bash"]), "Ran 1 shell command");
+check("counted, not listed", summarise(["read", "read", "read"]), "Read 3 files");
+check("singular and plural both read", summarise(["grep", "read", "read", "bash", "bash"]), "Searched for 1 pattern, read 2 files, ran 2 shell commands");
+// First-appearance order, so the line reads in the order the work happened.
+check("order follows the calls", summarise(["bash", "read"]), "Ran 1 shell command, read 1 file");
+// A tool with no phrase names itself rather than being given a guessed verb —
+// MCP servers and other extensions add tools this has never heard of.
+check("an unknown tool names itself", summarise(["lsp_diagnostics", "lsp_diagnostics"]), "Called lsp_diagnostics 2 times");
+check("and once, once", summarise(["mcp__thing__do"]), "Called mcp__thing__do once");
+check("nothing to say is nothing", summarise([]), "");
+
+{
+	const chat = new Container();
+	chat.addChild(toolCall("grep", { pattern: "x" }, "3 matches"));
+	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	const collapsed = chat.render(WIDTH);
+	const body = collapsed.join("\n");
+
+	check("a run of three is one line", collapsed.filter((l) => !isBlank(l)).length, 1);
+	check("and the line says what they did", body.includes("Searched for 1 pattern, read 2 files"), true);
+	check("the output itself is gone", body.includes("3 matches") || body.includes("aaa"), false);
+	check("no line outruns the width", collapsed.every((l) => visibleWidth(l) <= WIDTH), true);
+
+	// Expanding is pi's own key: it sets `expanded` on every tool component, and
+	// the group simply stops grouping. No second binding, no state of this
+	// extension's to fall out of step.
+	for (const child of chat.children) (child as any).setExpanded(true);
+	const expanded = chat.render(WIDTH).join("\n");
+	check("expanded, the calls are back", expanded.includes("3 matches") && expanded.includes("aaa"), true);
+	check("and the summary is not", expanded.includes("Searched for 1 pattern"), false);
+	for (const child of chat.children) (child as any).setExpanded(false);
+	check("collapsing again is not one-way", chat.render(WIDTH).join("\n").includes("Searched for 1 pattern"), true);
+}
+
+{
+	// A call still running is the thing you are watching. It must never be
+	// swallowed, and it ends the run before it.
+	const chat = new Container();
+	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	const running = new ToolExecutionComponent("bash", "id-running", { command: "pnpm test" }, {}, undefined, ui as never, ROOT);
+	running.setArgsComplete();
+	running.markExecutionStarted();
+	chat.addChild(running);
+
+	const body = chat.render(WIDTH).join("\n");
+	check("the settled pair collapses", body.includes("Read 2 files"), true);
+	check("the running call is still drawn", body.includes("pnpm test"), true);
+	check("and is not counted into the summary", body.includes("ran 1 shell command"), false);
+}
+
+{
+	// One call on its own is not "several" — its output is usually the thing
+	// being looked at, and hiding it costs more than the line it saves.
+	const chat = new Container();
+	chat.addChild(toolCall("bash", { command: "git status" }, "clean"));
+	const body = chat.render(WIDTH).join("\n");
+	check("a lone call is left alone", body.includes("clean"), true);
+	check("with no summary over it", body.includes("Ran 1 shell command"), false);
+}
+
+{
+	// Anything that is not a tool call breaks the run, so two groups either side
+	// of an answer stay two groups.
+	const chat = new Container();
+	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	chat.addChild(new AssistantMessageComponent(
+		{ role: "assistant", content: [{ type: "text", text: "found it" }], stopReason: "stop" } as never,
+		true,
+		getMarkdownTheme(),
+		"Thinking...",
+		1,
+	));
+	chat.addChild(toolCall("bash", { command: "one" }, "1"));
+	chat.addChild(toolCall("bash", { command: "two" }, "2"));
+	const body = chat.render(WIDTH);
+	const text = body.join("\n");
+	check("the first run collapses", text.includes("Read 2 files"), true);
+	check("the answer between them survives", text.includes("found it"), true);
+	check("and the second run is its own line", text.includes("Ran 2 shell commands"), true);
+}
+
+{
+	// Every other container in the tree holds text, and must come back byte for
+	// byte — the guard against this patch reaching past the chat.
+	const plain = new Container();
+	plain.addChild(new AssistantMessageComponent(
+		{ role: "assistant", content: [{ type: "text", text: "just prose" }], stopReason: "stop" } as never,
+		true,
+		getMarkdownTheme(),
+		"Thinking...",
+		1,
+	));
+	check("a container with no tool calls is untouched", plain.render(WIDTH).join("\n").includes("just prose"), true);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);

@@ -24,9 +24,10 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Container, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CONFIG } from "./config.ts";
 import { dropBlank, trimBlank, withGutter } from "./render.ts";
+import { summarise } from "./summary.ts";
 
 type Render = (width: number) => string[];
 
@@ -132,6 +133,119 @@ export function applyPatches(): void {
 	markBlock(UserMessageComponent, CONFIG.userMark, CONFIG.userColor);
 	unboxTools();
 	retireThinking();
+	groupTools();
+}
+
+// ------------------------------------------------------------ collapsing runs
+
+/**
+ * A tool component pi has already decided to draw as nothing.
+ *
+ * Neither folded nor counted, and — the point — it does not break a run either.
+ * Treating it as a run-breaker would split one summary into two around
+ * something invisible, and counting it would announce a call that was never on
+ * screen.
+ */
+function invisible(child: Component): boolean {
+	return child instanceof ToolExecutionComponent && (child as unknown as ToolInternals).hideComponent;
+}
+
+/**
+ * A settled tool call this is allowed to fold into a summary.
+ *
+ * Four exclusions, each load-bearing:
+ *
+ *   - **still running.** A call with no result yet, or a partial one, is the
+ *     thing you are watching. Folding it away would hide the only moving part
+ *     on the screen, and the run it belongs to is not finished being written.
+ *   - **expanded.** This is how "expand" works: pi's own `app.tools.expand`
+ *     sets `expanded` on every tool component, so the group simply stops
+ *     grouping. No second keybinding, and no state of this extension's own to
+ *     get out of step with pi's.
+ *   - **a custom render shell.** An extension chose how that tool looks — the
+ *     workflow panel relies on it — which is the same exclusion unboxTools
+ *     makes, and for the same reason. Note that merely HAVING a renderer
+ *     definition is not it: every built-in tool has one.
+ *   - **images.** A screenshot is the content, not a detail of it, and a line
+ *     saying one was taken is not the same information.
+ */
+function foldable(child: Component): boolean {
+	if (!(child instanceof ToolExecutionComponent)) return false;
+	const self = child as unknown as ToolInternals & { isPartial: boolean; toolName: string };
+	if (self.hideComponent) return false;
+	if (self.expanded) return false;
+	if (self.result === undefined || self.isPartial) return false;
+	if (self.imageComponents.length > 0) return false;
+	try {
+		if (self.hasRendererDefinition() && self.getRenderShell() !== "default") return false;
+	} catch {
+		return false;
+	}
+	return true;
+}
+
+/**
+ * The maximal run starting at `from`: how many children it spans, and how many
+ * of those are calls worth naming. The two differ by the invisible ones, which
+ * the run steps over.
+ */
+function runFrom(children: readonly Component[], from: number): { span: number; folded: Component[] } {
+	const folded: Component[] = [];
+	let end = from;
+	for (; end < children.length; end++) {
+		const child = children[end]!;
+		if (invisible(child)) continue;
+		if (!foldable(child)) break;
+		folded.push(child);
+	}
+	// Trailing invisibles belong to whatever comes next, not to this run.
+	while (end > from && invisible(children[end - 1]!)) end--;
+	return { span: end - from, folded };
+}
+
+/**
+ * Replace runs of settled tool calls with one line saying what they did.
+ *
+ * Patched on Container rather than on the tool component because the decision
+ * needs siblings: whether a call is the third of five or on its own is not
+ * something the call can see, and pi hands every tool component to the same
+ * `chatContainer.addChild`, so the container is the one object that knows the
+ * order. Every other container in the tree holds text and markdown, so the
+ * `some(foldable)` test below is both the guard against touching them and the
+ * fast path out.
+ */
+function groupTools(): void {
+	const original = Container.prototype.render;
+	Container.prototype.render = function patched(this: Container, width: number): string[] {
+		try {
+			const children = this.children;
+			if (children.length < CONFIG.collapseFrom || !children.some(foldable)) return original.call(this, width);
+
+			const lines: string[] = [];
+			for (let i = 0; i < children.length; i++) {
+				const run = runFrom(children, i);
+				if (run.folded.length >= CONFIG.collapseFrom) {
+					lines.push("", summaryLine(run.folded, width));
+					i += run.span - 1;
+					continue;
+				}
+				for (const line of children[i]!.render(width)) lines.push(line);
+			}
+			return lines;
+		} catch {
+			return original.call(this, width);
+		}
+	};
+}
+
+/** "● Searched for 1 pattern, read 2 files, ran 2 shell commands", clamped to width. */
+function summaryLine(run: readonly Component[], width: number): string {
+	const names = run.map((child) => (child as unknown as { toolName: string }).toolName);
+	const mark = paint(CONFIG.summaryColor, CONFIG.callMark);
+	const text = paint(CONFIG.summaryColor, summarise(names));
+	// Truncated, not wrapped: the point of the line is that a run of calls costs
+	// exactly one row, and a wrapped summary of a 40-call run would cost three.
+	return truncateToWidth(`${mark}${text}`, width, "…");
 }
 
 // ------------------------------------------------------- reasoning, once done

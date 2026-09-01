@@ -2145,6 +2145,37 @@ inside its result are dropped; `ctrl+r` expands it and puts pi's spacing back. T
 the extension changes what a block looks like rather than only where it sits, and it is reversible
 on one keystroke.
 
+**A run of settled tool calls collapses to one line.** On a turn that reads four files and runs
+three commands, the calls are most of the screen and almost none of them are what you came back to
+read:
+
+```
+● Searched for 1 pattern, read 2 files, ran 2 shell commands
+```
+
+Press pi's own **`app.tools.expand`** and the calls come back in full. That is the whole expand
+mechanism: the key already sets `expanded` on every tool component, and a group simply stops
+grouping when its calls are expanded — no second keybinding, and no state of this extension's own to
+fall out of step with pi's. (Mouse click is not available: pi-tui never enables terminal mouse
+tracking, so no click events are ever delivered to a component.)
+
+The patch is on `Container`, not on the tool component, because the decision needs siblings —
+whether a call is the third of five or on its own is not something the call can see, and pi adds
+every tool component to the same `chatContainer`, so the container is the one object that knows the
+order. Every other container in the tree holds text and markdown, so "does this container have a
+foldable tool call in it" is both the guard against reaching past the chat and the fast path out.
+
+Four kinds of call are never folded, and each exclusion is the difference between hiding noise and
+hiding the answer: one **still running** (that is the moving part you are watching, and its run is
+not finished being written), one that is **expanded**, one with a **custom render shell** (an
+extension chose how it looks — the workflow panel relies on that), and one carrying **images** (a
+screenshot is the content, and a line saying one was taken is not the same information). A call pi
+has already hidden is stepped over rather than counted, so it neither appears in the summary nor
+splits one group into two around something invisible.
+
+The threshold is **two**, in `config.ts`. One call is not "several": a lone call's output is usually
+the thing being looked at, and hiding it would cost more than the line it saves.
+
 **Reasoning is retired when the turn is.** It is worth reading while it is happening and is noise
 once the answer sits under it — so the message being streamed shows whatever pi would show, and every
 settled one renders as though it never reasoned. With `hideThinkingBlock` on that clears one italic
@@ -2217,11 +2248,12 @@ rewind; it is a separate piece of work, not a coat of paint.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Applies the patches; resolves pi's live theme so a `/theme` switch repaints the marks |
-| `patch.ts` | The three replaced `render` methods, and the reach into pi's internals, in one place |
+| `index.ts` | Applies the patches; resolves pi's live theme so a `/theme` switch repaints the marks; tracks which message is still being written |
+| `patch.ts` | The replaced `render` and `updateContent` methods, and the reach into pi's internals, in one place |
+| `summary.ts` | What a collapsed run of calls is called, and how it is counted (pure) |
 | `render.ts` | Gutter insertion and blank-line trimming, ANSI-safe (pure) |
-| `config.ts` | The marks, their columns, and their colour roles |
-| `transcript.test.ts` | The pure helpers, plus all three components rendered and read back |
+| `config.ts` | The marks, their columns, their colour roles, and the collapse threshold |
+| `transcript.test.ts` | The pure helpers, plus every patched component rendered and read back |
 
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
 blocked waiting on *you*, so a pane you are not looking at raises the session's "needs input" chip
