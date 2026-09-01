@@ -2183,6 +2183,17 @@ screenshot is the content, and a line saying one was taken is not the same infor
 has already hidden is stepped over rather than counted, so it neither appears in the summary nor
 splits one group into two around something invisible.
 
+**A message with nothing to say does not split a run either.** A turn that calls tools is a chain —
+reason, call, reason, call — and the assistant messages in the middle carry only reasoning and the
+calls themselves. Once the reasoning is retired they render as nothing at all, and a *nothing* was
+still ending one group and starting another: two summary lines with an invisible gap between them
+where one line belonged. They are now stepped over like a hidden call, so a whole chain reads as one
+row. Text is the boundary that survives — the moment the model actually says something, the calls
+before it and the calls after it are answering different questions and belong in different groups.
+
+The line is painted `dim` rather than `muted`, because what it says is "nothing here needs you" and
+at muted it read as loud as the answer above it.
+
 The threshold is **two**, in `config.ts`. One call is not "several": a lone call's output is usually
 the thing being looked at, and hiding it would cost more than the line it saves.
 
@@ -2196,13 +2207,19 @@ thinking blocks **filtered out** rather than editing the lines that come back �
 label and its spacing when a message has no reasoning in it, so this reuses that path instead of
 second-guessing it.
 
-Two things had to be true for that to work at all. The live component is identified, not the live
+Three things had to be true for that to work at all. The live component is identified, not the live
 *turn*: a flag that only said "a turn is running" would un-hide the reasoning of every historical
 message for the length of every new turn and hide it again at the end, which is flicker across the
 whole scrollback rather than a fix. And `agent_settled` **rebuilds** the finished message rather than
 just dropping its exemption — `updateContent` is what turns a message into child components and only
 runs while tokens arrive, so a later render just draws what it already built, and the turn that had
 just ended would have kept its reasoning until the session was reloaded.
+
+The third took a second attempt to see. **A turn is a chain of assistant messages, not one**, and
+each link reasons — so rebuilding whichever happened to be live at settle cleared exactly one label
+per turn and left one on every message before it. In a short exchange that looks like it works; in a
+turn with a dozen tool calls it clears the last of twelve. Every component the turn touched is
+remembered and rebuilt.
 
 **It has to be free per frame, and the first version was not.** pi re-renders the whole transcript
 every frame — `Container.render` walks its children unconditionally — and it gets away with that

@@ -147,7 +147,35 @@ export function applyPatches(): void {
  * screen.
  */
 function invisible(child: Component): boolean {
-	return child instanceof ToolExecutionComponent && (child as unknown as ToolInternals).hideComponent;
+	if (child instanceof ToolExecutionComponent) return (child as unknown as ToolInternals).hideComponent;
+	return silentAssistant(child);
+}
+
+/**
+ * An assistant message that says nothing the reader can see.
+ *
+ * A turn that calls tools is a chain of assistant messages — reason, call,
+ * reason, call — and the ones in the middle carry only reasoning and the calls
+ * themselves. Once the reasoning is retired they render as nothing at all, and
+ * a nothing sitting between two calls was splitting one run into two: on screen,
+ * two summary lines with an invisible gap between them where a single line
+ * belonged.
+ *
+ * Text is the boundary. The moment the model actually says something, the calls
+ * before it and the calls after it are answering different things and belong in
+ * different groups. The live component is never silent — its reasoning is still
+ * showing, which is a thing on screen.
+ */
+function silentAssistant(child: Component): boolean {
+	if (!(child instanceof AssistantMessageComponent)) return false;
+	if (child === liveMessage) return false;
+	const message = (child as unknown as { lastMessage?: { content?: unknown } }).lastMessage;
+	const content = message?.content;
+	if (!Array.isArray(content)) return false;
+	return !content.some((block) => {
+		const part = block as { type?: unknown; text?: unknown };
+		return part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0;
+	});
 }
 
 /**
@@ -263,6 +291,18 @@ function summaryLine(run: readonly Component[], width: number): string {
 let liveMessage: object | undefined;
 let turnRunning = false;
 
+/**
+ * Every component that was live at some point in this turn.
+ *
+ * A turn is not one assistant message. One that calls tools is a chain of them
+ * — reason, call, reason, call — and each gets its own component, each reasons,
+ * and each stops being live the moment the next one starts. Rebuilding only
+ * whichever happened to be last left a "Thinking..." on every message before
+ * it, which is most of a long turn: the first version of this cleared exactly
+ * one label per turn and looked, in a short exchange, as though it worked.
+ */
+const touched = new Set<object>();
+
 /** Called from index.ts on the first agent_start of a run. */
 export function beginTurn(): void {
 	turnRunning = true;
@@ -285,21 +325,24 @@ export function beginTurn(): void {
  */
 export function endTurn(): void {
 	turnRunning = false;
-	const live = liveMessage as { lastMessage?: unknown; updateContent?(message: unknown): void } | undefined;
-	// Cleared FIRST, so the call below takes the stripping path rather than the
-	// exemption it is being called to end.
+	// Cleared FIRST, so the calls below take the stripping path rather than the
+	// exemption they are being called to end.
 	liveMessage = undefined;
-	if (!live?.updateContent || live.lastMessage === undefined) return;
-	try {
-		live.updateContent(live.lastMessage);
-	} catch {
-		/* the reasoning stays on screen; nothing else is disturbed */
+	for (const component of touched) {
+		const self = component as { lastMessage?: unknown; updateContent?(message: unknown): void };
+		if (!self.updateContent || self.lastMessage === undefined) continue;
+		try {
+			self.updateContent(self.lastMessage);
+		} catch {
+			/* that message keeps its reasoning; nothing else is disturbed */
+		}
 	}
+	touched.clear();
 }
 
 /** Test seam: the patches install once per process and cannot be undone. */
-export function thinkingState(): { turnRunning: boolean; live: boolean } {
-	return { turnRunning, live: liveMessage !== undefined };
+export function thinkingState(): { turnRunning: boolean; live: boolean; touched: number } {
+	return { turnRunning, live: liveMessage !== undefined, touched: touched.size };
 }
 
 /**
@@ -329,7 +372,12 @@ function retireThinking(): void {
 		try {
 			// Streaming marks this component live; the exemption is released at
 			// agent_settled, not here, so the last frame of a turn still shows it.
-			if (turnRunning) liveMessage = this;
+			// Every one of them is remembered, because every one of them will need
+			// rebuilding — see `touched`.
+			if (turnRunning) {
+				liveMessage = this;
+				touched.add(this);
+			}
 			if (this === liveMessage) return original.call(this, message);
 			return original.call(this, withoutThinking(message));
 		} catch {

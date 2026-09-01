@@ -433,5 +433,107 @@ check("nothing to say is nothing", summarise([]), "");
 	check("a container with no tool calls is untouched", plain.render(WIDTH).join("\n").includes("just prose"), true);
 }
 
+/* -------------------------------------------------------------------------- */
+console.log("\n--- a turn is a CHAIN of assistant messages, and all of them clear ---");
+
+{
+	// The bug the first version shipped with. A turn that calls tools is
+	// reason → call → reason → call, one component per link, and only the last
+	// was ever live at settle time. Rebuilding just that one left a "Thinking..."
+	// on every message before it — which in a short exchange looks like it works.
+	const THINKING = "Thinking...";
+	const link = () =>
+		new AssistantMessageComponent(
+			{
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "step" }, { type: "toolCall", id: "t", name: "read", arguments: {} }],
+				stopReason: "toolUse",
+			} as never,
+			true,
+			getMarkdownTheme(),
+			THINKING,
+			1,
+		);
+
+	let endTurnCleared: boolean[] = [];
+	beginTurn();
+	const first = link();
+	const second = link();
+	const third = link();
+	// Streaming touches each in turn; only the last is live when the turn ends.
+	for (const c of [first, second, third]) c.updateContent((c as any).lastMessage);
+
+	check("all three show their reasoning mid-turn", [first, second, third].every((c) => c.render(WIDTH).join("").includes(THINKING)), true);
+	endTurn();
+	endTurnCleared = [first, second, third].map((c) => !c.render(WIDTH).join("").includes(THINKING));
+	// Named one by one rather than with an .every(), so a failure says WHICH link
+	// kept its label — the bug was that only the last one cleared.
+	check("the first link clears", endTurnCleared[0], true);
+	check("the middle one clears", endTurnCleared[1], true);
+	check("and so does the last", endTurnCleared[2], true);
+}
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- a message with nothing to say does not split a run ---");
+
+{
+	// Once reasoning is retired, the assistant messages BETWEEN tool calls render
+	// as nothing — and a nothing was still splitting one run into two summary
+	// lines with an invisible gap between them.
+	const silent = () =>
+		new AssistantMessageComponent(
+			{ role: "assistant", content: [{ type: "thinking", thinking: "step" }], stopReason: "toolUse" } as never,
+			true,
+			getMarkdownTheme(),
+			"Thinking...",
+			1,
+		);
+
+	const chat = new Container();
+	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	chat.addChild(silent());
+	chat.addChild(toolCall("bash", { command: "one" }, "1"));
+	chat.addChild(silent());
+	chat.addChild(toolCall("bash", { command: "two" }, "2"));
+
+	const lines = chat.render(WIDTH).filter((l) => !isBlank(l));
+	check("the whole chain is one line", lines.length, 1);
+	check("counting every call across it", lines[0]?.includes("Read 1 file, ran 2 shell commands"), true);
+
+	// ...but a message the model actually SPOKE is a real boundary: the calls
+	// before it and after it are answering different things.
+	const spoken = new Container();
+	spoken.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	spoken.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	spoken.addChild(new AssistantMessageComponent(
+		{ role: "assistant", content: [{ type: "text", text: "found it" }], stopReason: "stop" } as never,
+		true,
+		getMarkdownTheme(),
+		"Thinking...",
+		1,
+	));
+	spoken.addChild(toolCall("bash", { command: "one" }, "1"));
+	spoken.addChild(toolCall("bash", { command: "two" }, "2"));
+	const text = spoken.render(WIDTH).join("\n");
+	check("text between them still splits the runs", text.includes("Read 2 files") && text.includes("Ran 2 shell commands"), true);
+	check("and what was said is still there", text.includes("found it"), true);
+}
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- the summary is the quietest line on the screen ---");
+
+{
+	setPaint((color, text) => `<${color}>${text}`);
+	const chat = new Container();
+	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	const line = chat.render(WIDTH).find((l) => l.includes("Read 2 files"))!;
+	// It says "nothing here needs you", so it must not read as loud as the answer
+	// above it. At `muted` it did.
+	check("painted in the summary colour", line.includes(`<${CONFIG.summaryColor}>`), true);
+	check("which is dimmer than a live call's dot", CONFIG.summaryColor !== CONFIG.callOkColor, true);
+	setPaint((_color, text) => text);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

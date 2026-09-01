@@ -42,6 +42,12 @@ export const CONFIG = {
 	 * saves. A run of two or more is where the transcript stops being readable.
 	 */
 	collapseFrom: 2,
-	/** Opens a collapsed run. The same dot a call gets — it stands for calls. */
-	summaryColor: "muted",
+	/**
+	 * Opens a collapsed run. The same dot a call gets — it stands for calls.
+	 *
+	 * `dim`, not `muted`: the line exists to say "nothing here needs you", and
+	 * at muted it read as bright as the answer above it. It should be the
+	 * quietest thing on the screen, next to the diet's own notice.
+	 */
+	summaryColor: "dim",
 } as const;
