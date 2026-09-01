@@ -2155,13 +2155,20 @@ inside its result are dropped; `ctrl+r` expands it and puts pi's spacing back. T
 the extension changes what a block looks like rather than only where it sits, and it is reversible
 on one keystroke.
 
-**A run of settled tool calls collapses to one line.** On a turn that reads four files and runs
-three commands, the calls are most of the screen and almost none of them are what you came back to
-read:
+**A run of tool calls collapses once the model has spoken after it.** On a turn that reads four
+files and runs three commands, the calls are most of the screen and almost none of them are what you
+came back to read — but only *after* there is something to have come back to:
 
 ```
 ● Searched for 1 pattern, read 2 files, ran 2 shell commands
 ```
+
+**A result is not what folds a run — an answer is.** The first version folded as soon as a run's
+second call returned, which meant the work vanished mid-turn while it was still going on: the calls
+are the only account of what is happening, and a transcript that erases itself under you as it works
+is worse than a noisy one. Now they stay in full until the model produces *text* rather than more
+tool calls, and the moment an answer lands everything that produced it becomes one line. Each answer
+therefore closes a phase, and the next run of calls starts a new one.
 
 Press pi's own **`app.tools.expand`** and the calls come back in full. That is the whole expand
 mechanism: the key already sets `expanded` on every tool component, and a group simply stops
@@ -2188,8 +2195,9 @@ reason, call, reason, call — and the assistant messages in the middle carry on
 calls themselves. Once the reasoning is retired they render as nothing at all, and a *nothing* was
 still ending one group and starting another: two summary lines with an invisible gap between them
 where one line belonged. They are now stepped over like a hidden call, so a whole chain reads as one
-row. Text is the boundary that survives — the moment the model actually says something, the calls
-before it and the calls after it are answering different questions and belong in different groups.
+row. Text is the only boundary, which is the same distinction the fold itself turns on: a message
+carrying reasoning and tool calls is the model *working*, and a message carrying text is the model
+*reporting*.
 
 The line is painted `dim` rather than `muted`, because what it says is "nothing here needs you" and
 at muted it read as loud as the answer above it.

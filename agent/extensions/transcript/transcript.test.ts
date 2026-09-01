@@ -332,7 +332,17 @@ check("a shape this does not recognise passes through", withoutThinking(undefine
 }
 
 /* -------------------------------------------------------------------------- */
-console.log("\n--- a run of settled calls collapses to one line ---");
+console.log("\n--- a run collapses once the model has spoken after it ---");
+
+/** An assistant message carrying text — the thing that ends a working phase. */
+const answer = (text = "done") =>
+	new AssistantMessageComponent(
+		{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } as never,
+		true,
+		getMarkdownTheme(),
+		"Thinking...",
+		1,
+	);
 
 // The wording first, on its own, with no components in the way.
 check("one tool, one phrase", summarise(["bash"]), "Ran 1 shell command");
@@ -347,26 +357,49 @@ check("and once, once", summarise(["mcp__thing__do"]), "Called mcp__thing__do on
 check("nothing to say is nothing", summarise([]), "");
 
 {
+	// The rule that matters: a result is not what folds a run — an ANSWER is.
+	// Until the model has said something, the calls are the only account of what
+	// is happening and they stay in full.
+	const working = new Container();
+	working.addChild(toolCall("grep", { pattern: "x" }, "3 matches"));
+	working.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
+	const midTurn = working.render(WIDTH).join("\n");
+	// `3 matches` is grep's result line and `a.ts` is read's call line — read
+	// shows no result until expanded, so asserting on its content would pass for
+	// the wrong reason.
+	check("settled calls with no answer after them stay open", midTurn.includes("3 matches") && midTurn.includes("a.ts"), true);
+	check("and are not summarised away mid-turn", midTurn.includes("Searched for 1 pattern"), false);
+	// The moment an answer lands, everything that produced it becomes one line.
+	working.addChild(answer("here is what I found"));
+	const afterAnswer = working.render(WIDTH).join("\n");
+	check("the answer folds the work behind it", afterAnswer.includes("Searched for 1 pattern, read 1 file"), true);
+	check("and the answer itself is untouched", afterAnswer.includes("here is what I found"), true);
+	check("the output it folded is gone", afterAnswer.includes("3 matches"), false);
+}
+
+{
 	const chat = new Container();
 	chat.addChild(toolCall("grep", { pattern: "x" }, "3 matches"));
 	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
 	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	chat.addChild(answer());
 	const collapsed = chat.render(WIDTH);
 	const body = collapsed.join("\n");
 
-	check("a run of three is one line", collapsed.filter((l) => !isBlank(l)).length, 1);
+	check("a run of three is one line", collapsed.filter((l) => !isBlank(l)).length, 2);
 	check("and the line says what they did", body.includes("Searched for 1 pattern, read 2 files"), true);
 	check("the output itself is gone", body.includes("3 matches") || body.includes("aaa"), false);
+	check("with the answer still under it", body.includes("done"), true);
 	check("no line outruns the width", collapsed.every((l) => visibleWidth(l) <= WIDTH), true);
 
 	// Expanding is pi's own key: it sets `expanded` on every tool component, and
 	// the group simply stops grouping. No second binding, no state of this
 	// extension's to fall out of step.
-	for (const child of chat.children) (child as any).setExpanded(true);
+	for (const child of chat.children) (child as any).setExpanded?.(true);
 	const expanded = chat.render(WIDTH).join("\n");
 	check("expanded, the calls are back", expanded.includes("3 matches") && expanded.includes("aaa"), true);
 	check("and the summary is not", expanded.includes("Searched for 1 pattern"), false);
-	for (const child of chat.children) (child as any).setExpanded(false);
+	for (const child of chat.children) (child as any).setExpanded?.(false);
 	check("collapsing again is not one-way", chat.render(WIDTH).join("\n").includes("Searched for 1 pattern"), true);
 }
 
@@ -380,6 +413,8 @@ check("nothing to say is nothing", summarise([]), "");
 	running.setArgsComplete();
 	running.markExecutionStarted();
 	chat.addChild(running);
+	// Something spoken later, so the settled pair is eligible to fold at all.
+	chat.addChild(answer());
 
 	const body = chat.render(WIDTH).join("\n");
 	check("the settled pair collapses", body.includes("Read 2 files"), true);
@@ -392,6 +427,7 @@ check("nothing to say is nothing", summarise([]), "");
 	// being looked at, and hiding it costs more than the line it saves.
 	const chat = new Container();
 	chat.addChild(toolCall("bash", { command: "git status" }, "clean"));
+	chat.addChild(answer());
 	const body = chat.render(WIDTH).join("\n");
 	check("a lone call is left alone", body.includes("clean"), true);
 	check("with no summary over it", body.includes("Ran 1 shell command"), false);
@@ -412,6 +448,7 @@ check("nothing to say is nothing", summarise([]), "");
 	));
 	chat.addChild(toolCall("bash", { command: "one" }, "1"));
 	chat.addChild(toolCall("bash", { command: "two" }, "2"));
+	chat.addChild(answer("and done"));
 	const body = chat.render(WIDTH);
 	const text = body.join("\n");
 	check("the first run collapses", text.includes("Read 2 files"), true);
@@ -495,9 +532,11 @@ console.log("\n--- a message with nothing to say does not split a run ---");
 	chat.addChild(toolCall("bash", { command: "one" }, "1"));
 	chat.addChild(silent());
 	chat.addChild(toolCall("bash", { command: "two" }, "2"));
+	chat.addChild(answer("all three done"));
 
 	const lines = chat.render(WIDTH).filter((l) => !isBlank(l));
-	check("the whole chain is one line", lines.length, 1);
+	// One summary plus the answer that folded it.
+	check("the whole chain is one line", lines.length, 2);
 	check("counting every call across it", lines[0]?.includes("Read 1 file, ran 2 shell commands"), true);
 
 	// ...but a message the model actually SPOKE is a real boundary: the calls
@@ -514,6 +553,7 @@ console.log("\n--- a message with nothing to say does not split a run ---");
 	));
 	spoken.addChild(toolCall("bash", { command: "one" }, "1"));
 	spoken.addChild(toolCall("bash", { command: "two" }, "2"));
+	spoken.addChild(answer("and done"));
 	const text = spoken.render(WIDTH).join("\n");
 	check("text between them still splits the runs", text.includes("Read 2 files") && text.includes("Ran 2 shell commands"), true);
 	check("and what was said is still there", text.includes("found it"), true);
@@ -527,6 +567,7 @@ console.log("\n--- the summary is the quietest line on the screen ---");
 	const chat = new Container();
 	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
 	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
+	chat.addChild(answer());
 	const line = chat.render(WIDTH).find((l) => l.includes("Read 2 files"))!;
 	// It says "nothing here needs you", so it must not read as loud as the answer
 	// above it. At `muted` it did.

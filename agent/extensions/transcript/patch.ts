@@ -152,6 +152,24 @@ function invisible(child: Component): boolean {
 }
 
 /**
+ * An assistant message the model actually said something in.
+ *
+ * The distinction that drives everything below: a message carrying only
+ * reasoning and tool calls is the model working, and a message carrying TEXT is
+ * the model reporting. The first is scaffolding; the second is the answer.
+ */
+function spoken(child: Component): boolean {
+	if (!(child instanceof AssistantMessageComponent)) return false;
+	const message = (child as unknown as { lastMessage?: { content?: unknown } }).lastMessage;
+	const content = message?.content;
+	if (!Array.isArray(content)) return false;
+	return content.some((block) => {
+		const part = block as { type?: unknown; text?: unknown };
+		return part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0;
+	});
+}
+
+/**
  * An assistant message that says nothing the reader can see.
  *
  * A turn that calls tools is a chain of assistant messages — reason, call,
@@ -161,21 +179,25 @@ function invisible(child: Component): boolean {
  * two summary lines with an invisible gap between them where a single line
  * belonged.
  *
- * Text is the boundary. The moment the model actually says something, the calls
- * before it and the calls after it are answering different things and belong in
- * different groups. The live component is never silent — its reasoning is still
- * showing, which is a thing on screen.
+ * The live component is never silent — its reasoning is still showing, which is
+ * a thing on screen.
  */
 function silentAssistant(child: Component): boolean {
 	if (!(child instanceof AssistantMessageComponent)) return false;
 	if (child === liveMessage) return false;
-	const message = (child as unknown as { lastMessage?: { content?: unknown } }).lastMessage;
-	const content = message?.content;
-	if (!Array.isArray(content)) return false;
-	return !content.some((block) => {
-		const part = block as { type?: unknown; text?: unknown };
-		return part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0;
-	});
+	return !spoken(child);
+}
+
+/**
+ * The last point in the transcript where the model stopped working and said
+ * something. Calls before it are history; calls after it are what is happening
+ * now. -1 when it has not spoken yet.
+ */
+function lastSpokenIndex(children: readonly Component[]): number {
+	for (let i = children.length - 1; i >= 0; i--) {
+		if (spoken(children[i]!)) return i;
+	}
+	return -1;
 }
 
 /**
@@ -232,7 +254,17 @@ function runFrom(children: readonly Component[], from: number): { span: number; 
 }
 
 /**
- * Replace runs of settled tool calls with one line saying what they did.
+ * Replace runs of finished tool calls with one line saying what they did.
+ *
+ * A run folds only once the model has SPOKEN after it — produced text, not just
+ * more tool calls. Until then the calls are the only account of what is
+ * happening and they stay in full, which is the difference between a transcript
+ * you can watch and one that erases itself under you as it works. The moment an
+ * answer lands, everything that produced it becomes one line.
+ *
+ * A call having a result is not the same thing and was the first rule here: it
+ * made a run collapse the instant its second call returned, mid-turn, so the
+ * work vanished while it was still going on.
  *
  * Patched on Container rather than on the tool component because the decision
  * needs siblings: whether a call is the third of five or on its own is not
@@ -249,10 +281,15 @@ function groupTools(): void {
 			const children = this.children;
 			if (children.length < CONFIG.collapseFrom || !children.some(foldable)) return original.call(this, width);
 
+			// Everything before the model last spoke is finished business; anything
+			// after it is the work in progress. See settled() on why that is the
+			// line rather than "these calls have results".
+			const spokeAt = lastSpokenIndex(children);
+
 			const lines: string[] = [];
 			for (let i = 0; i < children.length; i++) {
 				const run = runFrom(children, i);
-				if (run.folded.length >= CONFIG.collapseFrom) {
+				if (run.folded.length >= CONFIG.collapseFrom && i < spokeAt) {
 					lines.push("", summaryLine(run.folded, width));
 					i += run.span - 1;
 					continue;
