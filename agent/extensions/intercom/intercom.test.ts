@@ -12,7 +12,7 @@
  *     pnpm dlx jiti agent/extensions/intercom/intercom.test.ts
  */
 
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,7 +35,7 @@ CONFIG.heartbeatMs = 50;
 const { closeAsk, drain, ensure, forget, layout, listPeers, openAsk, putAnswer, putMessage, resolvePeer, sweep, takeAnswer, writePresence } =
 	await import("./store.ts");
 const { ASK_DESCRIPTION, describePeer, intercomBlock, LAUNDERING_RULE, SEND_DESCRIPTION, summarise } = await import("./prompts.ts");
-const { registerIntercom } = await import("./index.ts");
+const { deliveryFor, registerIntercom } = await import("./index.ts");
 
 const dirs: string[] = [];
 const workDir = (prefix: string) => {
@@ -430,14 +430,65 @@ console.log("\n--- two sessions, end to end ---");
 	await d.quit();
 	await e.quit();
 
-	// --- a session with no user
+	// --- the delivery rule, as a table
+
+	// The idle guard above stops a headless run reaching the delivery decision
+	// while idle, so this condition looks redundant and is not: the two read the
+	// clock at different moments, and a turn ending in between would turn
+	// "deliver into the run in progress" into "start a new one" for exactly the
+	// session that must never get one.
+	check("an idle session that can be woken gets a turn", deliveryFor(true, true), "turn");
+	check("a busy one rides the run it is on", deliveryFor(true, false), "followUp");
+	check("an idle headless run is never woken, whatever the clock says", deliveryFor(false, true), "followUp");
+	check("and a busy headless run rides its run too", deliveryFor(false, false), "followUp");
+
+	// --- a headless session takes part, minus the one thing it cannot do
 
 	const headless = open("dddddddd4444", "batch", "/work");
 	await headless.start({ hasUI: false });
-	check("a headless session never joins the peer list", existsSync(join(l.peers, "dddddddd4444.json")), false);
-	checkTrue("and its tools say why", (await headless.call(TOOL_PEERS, {})).includes("not available"));
-	checkTrue("including the sending ones", (await headless.call(TOOL_SEND, { to: "docs", message: "hi" })).includes("not available"));
+	checkTrue("a headless session DOES join the peer list", existsSync(join(l.peers, "dddddddd4444.json")));
+	// The sender is told, because it changes what sending means.
+	checkTrue("and the peer list marks it", (await a.call(TOOL_PEERS, {})).includes("headless"));
+	checkTrue("an interactive peer carries no such mark", (await headless.call(TOOL_PEERS, {})).includes("headless") === false);
+	check(
+		"marked as one that cannot be woken",
+		JSON.parse(readFileSync(join(l.peers, "dddddddd4444.json"), "utf8")).wakeable,
+		false,
+	);
+	// Sending needs no turn and no UI, and a headless run is exactly the thing
+	// that wants to tell somebody what it found.
+	// `a` was rebound to a new id earlier in this file; address the one it has.
+	const fromHeadless = await headless.call(TOOL_SEND, { to: "aaaaaaaa9999", message: "batch finished" });
+	checkTrue("and it can send", fromHeadless.includes("Sent"));
+	checkTrue("with the ordinary promise, since that peer CAN be woken", fromHeadless.includes("on a turn that starts now"));
+	// ...and the promise changes for a peer that cannot: the sender's model acts
+	// on this sentence, so it has to be true of the peer it is about.
+	const atHeadless = await a.call(TOOL_SEND, { to: "dddddddd4444", message: "for the batch" });
+	checkTrue("sending AT a headless peer says what it really gets", atHeadless.includes("cannot be woken"));
+	await until("which the interactive peer receives", () => a.sent.some((entry) => entry.message.content.includes("batch finished")));
 
+	// Idle, it must not be woken — and must not eat its own mail trying. `drain`
+	// deletes what it reads, so a tick that read the inbox with nowhere to put it
+	// would lose the message rather than hold it.
+	headless.busy(false);
+	const inboxFor = (id: string) => join(l.inbox, id);
+	await a.call(TOOL_SEND, { to: "dddddddd4444", message: "while you were idle" });
+	// Two now: the probe above and this one. Both must survive the idle ticks.
+	const beforeIdleTick = readdirSync(inboxFor("dddddddd4444"));
+	checkTrue("the messages are on disk", beforeIdleTick.length === 2);
+	await new Promise((resolve) => setTimeout(resolve, CONFIG.pollMs * 2 + 60));
+	check("an idle headless run is never sent a turn", headless.sent.length, 0);
+	check("and its inbox is left intact rather than drained into nowhere", readdirSync(inboxFor("dddddddd4444")).length, 2);
+
+	// Working, the same message rides the run already going — the delivery an
+	// interactive session gets when it is busy.
+	headless.busy(true);
+	await until("a working headless run is reached", () => headless.sent.length === 1);
+	check("as a follow-up, never a turn of its own", headless.sent[0].options, { deliverAs: "followUp" });
+	checkTrue("carrying what was said", headless.sent[0].message.content.includes("while you were idle"));
+	check("and the inbox is emptied now it has landed", readdirSync(inboxFor("dddddddd4444")).length, 0);
+
+	await headless.quit();
 	await a.quit();
 	await c.quit();
 	check("nothing is left announcing itself", readdirSync(l.peers), []);

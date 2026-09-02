@@ -29,9 +29,21 @@
  * presence is a heartbeat plus a pid check rather than a file that exists,
  * and every session sweeps the corpses when it starts.
  *
- * The intercom needs an interactive session to be worth anything: a headless
+ * A headless run takes part too, and used to be excluded outright — presence
+ * was never written and all three tools refused. The reasoning was that a
  * `-p` run has no next turn to deliver into and is gone before a peer could
- * answer. There, presence is never written and the tools say so.
+ * answer, which is half true and was applied to the whole extension. SENDING
+ * needs no turn and no UI at all, and a headless run is exactly the thing that
+ * wants to tell somebody what it found. Being reached works too, as long as its
+ * one turn is still going: a follow-up rides a run in progress, which is the
+ * same delivery an interactive session gets when it is busy.
+ *
+ * What genuinely does not work is waking it, so that is the only thing withheld.
+ * `wakeable: false` goes in its presence record, it is never sent a turn of its
+ * own, its inbox is left unread while it is idle rather than drained into
+ * nowhere, and the peer list marks it so a sender knows an `ask` will likely
+ * outlive it. A session with no id at all — `--no-session` — is still off,
+ * because there is nothing to address.
  *
  *   store.ts    the files, presence, liveness, and target resolution
  *   tools.ts    the three tools
@@ -79,6 +91,23 @@ function renderIntercom(details: IntercomDetails, theme: Theme): Text {
 	}
 	if (details.delivery === "followUp") lines.push(theme.fg("dim", "picked up by the turn already running"));
 	return new Text(lines.join("\n"), 0, 0);
+}
+
+/**
+ * How a drained message is handed over.
+ *
+ * A turn of its own only for a session that can be woken. For a headless run
+ * that would keep a process alive its caller is waiting to finish, and collide
+ * with the single prompt it was invoked for — so it always rides the run
+ * already going, and the tick that got here checked there is one.
+ *
+ * Not folded into that check, and not redundant with it: the two read the clock
+ * at different moments, and a turn that ends in between would otherwise turn
+ * "deliver into the run in progress" into "start a new one" for exactly the
+ * session that must never get one. Pure, so the rule can be read as a table.
+ */
+export function deliveryFor(wakeable: boolean, idle: boolean): "turn" | "followUp" {
+	return wakeable && idle ? "turn" : "followUp";
 }
 
 export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
@@ -130,10 +159,17 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		const me = self;
 		const ctx = uiCtx;
 		if (!me || !ctx) return;
+		// A headless run between turns has nowhere to put this. Waking it is not
+		// available — that is what `wakeable: false` means — and `drain` DELETES
+		// what it reads, so reading the inbox here would lose the mail rather
+		// than hold it. Left on disk instead: the turn that is about to start (or
+		// is still going) picks it up on a later tick, and if the process exits
+		// first the sweep buries the inbox with the session.
+		if (!me.wakeable && isIdle()) return;
 		const envelopes = drain(l, me.id, CONFIG.maxDrainPerTick);
 		if (envelopes.length === 0) return;
 		try {
-			const delivery = ctx.isIdle() ? "turn" : "followUp";
+			const delivery = deliveryFor(me.wakeable !== false, ctx.isIdle());
 			pi.sendMessage<IntercomDetails>(
 				{
 					customType: MESSAGE_TYPE,
@@ -196,11 +232,20 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		// when no shutdown ran first. Retiring it is what stops this process
 		// answering for a conversation it has left.
 		leave();
-		if (!ctx.hasUI) return;
 		const id = ctx.sessionManager.getSessionId();
 		if (!id) return;
 		ensure(l);
-		self = { id, name: ctx.sessionManager.getSessionName()?.trim() || id.slice(0, CONFIG.idChars), cwd: ctx.cwd };
+		// `hasUI` is read as "wakeable" and stored under that name, because that
+		// is the only thing the intercom does differently with it: a session with
+		// dialog-capable UI (TUI, RPC) has a next turn a message can start, and a
+		// headless `pi -p` run does not. Everything else — sending, and being
+		// reached while a turn is running — works identically either way.
+		self = {
+			id,
+			name: ctx.sessionManager.getSessionName()?.trim() || id.slice(0, CONFIG.idChars),
+			cwd: ctx.cwd,
+			wakeable: ctx.hasUI,
+		};
 		uiCtx = ctx;
 		startedAt = now();
 		// Announce before sweeping, never after: the sweep deletes the inbox of

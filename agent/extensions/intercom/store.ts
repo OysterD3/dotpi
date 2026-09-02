@@ -36,10 +36,24 @@ export type Peer = {
 	startedAt: number;
 	/** Whether it was between turns as of that heartbeat. */
 	idle: boolean;
+	/**
+	 * Whether a message can WAKE this session, as opposed to only reaching it
+	 * while it is already working.
+	 *
+	 * False for a headless run (`pi -p`), which is one turn and then an exit:
+	 * there is no next turn to start, and starting one anyway would keep a
+	 * process alive that its caller expects to finish. Such a session can still
+	 * send, and can still be reached mid-turn.
+	 *
+	 * Optional because a presence file written before this field existed came
+	 * from a build that only ever wrote them from interactive sessions — see
+	 * isWakeable() for why absent has to read as true.
+	 */
+	wakeable?: boolean;
 };
 
 /** Who a session is, as its peers see it. */
-export type Self = Pick<Peer, "id" | "name" | "cwd">;
+export type Self = Pick<Peer, "id" | "name" | "cwd" | "wakeable">;
 
 /** What a heartbeat records beyond the identity that does not change. */
 export type Presence = { now: number; startedAt: number; idle: boolean };
@@ -121,6 +135,19 @@ export function writePresence(l: Layout, self: Self, state: Presence): void {
 		startedAt: state.startedAt,
 		idle: state.idle,
 	} satisfies Peer);
+}
+
+/**
+ * Whether a peer can be woken by a message, defaulting to yes when it does not
+ * say.
+ *
+ * A presence file with no `wakeable` field was written by a build that only
+ * ever wrote them from interactive sessions, so absent means interactive —
+ * reading it the other way would mark every peer from an older pi as one-shot
+ * and tell senders not to ask it anything.
+ */
+export function isWakeable(peer: Pick<Peer, "wakeable">): boolean {
+	return peer.wakeable !== false;
 }
 
 /** Leave the peer list. Reversible: the next heartbeat puts it back. */

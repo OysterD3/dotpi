@@ -1358,9 +1358,30 @@ Two sessions asking each other at the same moment are both inside a tool call, s
 the turn where it would answer — the timeout is the whole of the answer to that, and the tool
 description says so.
 
-The intercom needs an interactive session to be worth anything: a headless `-p` run has no next turn
-to deliver into and is gone before a peer could answer, so there presence is never written and the
-tools say why.
+**A headless run takes part too**, and used to be excluded outright — presence was never written and
+all three tools refused. The reasoning was that a `-p` run has no next turn to deliver into and is
+gone before a peer could answer. That is half true, and it was applied to the whole extension:
+*sending* needs no turn and no UI at all, and a headless run is precisely the thing that wants to
+tell somebody what it found. Being reached works too, as long as its one turn is still running — a
+follow-up rides a run in progress, which is the same delivery an interactive session gets when it is
+busy.
+
+What genuinely does not work is *waking* it, so that is the only thing withheld:
+
+- its presence record carries `wakeable: false`, and the peer list marks it `headless — reachable
+  only while working, cannot be woken`, so a sender knows an `ask` will outlive it;
+- it is never sent a turn of its own. Starting one would keep a process alive that its caller is
+  waiting to finish, and collide with the single prompt it was invoked for;
+- while it is idle its inbox is **left unread** rather than drained. `drain` deletes what it reads,
+  so a tick with nowhere to put the mail would lose it; left on disk, the turn still running picks
+  it up, and the sweep buries it with the session otherwise.
+
+A session with no id at all — `--no-session` — is still off, because there is nothing to address.
+
+One consequence worth stating plainly rather than discovering later: a follow-up *extends* a
+one-shot run. `pi -p "…"` will answer its prompt, then process a peer's message before exiting, so
+the printed output can include that reaction. That is the feature, not a bug. And workflow subagents
+are still outside all of this — they spawn `--no-extensions`, so a fleet has no intercom.
 
 | File | Role |
 | --- | --- |

@@ -12,7 +12,7 @@
  */
 
 import { CONFIG, TOOL_ASK, TOOL_PEERS, TOOL_SEND } from "./config.ts";
-import type { Envelope, Peer } from "./store.ts";
+import { isWakeable, type Envelope, type Peer } from "./store.ts";
 
 /**
  * The rule that makes the intercom safe to have at all.
@@ -60,7 +60,7 @@ export const INTERCOM_GUIDELINES = [
 ];
 
 /** Text shown when the tools are reachable but this session cannot use them. */
-export const OFF_TEXT = "The intercom is not available in this session (it needs an interactive session with a session file).";
+export const OFF_TEXT = "The intercom is not available in this session (it needs a session file — a --no-session run has no address to be reached at).";
 
 /**
  * One line for the chat row: what the sender said it was about, or the opening
@@ -83,7 +83,12 @@ function started(peer: Peer, now: number): string {
 
 /** One peer, as the list shows it. The id is bracketed because it is the address. */
 export function describePeer(peer: Peer, now: number): string {
-	return [`${peer.name} [${peer.id.slice(0, CONFIG.idChars)}]`, peer.idle ? "idle" : "working", peer.cwd, started(peer, now)].join("  ·  ");
+	const parts = [`${peer.name} [${peer.id.slice(0, CONFIG.idChars)}]`, peer.idle ? "idle" : "working", peer.cwd, started(peer, now)];
+	// A headless peer is worth marking, because it changes what sending to it
+	// means: it is one turn and then an exit, it can only be reached while that
+	// turn is running, and an ask will outlive it more often than not.
+	if (!isWakeable(peer)) parts.push("headless — reachable only while working, cannot be woken");
+	return parts.join("  ·  ");
 }
 
 /**

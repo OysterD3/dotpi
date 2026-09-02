@@ -32,6 +32,7 @@ import {
 import {
 	type AliveCheck,
 	closeAsk,
+	isWakeable,
 	type Layout,
 	listPeers,
 	openAsk,
@@ -124,9 +125,14 @@ export function registerIntercomTools(pi: ExtensionAPI, deps: ToolDeps): void {
 				summary: summarise(typeof params.summary === "string" ? params.summary : undefined, message),
 				sentAt: deps.now(),
 			});
-			return said(
-				`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). An idle session reads it on a turn that starts now; a busy one picks it up on the run it is already doing. There is no reply unless it sends one.`,
-			);
+			// The sender's model acts on this sentence, so it has to be true of the
+			// peer it is about: a headless one cannot be woken, and saying "reads it
+			// on a turn that starts now" of a run that will not start one is how a
+			// message goes quietly nowhere.
+			const reach = isWakeable(target.peer)
+				? "An idle session reads it on a turn that starts now; a busy one picks it up on the run it is already doing."
+				: "That session is headless: it will pick this up only if its current turn is still running, and it cannot be woken. Once that turn ends it is gone.";
+			return said(`Sent to "${target.peer.name}" (${target.peer.id.slice(0, CONFIG.idChars)}). ${reach} There is no reply unless it sends one.`);
 		},
 	});
 
