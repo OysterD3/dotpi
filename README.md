@@ -2331,6 +2331,81 @@ rewind; it is a separate piece of work, not a coat of paint.
 | `config.ts` | The marks, their columns, their colour roles, and the collapse threshold |
 | `transcript.test.ts` | The pure helpers, plus every patched component rendered and read back |
 
+<a id="diff-panel"></a>
+**`agent/extensions/diff-panel/`** — the working tree's uncommitted changes, beside the chat. Claude
+Code's diff panel, for pi: `/diff` or `shift+→` opens a panel on the right-hand half of the screen
+listing every file that differs from HEAD and, under the list, each file's diff with line numbers —
+drawn by pi's own diff renderer, so a file looks exactly the way its last `edit` did in the chat.
+
+```
+                                        │ 2 files changed  +18 -1
+ ● Done. The header is sticky now,      │
+   and the hash links land below it.    │ src/components/Header.tsx        +3 -1
+                                        │ src/styles.css                     +15
+ ● Edited 2 files, ran 1 shell command  │
+                                        │ ── src/components/Header.tsx ──────────
+ > thanks, now the footer▌              │  27 -      position: 'relative',
+                                        │  27 +      position: 'sticky',
+                                        │  28 +      top: 0,
+                                        │ ───────────────────────────────────────
+                                        │ shift+→ drive  ·  /diff close
+```
+
+**Git is the source, not the session.** The panel shows `git status` against HEAD — staged and
+unstaged together, untracked files as additions, a staged rename diffed against what it was renamed
+from — which is what you would commit, and the one thing a shell command can never slip past. The
+alternative was the session's own edit history, which `/rewind` already keeps, and it has a hole that
+matters here: an `edit` tool knows the edits it made, and nothing about the `sed -i` or the build
+step that ran after it. The cost is that outside a repository there is nothing to compare against,
+and the panel says so rather than showing an empty list.
+
+**It re-reads as the model works.** Any tool finishing is a reason to look — `bash` as much as
+`edit` — after a short settle so a burst of calls is one read, plus a slow poll for whatever you do
+in another window. A read is one `git status` plus one `git show` per file HEAD knows and this
+session has not seen at this HEAD; the baselines and the descriptions are cached against the commit
+and the file's mtime and size, so a quiet poll rebuilds nothing and hands the panel the *same*
+change-set object, which is what lets the panel skip laying it out again. Binary files and files over
+1 MB are listed with a reason instead of a diff.
+
+**It follows, until you drive it.** Opened, the panel is `nonCapturing`: the keyboard stays with the
+editor and you keep typing, and every read scrolls the panel so the file the model touched last
+heads the body — what is on screen is what just happened. `shift+→` again hands it the keyboard:
+`↑↓` and `j`/`k` scroll, `⇥`/`n` and `p` jump between files, `g`/`G` go to the ends, `esc` gives
+the keyboard back (and the follow resumes), `q` or `shift+→` closes. `/diff` toggles it from the
+prompt either way. `shift+→` keeps the arrow family the other panels use — `shift+↑` for background
+shells, `shift+↓` for workflows — and points at where this one is; Claude Code's own `shift+ctrl+d`
+is pi-tui's debug key.
+
+**It is an overlay, not the editor's slot.** The other panels in this config take the editor's place
+and are modal for as long as they are up; this one has to stay up *while* you work, so it is
+composited over the chat instead. pi-tui draws it cell by cell over the right half, which means the
+chat's right half is under it (as in Claude Code) and the bottom rows are left uncovered for the
+editor and the footer — a fixed reserve, in `config.ts`, since an overlay's height is whatever its
+component returns and the panel returns exactly that many lines, every one of them padded to its
+width so nothing shows through. Two things follow from being non-modal. It hides itself while
+`ask-user` or `permissions` have a question up, announced on the same channels the statusline and
+`elapsed` listen to, because the diff being asked about sits in the chat under it. And closing it is
+pi's `done()`, which pops the *topmost* overlay — sound today because nothing else in this config
+opens one, and worth knowing if something does.
+
+**What it does not do.** It does not show the session's edits as such: a change you made by hand in
+another editor is in the panel, and an edit the model made and then reverted is not. It does not
+follow a `/resume` into another tree — the panel closes on the session's shutdown, which is the
+one signal the instance that opened it is still around to hear: pi runs every extension's factory
+again for the next session and hides the overlays itself, without ever calling this one's `done()`,
+so anything hung on `session_start` would land on a fresh instance with nothing to close and leave
+the old poll running git for the rest of the process. And pi's regular TUI mode enables no mouse
+tracking, so there is nothing to click.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | The command, the shortcut, the overlay's lifecycle, and when to re-read |
+| `git.ts` | Reading the tree through git, with the caches that make a quiet poll free |
+| `model.ts` | Parsing git's status output, describing a file from its two versions, counting a diff (pure) |
+| `panel.ts` | The component: layout, following, the keys, and wrapping a diff line under its own text |
+| `config.ts` | The key, the width, the bottom reserve, the poll and settle times, the size cap |
+| `diff-panel.test.ts` | The pure helpers, the reader driven against a real repository, the panel rendered and read back, and the wiring driven through pi's API |
+
 **`agent/extensions/cmux-notify/`** — tells [cmux](https://github.com/manaflow-ai/cmux) when pi is
 blocked waiting on *you*, so a pane you are not looking at raises the session's "needs input" chip
 and a banner instead of waiting silently. Two things qualify: a permission prompt, and an `ask_user`
