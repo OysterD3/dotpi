@@ -17,7 +17,7 @@
  * dependencies of this repo):
  *     node node_modules/jiti/lib/jiti-cli.mjs agent/extensions/transcript/transcript.test.ts
  */
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,7 +26,7 @@ const AGENT = join(ROOT, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
 
-const { getAgentDir, initTheme, getMarkdownTheme, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent } =
+const { getAgentDir, initTheme, getMarkdownTheme, generateDiffString, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent } =
 	await import("@earendil-works/pi-coding-agent");
 if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
@@ -574,6 +574,104 @@ console.log("\n--- the summary is the quietest line on the screen ---");
 	check("painted in the summary colour", line.includes(`<${CONFIG.summaryColor}>`), true);
 	check("which is dimmer than a live call's dot", CONFIG.summaryColor !== CONFIG.callOkColor, true);
 	setPaint((_color, text) => text);
+}
+
+/* -------------------------------------------------------------------------- */
+console.log("\n--- pi's own edit: one line once it has landed ---");
+
+{
+	// pi's edit declares `renderShell: "self"`, which for any other tool means
+	// "the author chose the frame" and keeps it boxed. For edit it is a
+	// mechanical choice, and boxing it made every edit the loudest thing on
+	// the screen and the one call that never folded.
+	const before = "const a = 1;\nconst b = 2;\n";
+	const after = "const a = 1;\nconst b = 3;\n";
+	// Named relative to the cwd the component gets, the way the model names
+	// files: pi resolves the preview against it, and the header stays short.
+	const file = "edit-me.ts";
+	writeFileSync(join(ROOT, file), before);
+	const edits = [{ oldText: "const b = 2;", newText: "const b = 3;" }];
+	const edit = new ToolExecutionComponent("edit", "id-edit", { path: file, edits }, {}, undefined, ui as never, ROOT);
+	edit.setArgsComplete();
+	edit.markExecutionStarted();
+	// pi computes the preview off the event loop, from the file on disk.
+	await new Promise((resolve) => setTimeout(resolve, 100));
+
+	const pending = edit.render(WIDTH);
+	check("while it runs, the preview diff is on screen", pending.some((l) => seen(l).includes("const b = 3;")), true);
+	check("under a dot, not in a box", pending.some((l) => l.includes(`${ESC}[48;`)), false);
+	check("with the dot at column 0", trimmedRight(pending.find((l) => !isBlank(l)) ?? "").startsWith("● edit"), true);
+
+	const { diff } = generateDiffString(before, after);
+	edit.updateResult({ content: [{ type: "text", text: "ok" }], details: { diff, firstChangedLine: 2 }, isError: false }, false);
+	const settled = edit.render(WIDTH);
+	const shown = settled.filter((l) => !isBlank(l));
+	check("settled, it is one line", shown.length, 1);
+	check("naming the tool and the file", seen(shown[0] ?? "").startsWith("● edit"), true);
+	check("with the counts right after them", trimmedRight(shown[0] ?? "").endsWith("edit-me.ts  +1 -1"), true);
+	check("and no diff line under it", settled.some((l) => seen(l).includes("const b")), false);
+	check("still no tint", settled.some((l) => l.includes(`${ESC}[48;`)), false);
+	check("the same frame is served from the memo", edit.render(WIDTH) === settled, true);
+
+	edit.setExpanded(true);
+	check("expanded brings the diff back", edit.render(WIDTH).some((l) => seen(l).includes("const b = 3;")), true);
+	edit.setExpanded(false);
+	check("and collapsing takes it away again", edit.render(WIDTH).filter((l) => !isBlank(l)).length, 1);
+
+	// Folded like every other call now — the very thing the box prevented.
+	const chat = new Container();
+	chat.addChild(edit);
+	chat.addChild(toolCall("bash", { command: "pnpm test" }, "ok"));
+	chat.addChild(answer());
+	const folded = chat.render(WIDTH).join("\n");
+	check("it folds with the run it belongs to", folded.includes("Edited 1 file, ran 1 shell command"), true);
+	check("and its line is gone into the summary", folded.includes("+1 -1"), false);
+
+	// A failure keeps its reason: pi puts it in the call's body, not the result.
+	const failed = new ToolExecutionComponent("edit", "id-edit-fail", { path: file, edits: [{ oldText: "nope", newText: "x" }] }, {}, undefined, ui as never, ROOT);
+	failed.setArgsComplete();
+	failed.markExecutionStarted();
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	failed.updateResult({ content: [{ type: "text", text: "Could not find edits[0]" }], details: undefined, isError: true }, false);
+	const failure = failed.render(WIDTH);
+	check("a failed edit keeps the reason on screen", failure.some((l) => seen(l).includes("Could not find")), true);
+	check("under a red dot", (() => { setPaint((color, text) => `<${color}>${text}`); const red = failed.render(WIDTH).some((l) => l.includes(`<${CONFIG.callErrorColor}>`)); setPaint((_c, t) => t); return red; })(), true);
+
+	// An extension's self-framing tool is still its author's business.
+	check("a self-framing extension tool is still left alone", selfDrawn.render(WIDTH).some((line) => seen(line).includes("drawn by its author")), true);
+
+	// Only pi's edit Box is stepped around — told by the preview fields pi
+	// stamps on it. Any other tool that draws a Box keeps every child of it.
+	const { Box, Text } = await import("@earendil-works/pi-tui");
+	const boxed = (name: string, shell?: "self") =>
+		new ToolExecutionComponent(
+			name,
+			`id-${name}`,
+			{ path: "x.ts" },
+			{},
+			{
+				name,
+				...(shell ? { renderShell: shell } : {}),
+				renderCall: () => {
+					const box = new Box(0, 0, (text: string) => text);
+					box.addChild(new Text("title line", 0, 0));
+					box.addChild(new Text("body line", 0, 0));
+					return box;
+				},
+			} as never,
+			ui as never,
+			ROOT,
+		);
+	const foreign = boxed("boxy");
+	foreign.setArgsComplete();
+	foreign.markExecutionStarted();
+	foreign.updateResult({ content: [{ type: "text", text: "ok" }], details: {}, isError: false }, false);
+	check("a foreign Box keeps its body once settled", foreign.render(WIDTH).some((line) => seen(line).includes("body line")), true);
+	const ownEdit = boxed("edit", "self");
+	ownEdit.setArgsComplete();
+	ownEdit.markExecutionStarted();
+	ownEdit.updateResult({ content: [{ type: "text", text: "ok" }], details: { diff: "-1 a\n+1 b" }, isError: false }, false);
+	check("and so does an extension's own edit, whatever its name", ownEdit.render(WIDTH).some((line) => seen(line).includes("body line")), true);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);

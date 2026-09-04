@@ -2229,7 +2229,8 @@ not finished being written), one that is **expanded**, one with a **custom rende
 extension chose how it looks — the workflow panel relies on that), and one carrying **images** (a
 screenshot is the content, and a line saying one was taken is not the same information). A call pi
 has already hidden is stepped over rather than counted, so it neither appears in the summary nor
-splits one group into two around something invisible.
+splits one group into two around something invisible. pi's own `edit` declares that custom shell
+too, and is the one exception — see below.
 
 **A message with nothing to say does not split a run either.** A turn that calls tools is a chain —
 reason, call, reason, call — and the assistant messages in the middle carry only reasoning and the
@@ -2245,6 +2246,26 @@ at muted it read as loud as the answer above it.
 
 The threshold is **two**, in `config.ts`. One call is not "several": a lone call's output is usually
 the thing being looked at, and hiding it would cost more than the line it saves.
+
+**An edit is one line once it has landed.** pi's `edit` tool declares `renderShell: "self"`, the
+flag that everywhere else means "the author chose this frame" — but it declares it for a mechanical
+reason (a large preview that must not flicker while it streams), and honouring it had two costs.
+Every edit kept its tinted box while every other call lost one, so the edits were the loudest thing
+on the screen; and a self-framed call was excluded from folding, so a turn that read four files and
+edited two folded to a summary line *with two boxes still standing next to it*. Now `edit` is named
+in `config.ts` as the built-in whose shell is not a framing choice, and it is unboxed and folded like
+everything else. Once it has settled, the diff goes too:
+
+```
+● edit src/components/Header.tsx  +3 -1
+```
+
+The diff is the [diff panel's](#diff-panel) to show, and `ctrl+o` brings it back here. Two states keep
+it on purpose: a call that is **still running** shows its preview, because a permission ask is
+decided by reading it; and a call that **failed** keeps its body, which is where pi puts the reason.
+The exception is by tool name, not by definition, because pi hands a built-in's component its own
+definition — so "arrived without one" cannot tell pi's edit from an extension's, and an extension that
+frames its own tool is still left alone.
 
 **Reasoning is retired when the turn is.** It is worth reading while it is happening and is noise
 once the answer sits under it — so the message being streamed shows whatever pi would show, and every
@@ -2305,9 +2326,10 @@ nothing will tell you it happened. Verified against pi 0.84.1.
 
 **What is left alone is a tool that draws its own frame** — `renderShell: "self"`, which pi already
 renders outside the box. That is the only flag meaning "this author chose the framing", so it is the
-only one worth deferring to. Two more cases keep pi's rendering for mechanical reasons: a tool with
-no renderer at all, whose fallback text carries the tint on the text component rather than on a box,
-and a result carrying images, which pi composes with spacers below the box.
+only one worth deferring to, with pi's own `edit` as the named exception above. Two more cases keep
+pi's rendering for mechanical reasons: a tool with no renderer at all, whose fallback text carries
+the tint on the text component rather than on a box, and a result carrying images, which pi composes
+with spacers below the box.
 
 It is deliberately **not** enough that a tool came from an extension. The first cut bailed on any
 `toolDefinition.renderCall`, which read as respectful and was in fact nearly total: `background-shell`
@@ -2316,11 +2338,8 @@ foreground command. So the most common call in any session — every `$ …` —
 everything around it lost one. The rule now turns on framing, not provenance.
 
 There is no settings block: the extension either draws the transcript or it does not, and deleting
-the folder is the off switch. Two things it does **not** do, both of which the Claude Code
-transcript has: consecutive tool calls are not merged into one summary line (*"Read 2 files, ran 1
-shell command"*), and call lines keep pi's own wording (`$ pnpm test`) rather than being rephrased
-(*"Ran pnpm test"*). Merging needs cross-component state that has to survive streaming, reload and
-rewind; it is a separate piece of work, not a coat of paint.
+the folder is the off switch. One thing it does **not** do, which the Claude Code transcript has:
+call lines keep pi's own wording (`$ pnpm test`) rather than being rephrased (*"Ran pnpm test"*).
 
 | File | Role |
 | --- | --- |

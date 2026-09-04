@@ -36,6 +36,19 @@ export const CONFIG = {
 	resultColor: "dim",
 
 	/**
+	 * pi's own tools whose `renderShell: "self"` is a mechanical choice — the
+	 * shell that keeps a large preview stable while it streams — rather than an
+	 * author's framing. They are unboxed and folded like every other built-in,
+	 * and once one has settled it draws as a single line carrying its diff's
+	 * counts: the diff itself is the diff panel's to show, and ctrl+o brings it
+	 * back here.
+	 */
+	ownSelfShell: ["edit"] as readonly string[],
+	/** The counts after a settled edit: lines added, lines removed. */
+	countAddedColor: "success",
+	countRemovedColor: "error",
+
+	/**
 	 * How many settled tool calls in a row before they collapse to one summary
 	 * line. Two, because one is not "several": a lone call's output is usually
 	 * the thing being looked at, and hiding it would cost more than the line it

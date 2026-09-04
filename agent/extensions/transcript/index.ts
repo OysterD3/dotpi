@@ -48,10 +48,14 @@
  * that it happened. Verified against pi 0.84.1.
  *
  * Three kinds of tool call keep pi's own framing, because restyling them would
- * be worse than leaving them alone: any tool an extension registered a
- * renderer for (its author already chose how it looks — this repo's workflow
- * panel relies on that), any tool that draws its
- * own frame, and any result carrying images. See `patch.ts`.
+ * be worse than leaving them alone: any tool that draws its own frame (its
+ * author already chose how it looks — this repo's workflow panel relies on
+ * that), any tool with no renderer at all, and any result carrying images.
+ * pi's own `edit` declares that self-drawn frame too, but for a mechanical
+ * reason rather than a framing one, so it is the exception: unboxed like every
+ * other built-in, and once it has landed drawn as one line with its diff's
+ * counts — the diff itself is the diff panel's to show, and ctrl+o brings it
+ * back. See `patch.ts`.
  *
  * There is no settings block. The extension either draws the transcript or it
  * does not, and deleting the folder is the off switch.

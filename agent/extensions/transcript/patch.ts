@@ -24,7 +24,7 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Container, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CONFIG } from "./config.ts";
 import { dropBlank, trimBlank, withGutter } from "./render.ts";
 import { summarise } from "./summary.ts";
@@ -37,13 +37,35 @@ type Render = (width: number) => string[];
  * pi's internals in one visible place rather than spread over casts.
  */
 interface ToolInternals {
+	toolName: string;
 	hideComponent: boolean;
+	/** The default shell: pi's tinted box around the call and its result. */
 	contentBox: { children: Component[] };
+	/** The `self` shell: the same two children, in a frame the renderer drew. */
+	selfRenderContainer: { children: Component[] };
 	imageComponents: Component[];
-	result?: { isError: boolean };
+	result?: { isError: boolean; details?: unknown };
+	isPartial: boolean;
 	expanded: boolean;
 	hasRendererDefinition(): boolean;
 	getRenderShell(): string;
+}
+
+/**
+ * A tool whose author chose its frame, which is left alone.
+ *
+ * `renderShell: "self"` is the only flag that means that — with one
+ * exception. pi's own edit tool declares it for a mechanical reason, a large
+ * preview that must not flicker as it streams, not as a framing choice; and
+ * boxing it while every other built-in was unboxed made the edits the loudest
+ * thing in the transcript, and the only calls that never folded. Named by
+ * tool rather than told apart by definition, because pi hands the component
+ * its OWN definition for a built-in, so "arrived without one" says nothing.
+ */
+function keepsOwnFrame(self: ToolInternals): boolean {
+	if (!self.hasRendererDefinition()) return false;
+	if (self.getRenderShell() === "default") return false;
+	return !CONFIG.ownSelfShell.includes(self.toolName);
 }
 
 /**
@@ -215,7 +237,8 @@ function lastSpokenIndex(children: readonly Component[]): number {
  *   - **a custom render shell.** An extension chose how that tool looks — the
  *     workflow panel relies on it — which is the same exclusion unboxTools
  *     makes, and for the same reason. Note that merely HAVING a renderer
- *     definition is not it: every built-in tool has one.
+ *     definition is not it: every built-in tool has one. And pi's own edit
+ *     is not it either, whatever its shell says; see keepsOwnFrame().
  *   - **images.** A screenshot is the content, not a detail of it, and a line
  *     saying one was taken is not the same information.
  */
@@ -227,7 +250,7 @@ function foldable(child: Component): boolean {
 	if (self.result === undefined || self.isPartial) return false;
 	if (self.imageComponents.length > 0) return false;
 	try {
-		if (self.hasRendererDefinition() && self.getRenderShell() !== "default") return false;
+		if (keepsOwnFrame(self)) return false;
 	} catch {
 		return false;
 	}
@@ -458,6 +481,73 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
 }
 
 /**
+ * The call block's lines, at the width its content gets.
+ *
+ * For every tool but one that is the call component rendered as it is. pi's
+ * edit draws its call as a tinted Box holding a header line and, under a
+ * spacer, the diff — so for it the Box is stepped around the way the shell
+ * was, and its children are rendered directly. Then, once the call has
+ * SETTLED and is not expanded, only the header is drawn, with the diff's
+ * counts after it:
+ *
+ *     ● edit src/components/Header.tsx  +3 -1
+ *
+ * The diff itself is in the diff panel, and ctrl+o brings it back here. Two
+ * states keep the body on purpose: a call still running shows its preview,
+ * because a permission ask is decided by reading it; and a failed call keeps
+ * its body, which is where pi puts the reason it failed.
+ */
+function callBlock(self: ToolInternals, call: Component | undefined, width: number): string[] {
+	if (call === undefined) return [];
+	// The Box is stepped around only when it is the one pi's edit builds — told
+	// by the preview fields pi stamps onto it — so a tool of some other origin
+	// that happens to draw a Box, self-framed or not, keeps every child of it.
+	if (!(call instanceof Box) || !("previewPending" in call)) return call.render(width);
+	const parts = call.children;
+	const settled = self.result !== undefined && !self.isPartial && !self.result.isError;
+	if (!settled || self.expanded || parts.length === 0) return parts.flatMap((part) => part.render(width));
+
+	const counts = paintedCounts(self, call);
+	if (counts === "") return parts[0]!.render(width);
+	// Copied: the component hands back its own cached array, and the line
+	// replaced below must not be written into it.
+	const header = [...parts[0]!.render(Math.max(1, width - visibleWidth(counts) - 2))];
+	const last = header.length - 1;
+	if (last < 0) return [counts];
+	// The header comes padded to its width; the counts belong after the path,
+	// not at the far edge of the screen. A line that ends in an escape rather
+	// than in spaces is left as it is.
+	const text = header[last]!.replace(/ +$/, "");
+	// Interned per component, so an unchanged header hands the memo the same
+	// string object it saw last frame — the memo compares by identity.
+	const memo = headers.get(self);
+	const line = memo !== undefined && memo.text === text && memo.counts === counts ? memo.line : `${text}  ${counts}`;
+	headers.set(self, { text, counts, line });
+	header[last] = line;
+	return header;
+}
+
+const headers = new WeakMap<object, { text: string; counts: string; line: string }>();
+
+/** `+3 -1`, painted, from the diff the result carried — or the preview's, which is the same diff. */
+function paintedCounts(self: ToolInternals, call: Component): string {
+	const details = self.result?.details as { diff?: unknown } | undefined;
+	const preview = (call as { preview?: { diff?: unknown } }).preview;
+	const diff = typeof details?.diff === "string" ? details.diff : typeof preview?.diff === "string" ? preview.diff : undefined;
+	if (diff === undefined) return "";
+	let added = 0;
+	let removed = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+")) added += 1;
+		else if (line.startsWith("-")) removed += 1;
+	}
+	const parts: string[] = [];
+	if (added > 0) parts.push(paint(CONFIG.countAddedColor, `+${added}`));
+	if (removed > 0) parts.push(paint(CONFIG.countRemovedColor, `-${removed}`));
+	return parts.join(" ");
+}
+
+/**
  * Strips a tool call's tinted box and re-frames it as a call and its result.
  *
  * pi draws a tool call as a full-width `Box` in a success/error/pending tint,
@@ -491,6 +581,10 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
  *     the text component rather than on a box;
  *   - a result with images, which the original render composes with spacers
  *     below the box.
+ *
+ * pi's own edit is the one self-framing tool that is unboxed anyway (see
+ * keepsOwnFrame), and it needs one more step: its call is itself a tinted Box,
+ * so that Box is stepped around too. See callBlock().
  */
 function unboxTools(): void {
 	const original = ToolExecutionComponent.prototype.render;
@@ -498,13 +592,14 @@ function unboxTools(): void {
 		const self = this as unknown as ToolInternals;
 		try {
 			if (self.hideComponent) return [];
-			if (!self.hasRendererDefinition() || self.getRenderShell() !== "default") return original.call(this, width);
+			if (!self.hasRendererDefinition() || keepsOwnFrame(self)) return original.call(this, width);
 			if (self.imageComponents.length > 0) return original.call(this, width);
 
-			const [call, ...rest] = self.contentBox.children;
+			const shell = self.getRenderShell() === "self" ? self.selfRenderContainer : self.contentBox;
+			const [call, ...rest] = shell.children;
 			// The children are pi's own cached components, so rendering them is
 			// cheap; what has to be kept off the hot path is the framing below.
-			const callRaw = call === undefined ? [] : call.render(width - visibleWidth(CONFIG.callMark));
+			const callRaw = callBlock(self, call, width - visibleWidth(CONFIG.callMark));
 			const resultRaw = rest.flatMap((child) => child.render(width - visibleWidth(CONFIG.resultMark)));
 
 			// One memo per component, so the split has to survive the compare —
