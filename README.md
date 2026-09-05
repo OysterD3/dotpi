@@ -3176,7 +3176,7 @@ Five third-party packages are pinned in `settings.packages`. `pi install` vendor
 
 | Package | What it does | Configured by |
 | --- | --- | --- |
-| `pi-provider-qoder` | The Qoder provider. Pinned to a fork carrying four fixes upstream hasn't merged: dropped tool-result images, tool calls silently discarded when arguments arrive empty, plus the two known `finish_reason`/`usage` bugs. | `models.providers.qoder` |
+| `pi-provider-qoder` | The Qoder provider. Pinned to a fork carrying five fixes upstream hasn't merged: dropped tool-result images, tool calls silently discarded when arguments arrive empty, one billed request set per turn instead of one per model call, plus the two known `finish_reason`/`usage` bugs. | `models.providers.qoder` |
 | `pi-openai-server-compaction` | Codex-style **server-side** compaction for OpenAI models: sends `compaction_trigger` through `POST /v1/responses` and gets an encrypted `compaction` item back, instead of a text summary. | `agent/openai-server-compaction.json` — **not** `settings.compaction` |
 | `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
 | `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
