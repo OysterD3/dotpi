@@ -557,9 +557,19 @@ export class WorkflowsPanel {
 		return progress.phases.flatMap((phase) => phase.agents);
 	}
 
-	/** The run's phases, plan included — the left column of the two-pane view. */
+	/**
+	 * The phases the run has REACHED — the left column of the two-pane view.
+	 *
+	 * A declared phase is not a phase yet. The plan is still seeded and
+	 * journalled, because it is what keeps the board in script order rather
+	 * than start order, but a row nothing has entered states an intention, and
+	 * a column of those reads as a fixed shape the run owes you — a
+	 * conditional Fix that never ran is not a phase that is missing. What is
+	 * listed is what happened, including a shell() gate that reached its turn
+	 * and will never hold an agent.
+	 */
 	private phases(): PhaseProgress[] {
-		return this.currentProgress()?.phases ?? [];
+		return (this.currentProgress()?.phases ?? []).filter((phase) => phase.entered);
 	}
 
 	/** The phase the left column's cursor is on, clamped to what exists. */
@@ -1346,7 +1356,7 @@ export class WorkflowsPanel {
 		const theme = this.theme;
 		const progress = this.currentProgress();
 		if (!progress) return [theme.fg("muted", "This run has no journal on disk.")];
-		if (progress.phases.length === 0) return [theme.fg("muted", "No phases recorded yet.")];
+		if (this.phases().length === 0) return [theme.fg("muted", "No phases recorded yet.")];
 
 		const inner = Math.max(1, width - 2);
 		const leftWidth = Math.min(LEFT_PANE_MAX, Math.max(LEFT_PANE_MIN, Math.round(inner * LEFT_PANE_FRACTION)));
@@ -1365,15 +1375,16 @@ export class WorkflowsPanel {
 	}
 
 	/**
-	 * The two-pane's LEFT column: the run's PHASES — the plan and the progress
-	 * against it, one row each, in the order the script declared them.
+	 * The two-pane's LEFT column: the phases the run has REACHED, one row each,
+	 * in the order the script declared them.
 	 *
-	 * It used to be the flat agent list with a heading per phase, which could only
-	 * ever show phases that already had an agent in them: a three-phase script
-	 * displayed one phase until its second phase started, so the board showed
-	 * where the run was and never what it was going to do. Now a declared phase is
-	 * on it from the first frame, dimmed, with no fraction — because it has none
-	 * yet, not because it finished empty.
+	 * It listed the declared plan too for a while, so the board was a fixed
+	 * shape from the first frame with the unreached rows dimmed. Two things were
+	 * wrong with that: most of a plan is intent rather than work, and a phase
+	 * that is conditional on a gate reads as one the run failed to get to. The
+	 * declared plan still decides the ORDER, so a phase entered out of turn keeps
+	 * the position the script gave it — it just does not appear before it is
+	 * reached.
 	 *
 	 * Every row goes through truncateToWidth(…, pad: true) so it is exactly
 	 * `width` wide, which is what makes the zip in twoPaneBody exact rather than
@@ -1381,7 +1392,7 @@ export class WorkflowsPanel {
 	 */
 	private phaseLines(progress: RunProgress, width: number, budget: number): string[] {
 		const theme = this.theme;
-		const phases = progress.phases;
+		const phases = this.phases();
 		const errorRows = progress.error ? 1 : 0;
 		// One heading row, then the window, then the error. The heading is paid for
 		// up front because unlike the agent tree this list has no per-row chrome to
@@ -1402,9 +1413,10 @@ export class WorkflowsPanel {
 			// as a list that happens to be numbered.
 			const mark = state === "done" ? theme.fg("success", "✓") : theme.fg(state === "active" ? "warning" : "muted", String(i + 1));
 			const settled = phase.agents.filter((agent) => isAgentSettled(agent.status)).length;
-			// A pending phase has no count to give. Printing "0/0" there is the exact
-			// misreading this whole column exists to fix.
-			const count = state === "pending" ? "" : `  ${theme.fg("muted", `${settled}/${phase.agents.length}`)}`;
+			// A phase with no agents has no count to give — a shell() gate is the
+			// usual one. Printing "0/0" there says it ran and did nothing, which is
+			// the exact misreading this column exists to fix.
+			const count = phase.agents.length === 0 ? "" : `  ${theme.fg("muted", `${settled}/${phase.agents.length}`)}`;
 			const tone = selected ? "accent" : state === "pending" ? "muted" : "text";
 			const caret = selected && this.focus === "phases" ? theme.fg("accent", "❯") : " ";
 			if (selected) this.caretLine = lines.length;
@@ -1434,10 +1446,10 @@ export class WorkflowsPanel {
 		push(`${theme.fg("accent", theme.bold(phase.title))}  ${theme.fg("muted", `· ${count}`)}`);
 		if (phase.detail) push(theme.fg("muted", phase.detail));
 		if (agents.length === 0) {
-			// Two different empties, and conflating them is what made a planned phase
-			// look like a failed one: not started yet, versus reached and did its work
-			// without agents (a shell() gate).
-			push(theme.fg("muted", phase.entered ? "no agents in this phase" : "not started yet"));
+			// The only empty that reaches here now: a phase the run entered which
+			// does its work without agents, which is a shell() gate. An unreached
+			// phase is not on the board to select.
+			push(theme.fg("muted", "no agents in this phase"));
 			return lines;
 		}
 		const window = this.windowFor(this.agentInPhase, agents.length, Math.max(3, budget - lines.length));

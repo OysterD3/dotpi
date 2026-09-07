@@ -1122,12 +1122,12 @@ console.log("\n--- panel: a phase is pending, active or done ---");
 
 	const progress = newProgress("wf-p", "planned");
 	progress.phases.push({ title: "Draft", entered: true, agents: [row("done")] }, { title: "Synthesize", agents: [] }, { title: "Route-test", agents: [] });
-	check("the summary counts the plan instead of printing 0/0", phaseSummary(progress), "Draft 1/1 · +2 planned");
-	// A run whose plan is up but which has reached nothing yet reports the plan,
-	// not "starting…": three phases declared is more than the old line could say
-	// at that moment, and the run's own status mark already leads the line.
-	check("a plan alone is still worth reporting", phaseSummary({ ...progress, phases: [{ title: "Draft", agents: [] }] }), "+1 planned");
-	check("no phases at all is the only 'starting…'", phaseSummary({ ...progress, phases: [] }), "starting…");
+	check("the summary reports what the run reached, not the plan", phaseSummary(progress), "Draft 1/1");
+	// A run whose plan is up but which has reached nothing yet has nothing to
+	// report. The plan is intent, and this line is the one place there is room
+	// only for what is happening.
+	check("a plan alone is not progress", phaseSummary({ ...progress, phases: [{ title: "Draft", agents: [] }] }), "starting…");
+	check("and no phases at all reads the same", phaseSummary({ ...progress, phases: [] }), "starting…");
 }
 
 // ---------------------------------------------------------------- new: context
@@ -3145,8 +3145,10 @@ console.log("\n--- tui: the two-pane run view ---");
 				{ index: 1, label: "waiter", status: "queued", phase: "Find", startedAt: 0 },
 			],
 		});
-		// Declared but not reached: the phase the panel has to show anyway.
-		progress.phases.push({ title: "Synthesize", detail: "merge the findings", agents: [] });
+		// Reached, and does its work without agents — a shell() gate. It stays.
+		progress.phases.push({ title: "Synthesize", detail: "merge the findings", entered: true, agents: [] });
+		// Declared and never reached: intent, so the board does not carry it.
+		progress.phases.push({ title: "Route-test", detail: "never got here", agents: [] });
 		const run: WorkflowRun = { progress, controller: new AbortController(), gate: new PauseGate(), startedAt: 0, settled: Promise.resolve() };
 		const registry = new RunRegistry();
 		registry.add(run);
@@ -3164,10 +3166,11 @@ console.log("\n--- tui: the two-pane run view ---");
 		const wide = wideLines.join("\n");
 		check("no rendered line exceeds the width it was given", wideLines.filter((l) => visibleWidth(l) > 120).length, 0);
 		check("the phase list and the agent list sit side by side", wide.includes("│"), true);
-		// The whole point of the plan: a phase with no agents is on the board.
+		// The board is what happened: a reached gate is on it, a declared phase is not.
 		check("the phase column is headed", wide.includes("Phases"), true);
-		check("a declared phase nobody has reached yet is still listed", wide.includes("Synthesize"), true);
-		check("and carries no fraction, because it has none yet", /Synthesize\s+\d+\/\d+/.test(wide), false);
+		check("a reached phase with no agents is on the board", wide.includes("Synthesize"), true);
+		check("and carries no fraction, because 0/0 reads as ran-and-did-nothing", /Synthesize\s+\d+\/\d+/.test(wide), false);
+		check("a declared phase nobody reached is not listed at all", wide.includes("Route-test"), false);
 		check("the reached phase reports its progress", wide.includes("Find") && /Find\s+0\/2/.test(wide), true);
 		check("the right pane heads the selected phase and its agent count", wide.includes("· 2 agents"), true);
 		check("and lists that phase's agents", wide.includes("runner") && wide.includes("waiter"), true);
@@ -3178,11 +3181,11 @@ console.log("\n--- tui: the two-pane run view ---");
 
 		// ↓ walks the PHASE list while the left column has focus.
 		panel.handleInput("\x1b[B");
-		const onPending = panel.render(120).join("\n");
-		check("↓ moves to the pending phase", onPending.includes("· 0 agents"), true);
-		check("which says it has not started rather than that it is empty", onPending.includes("not started yet"), true);
-		check("and shows the plan's own note for it", onPending.includes("merge the findings"), true);
-		check("a pending phase has nothing to open", (panel.handleInput("\x1b[C"), panel.render(120).join("\n").includes("not started yet")), true);
+		const onGate = panel.render(120).join("\n");
+		check("↓ moves to the gate phase", onGate.includes("· 0 agents"), true);
+		check("which says it holds no agents, not that it never started", onGate.includes("no agents in this phase"), true);
+		check("and shows the plan's own note for it", onGate.includes("merge the findings"), true);
+		check("a phase with no agents has nothing to open", (panel.handleInput("\x1b[C"), panel.render(120).join("\n").includes("no agents in this phase")), true);
 		panel.handleInput("\x1b[A");
 
 		// → moves focus into the agent column; → again opens the agent.

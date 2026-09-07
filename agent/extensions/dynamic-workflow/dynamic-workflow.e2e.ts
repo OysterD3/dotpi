@@ -1048,10 +1048,10 @@ console.log("\n--- workflow tool: wait mode ---");
 
 console.log("\n--- workflow tool: meta.phases is the board, not just a comment ---");
 {
-	// The measured complaint: a three-phase script showed ONE phase, because a
-	// phase only existed once an agent had joined it. The plan is now seeded at
-	// run start and journalled, so the phases that have not happened yet are on
-	// the board — and stay on it for a run rebuilt from disk.
+	// The plan is seeded at run start and journalled, which is what keeps the
+	// board in SCRIPT order rather than start order and carries each phase's
+	// note. It is a record, not a board: the renderers show only what the run
+	// reached, so what is asserted here is the data surviving a rebuild.
 	const tool = tools.get("workflow")!;
 	const { ctx } = makeCtx({ model: MODEL });
 	const script = [
@@ -1061,7 +1061,7 @@ console.log("\n--- workflow tool: meta.phases is the board, not just a comment -
 	].join("\n");
 	const result = await tool.execute("t-plan", { script, wait: true }, undefined, undefined, ctx);
 	const phases = result.details.phases as Array<{ title: string; detail?: string; entered?: boolean }>;
-	check("every declared phase is on the board", phases.map((phase) => phase.title), ["Draft", "Synthesize", "Route-test"]);
+	check("every declared phase is in the record", phases.map((phase) => phase.title), ["Draft", "Synthesize", "Route-test"]);
 	check("the plan's own note rides along", phases[0]?.detail, "write it");
 	check("the phase the run reached is marked entered", phases[0]?.entered, true);
 	check("the ones it never got to are not", [phases[1]?.entered, phases[2]?.entered], [undefined, undefined]);
@@ -1073,7 +1073,7 @@ console.log("\n--- workflow tool: meta.phases is the board, not just a comment -
 	const rebuilt = progressFromJournal(meta, readJournalLines(AGENT, runId));
 	check("the journal rebuilds the same plan, in order", rebuilt.phases.map((phase) => phase.title), ["Draft", "Synthesize", "Route-test"]);
 	check("and remembers which one the run reached", rebuilt.phases.map((phase) => !!phase.entered), [true, false, false]);
-	check("the footer summary counts the rest rather than claiming 0/0", phaseSummary(rebuilt), "Draft 0/0 · +2 planned");
+	check("the footer summary reports only what was reached", phaseSummary(rebuilt), "Draft 0/0");
 }
 
 console.log("\n--- workflow tool: error and abort paths ---");

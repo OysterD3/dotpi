@@ -1302,12 +1302,10 @@ function firstAgentError(progress: RunProgress): string | undefined {
 function phaseText(progress: RunProgress): string {
 	const lines: string[] = [];
 	for (const phase of progress.phases) {
-		// A declared phase the run has not reached has no fraction to give, and
-		// "0/0 done" would claim it finished having done nothing.
-		if (!phase.entered) {
-			lines.push(`${phase.title}: pending`);
-			continue;
-		}
+		// A declared phase the run has not reached is not reported: this text says
+		// what the run did, and a plan listed beside it reads as work that
+		// finished having done nothing.
+		if (!phase.entered) continue;
 		const done = phase.agents.filter((a) => a.status === "done" || a.status === "replayed").length;
 		const failed = phase.agents.filter((a) => a.status === "failed").length;
 		lines.push(`${phase.title}: ${done}/${phase.agents.length} done${failed ? `, ${failed} failed` : ""}`);
@@ -1326,11 +1324,13 @@ function renderProgress(progress: RunProgress, theme: Theme, expanded: boolean, 
 				: theme.fg("error", "✗");
 	lines.push(`${mark} ${theme.fg("accent", progress.name)}`);
 	for (const phase of progress.phases) {
+		// Same rule as the panel: reached phases only.
+		if (!phase.entered) continue;
 		const done = phase.agents.filter((a) => a.status === "done").length;
 		const replayed = phase.agents.filter((a) => a.status === "replayed").length;
 		const failed = phase.agents.filter((a) => a.status === "failed").length;
 		const running = phase.agents.filter((a) => a.status === "running").length;
-		const parts = [phase.entered ? `${done + replayed}/${phase.agents.length}` : theme.fg("muted", "pending")];
+		const parts = [`${done + replayed}/${phase.agents.length}`];
 		if (running) parts.push(theme.fg("warning", `${running} running`));
 		if (replayed) parts.push(theme.fg("muted", `${replayed} replayed`));
 		if (failed) parts.push(theme.fg("error", `${failed} failed`));

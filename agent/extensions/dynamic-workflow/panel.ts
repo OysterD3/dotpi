@@ -176,11 +176,10 @@ export function phaseState(phase: PhaseProgress, runStatus?: RunStatus): "pendin
 /**
  * The one-line progress digest under the prompt.
  *
- * Only phases the run has REACHED get a fraction. A declared phase nothing has
- * started has no numerator and no denominator to report, and "Route-test 0/0"
- * on a line this narrow reads as a phase that ran and did nothing — so the rest
- * of the plan is carried as a count instead, which is short enough to survive
- * the clip and honest about what it is.
+ * Only phases the run has REACHED are reported. A declared phase nothing has
+ * started has no numerator and no denominator to give, and carrying the rest of
+ * the plan as "+2 planned" told the reader about intent on the one line there
+ * is room for what is happening. Nothing reached yet is "starting…".
  */
 export function phaseSummary(progress: RunProgress): string {
 	if (progress.phases.length === 0) return "starting…";
@@ -191,8 +190,6 @@ export function phaseSummary(progress: RunProgress): string {
 			const failed = phase.agents.filter((agent) => agent.status === "failed").length;
 			return `${phase.title} ${done}/${phase.agents.length}${failed ? `(${failed}✗)` : ""}`;
 		});
-	const pending = progress.phases.filter((phase) => !phase.entered).length;
-	if (pending > 0) parts.push(`+${pending} planned`);
 	return parts.length > 0 ? parts.join(" · ") : "starting…";
 }
 
