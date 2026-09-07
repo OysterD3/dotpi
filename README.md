@@ -259,6 +259,63 @@ earned.
 | `diff.ts` | Sizing the diff so the fleet matches the work |
 | `config.ts` | Levels, caps, finder bounds |
 
+**`agent/extensions/research/`** — adds `/research`: sweep the web on a question, read every
+source in parallel, and write one self-contained HTML report.
+
+```
+/research does prompt caching help agent loops?     # 5 angles, ~20 sources
+/research --deep <question>                         # 8 angles, ~40, and the answer is refuted
+/research --quick <question>                        # 3 angles, ~9
+```
+
+Like `/simplify`, the command does no researching. It settles the three things the model would
+otherwise guess at — how wide to sweep, where the fetched pages go, and which fan-out tool is
+actually active — and injects a prompt.
+
+**The split it enforces is a constraint, not a preference.** Workflow subagents spawn with
+`--no-extensions`, so `web_search` and `fetch` — extension tools — do not exist for them. The
+session agent is the only thing in a pi session that can reach the network. That is the seam this
+is built on: **the session agent fetches, the fleet reads.** Each page is written to its own file
+in the scratchpad, and the parent's context ends up carrying forty URLs instead of forty pages.
+The fleet then supplies what one context cannot — reading all of them without any of them
+displacing each other.
+
+The sweep angles are **modalities, not topics**: definition, primary sources, the case against,
+practitioners, what changed lately, published numbers, alternatives, and provenance. One
+well-phrased query run five times is one angle run five times — it returns the same consensus with
+more citations, which reads as corroboration and is not. `provenance` is last, is the one people
+skip, and is the only angle that can explain why the other seven agree.
+
+Depth buys two separate things, which is why they are separate columns: how much gets **fetched**
+(angles × sources, paid by the session agent) and how hard the evidence is **checked**. Only
+`--deep` refutes — three lenses attack the answer, and a majority against it *replaces* the answer
+rather than adding a caveat.
+
+The reading fleet is a **saved** workflow (`agent/workflows/deep-research.js`) rather than a script
+the model authors per run, because the source-file contract in the prompt and the reader that
+consumes it are two halves of one contract and should not be re-derived each time. It runs Read →
+Cross-check → Write → Gate in one script: one read agent per source, read-only so a reader cannot
+wander off and fix something it noticed; one cross-check over every extract, which is the barrier
+that earns itself because contradiction and independence are properties of the *set*; one writer;
+and a `shell()` gate, because "I wrote the report" is prose and a non-zero exit is not.
+
+Four rules ride in the prompt and are the difference between research and a bibliography: no claim
+without a source, contradictions surfaced rather than averaged, agreement checked for independence
+(six pages restating one press release is one source), and the gaps named — an unbounded answer is
+a guess with citations.
+
+Without `workflow` it degrades to `task`, one subagent per source; without either it says in the
+report that all the reading landed in one context, because the reader deserves to know which they
+have.
+
+| File | What it holds |
+| --- | --- |
+| `index.ts` | The command, the scratchpad subscription, fan-out detection |
+| `prompt.ts` | Assembling the turn per depth and fan-out (pure) |
+| `config.ts` | Depths, the angle table, tunables (pure) |
+| `args.ts` | Parsing `[--quick\|--standard\|--deep] <question>` (pure) |
+| `research.test.ts` | Unit coverage, and validating the saved workflow against the real engine |
+
 **`agent/extensions/rewind/`** — adds `/rewind` (aliases `/checkpoint`, `/undo`). Pick an earlier
 prompt, then choose what to restore:
 
