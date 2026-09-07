@@ -90,6 +90,19 @@ Three rules, all enforced:
 
 DEFAULT TO pipeline(). A barrier (parallel between stages) is correct ONLY when stage N needs cross-item context from all of stage N-1 — dedup/merge across the full result set, early-exit on a zero count, or a prompt that references "the other findings". "The stages are conceptually separate" is not a reason; barrier latency is real.
 
+phase() is a LABEL, not a barrier. It groups rows in the progress panel and orders nothing; what orders work is what you await. A phase boundary is therefore free, and awaiting a result you do not need costs the whole difference between the two — so never split work to keep a phase tidy, and never join it because the panel would look neater.
+
+The shape most work has is neither one barrier nor N independent chains: it is a JOIN. Start the agents that do not depend on each other, HOLD their promises, and await only where a result is genuinely an input.
+
+  const api = agent('...', { label: 'api', phase: 'Build' })
+  const store = agent('...', { label: 'store', phase: 'Build' })
+  const docs = agent('...', { label: 'docs', phase: 'Build' })
+  const wired = await Promise.all([api, store]).then(([a, s]) =>
+    agent('Wire these together: ' + a + '\\n' + s, { phase: 'Wire' }))
+  return { wired, docs: await docs }
+
+docs never waits for api or store, and the wiring agent starts when its two inputs land rather than when the slowest agent of the round does. An unawaited agent() promise is safe — every one carries an observer, so its rejection cannot take the session down — but await it somewhere before the script returns: when the run settles, agents still in flight are aborted.
+
 The canonical multi-stage pattern — each dimension verifies as soon as its review completes:
   export const meta = { name: 'review', description: 'review then verify', phases: [{ title: 'Review' }, { title: 'Verify' }] }
   const results = await pipeline(
@@ -134,6 +147,8 @@ The canonical multi-stage pattern — each dimension verifies as soon as its rev
     agent('Review ' + p.owns + ' against what it was asked to build. Return findings only.',
       { label: 'audit:' + p.key, phase: 'Audit', tools: ['read', 'grep', 'find', 'ls'], schema: FINDINGS_SCHEMA })))
   return { green: gate.exitCode === 0, findings: audit.filter(Boolean).flatMap(a => a.findings) }
+
+Its three barriers are forced by one fact, and it is worth naming: the gate is a SINGLE GLOBAL command, so it cannot run until every part is written, and everything after it inherits that. Where a gate is per-item — one module's tests, one endpoint's smoke check — that item's gate and fix belong in a pipeline() chain of its own, and item 7 never waits on item 3. Copy the barriers only with the reason.
 
 Stating the ownership IN THE PROMPT is what keeps concurrent agents in one repo from overwriting each other, and it costs nothing next to a worktree per agent. Resolving the seams between the parts is one agent's job — that is Fix, and what tells it which seams are actually broken is the gate, not a guess written before anything ran. Ten deliverables is what ten agents looks like: the panel reads "Implement · 10 agents", and the count came from the request rather than from a default.
 

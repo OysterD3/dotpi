@@ -317,6 +317,15 @@ check("the example runs four phases in one script", description.includes("phases
 check("and fans out to ten owners", (description.match(/owns: '/g) ?? []).length, 10);
 check("the gate is shell(), not an agent", description.includes("const gate = await shell("), true);
 check("and Fix runs on what the gate returned", description.includes("gate.stderr.slice(-4000)"), true);
+// The graph half. The engine is structured concurrency over the promise
+// graph — an unawaited agent() is explicitly safe, and phase() orders
+// nothing — but every example awaited immediately, so the only shapes the
+// text taught were the full barrier and the per-item chain. A join is what
+// most work actually is, and it was unwritten.
+check("phase() is named as a label, not a barrier", description.includes("phase() is a LABEL, not a barrier"), true);
+check("and the join shape is shown", description.includes("Promise.all([api, store])"), true);
+check("with the rule that makes it safe", description.includes("carries an observer"), true);
+check("the example says why ITS barriers are forced", description.includes("the gate is a SINGLE GLOBAL command"), true);
 // The width half of the same lesson, which the depth correction overshot.
 // "Most work is served by three to five agents" was a number standing where the
 // task's seams should be counted, and the fleet-shape list beside it named only
