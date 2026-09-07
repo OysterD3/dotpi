@@ -29,9 +29,9 @@ if (!getAgentDir().startsWith(ROOT)) {
 }
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, AFTER_RUN, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
-const { COLLECT_CHANNEL, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
+const { COLLECT_CHANNEL, CONFIG, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
 const { SUBAGENT_PREAMBLE } = await import("./description.ts");
-const { createRun, readJournalLines, readMeta, readOutcome } = await import("./store.ts");
+const { createRun, readJournalLines, readMeta, readOutcome, writeMeta } = await import("./store.ts");
 const { phaseSummary, progressFromJournal } = await import("./panel.ts");
 
 /** What ultracode puts on SPEND_CHANNEL. */
@@ -962,7 +962,11 @@ writeSettings({});
 		content: `<system-reminder>\n${editStreakReminder(20)}\n</system-reminder>`,
 		display: false,
 	});
-	check("mid-turn delivery, same idiom as the result path", sent[0]?.options, { deliverAs: "followUp" });
+	// The streak nudge keeps the follow-up idiom the RESULT path gave up, and is
+	// safe with it: it fires from a tool_call handler, so the turn is mid-flight
+	// by construction — nowhere near the loop's last follow-up poll, which is
+	// the window a settling background run can land in.
+	check("mid-turn delivery rides the running turn", sent[0]?.options, { deliverAs: "followUp" });
 
 	for (let i = 0; i < 19; i++) await call("edit");
 	check("39 edits: still just the one nudge", sent.length, 1);
@@ -1015,7 +1019,7 @@ writeSettings({});
 		events.get("tool_call")!({ type: "tool_call", toolCallId: `m${sent.length}-${toolName}-${Math.random()}`, toolName, input: {} }, ctx);
 	for (let i = 0; i < 20; i++) await call("edit");
 	check("mode on is enough on its own, with no Workflow call at all", sent.length, 1);
-	check("idle delivery, same idiom as the result path", sent[0]?.options, { triggerTurn: true });
+	check("and an idle one wakes the agent", sent[0]?.options, { triggerTurn: true });
 	await commands.get("ultracode")!.handler("off", ctx);
 	await turn("done", "interactive", ctx); // drain the exit reminder
 	// Leave `sent` clean for what follows — the workflow-tool sections below
@@ -1585,14 +1589,52 @@ console.log("\n--- workflow tool: the run store ---");
 console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
 {
 	const tool = tools.get("workflow")!;
-	// Agent busy: the result must ride the current turn as a follow-up.
-	const { ctx } = makeCtx({ model: MODEL, idle: false });
+	// A busy session is WAITED FOR, not followed up. pi polls its follow-up
+	// queue once, after the model would stop, and then leaves the loop — while
+	// isStreaming stays true across the post-run continuation. A result queued
+	// in that window is drained by nothing, no turn starts, and the fleet
+	// finishes into silence. Waiting for idle and triggering a turn has no such
+	// window, at the price of the result landing after the turn rather than in
+	// it. `busy` is held so the test can let the session go idle.
+	const busy = { model: MODEL, idle: false };
+	const { ctx } = makeCtx(busy);
 	events.get("session_start")!({}, ctx);
 	sent.length = 0;
 	const script = `export const meta = { name: 'midturn', description: 'busy agent' }\nreturn 'ok'`;
-	await tool.execute("t8", { script }, undefined, undefined, ctx);
-	for (let i = 0; i < 100 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-	check("busy agent gets a follow-up", sent[0]?.options, { deliverAs: "followUp" });
+	const midturn = await tool.execute("t8", { script }, undefined, undefined, ctx);
+	for (let i = 0; i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	check("a busy session is told nothing yet", sent.length, 0);
+	// The outcome is on disk before anyone is told, and NOT marked delivered —
+	// so a process that dies while waiting leaves it owed rather than lost.
+	const midturnRun = midturn.details.runId as string;
+	check("but the outcome is already beside the run", (readOutcome(AGENT, midturnRun) ?? "").length > 0, true);
+	check("and it is not yet claimed as delivered", readMeta(AGENT, midturnRun)?.delivered, false);
+	busy.idle = true;
+	for (let i = 0; i < 200 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	check("and once it goes idle the result starts its own turn", sent[0]?.options, { triggerTurn: true });
+	check("which is the run's own result", sent[0]?.message.customType, "workflow-result");
+	check("now recorded as delivered", readMeta(AGENT, midturnRun)?.delivered, true);
+
+	// A poller that gives up must not take back a delivery someone else made.
+	// persist() rewrites the whole meta, and the give-up path can outlive its own
+	// session by up to one poll — long enough for /new to have started, found the
+	// outcome owed, said it, and written delivered: true. Writing false over that
+	// made the session after it say the same result a second time, which is the
+	// one way this design can be worse than the follow-up it replaced.
+	let orphanDead = false;
+	const orphan = { model: MODEL, idle: false, dead: () => orphanDead };
+	const { ctx: orphanCtx } = makeCtx(orphan);
+	events.get("session_start")!({}, orphanCtx);
+	const orphanScript = `export const meta = { name: 'orphan', description: 'the poller outlives its session' }\nreturn 'ok'`;
+	const orphaned = await tool.execute("t8b", { script: orphanScript }, undefined, undefined, orphanCtx);
+	const orphanRun = orphaned.details.runId as string;
+	for (let i = 0; i < 200 && readMeta(AGENT, orphanRun)?.delivered === undefined; i++) await new Promise((r) => setTimeout(r, 10));
+	check("a busy run waits, recorded as not yet delivered", readMeta(AGENT, orphanRun)?.delivered, false);
+	// What the next session does: finds it owed, says it, records that it did.
+	writeMeta(AGENT, { ...readMeta(AGENT, orphanRun)!, delivered: true });
+	orphanDead = true;
+	await new Promise((r) => setTimeout(r, CONFIG.deliveryPollMs + 400));
+	check("and a stale poller giving up does not take that back", readMeta(AGENT, orphanRun)?.delivered, true);
 
 	// A bad configured default fails the run at start, rather than nulling
 	// every agent into a success-shaped empty result.

@@ -1133,7 +1133,23 @@ function startRun(
 			// flag says whether anyone has heard it — index.ts says it once, in the
 			// next session, if nobody has. persist() below writes the flag.
 			writeOutcome(agentDir, runId, run.outcome?.text ?? "");
-			meta.delivered = deliverResult(pi, ctx, run);
+			// Not delivered until it actually lands. A busy session is waited for,
+			// so the flag is written by the callback rather than by this line — and
+			// a process that exits while waiting leaves the outcome owed, which is
+			// what the next session's deliverOwedOutcomes is for.
+			meta.delivered = false;
+			deliverResult(pi, ctx, run, (delivered) => {
+				// Only the true is written from here. persist() rewrites the whole
+				// meta, and a poller that gives up can outlive its session by up to
+				// one poll — long enough for /new to have started, found this outcome
+				// owed, said it, and written delivered: true. Persisting false on top
+				// of that would take it back, and the session after would say the same
+				// result a second time. The false is already on disk, from the
+				// persist() below.
+				if (!delivered) return;
+				meta.delivered = true;
+				persist();
+			});
 		}
 		persist();
 		pruneRuns(agentDir, CONFIG.retainRuns);
@@ -1255,13 +1271,64 @@ function resolveReference(reference: string, ctx: ExtensionContext): string {
 }
 
 /**
- * Hand a finished background run's outcome back to the main agent. Returns
- * whether the session took it — false means nothing was told, and the outcome
- * on disk is now owed to the next session (see undeliveredOutcomes).
+ * Hand a finished background run's outcome back to the main agent.
+ * `onSettled(false)` means nothing was told, and the outcome on disk is now
+ * owed to the next session (see undeliveredOutcomes).
+ *
+ * ## Why it waits for idle instead of riding the turn that is running
+ *
+ * This used to branch: idle ? triggerTurn : deliverAs "followUp". The
+ * follow-up half is where finished runs went quiet. pi's agent loop polls its
+ * follow-up queue at exactly ONE point — after the model would stop, in
+ * agent-loop.js — and then breaks out; pi's own isStreaming stays true past
+ * that, because it also covers the post-run continuation. A result enqueued
+ * in the window between the last poll and the flag clearing is never drained
+ * by the turn it was queued onto. It sits in the queue, no turn starts, and
+ * the session goes quiet with the fleet finished — until the user types
+ * something else and THAT turn drains it on its way out.
+ *
+ * Sampling isIdle() first does not close the window, which is why this was
+ * hard to see: the flag we read and the queue the loop polls are the same
+ * value read at two different instants, and only one of them is ours.
+ *
+ * So a result now always starts its own turn, and waits for one when the
+ * session is busy. What that gives up, plainly: a result landing mid-turn is
+ * no longer woven into that turn, so the model reads it slightly later. That
+ * is the cheap side of the trade — the doctrine the tool description states,
+ * start the run and end the turn, is written for exactly this shape — and
+ * the expensive side was a fleet finishing into silence.
  */
-function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun): boolean {
-	try {
-		const idle = ctx.isIdle();
+function deliverResult(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	run: WorkflowRun,
+	onSettled: (delivered: boolean) => void,
+): void {
+	let attempts = 0;
+	const attempt = (): void => {
+		let idle: boolean;
+		try {
+			// Read for the throw as much as for the value. Every field of a replaced
+			// session's context throws (pi's getters call assertActive), and a run
+			// cancelled by session_shutdown settles on exactly that path — while
+			// pi.sendMessage cannot report it at all, because the extension API wraps
+			// sendCustomMessage in a fire-and-forget catch.
+			idle = ctx.isIdle();
+		} catch {
+			onSettled(false);
+			return;
+		}
+		if (!idle) {
+			if (++attempts > CONFIG.deliveryAttempts) {
+				// Owed, not lost: the outcome is beside the run and the next session
+				// says it. Better than a timer that outlives what it was waiting for.
+				onSettled(false);
+				return;
+			}
+			// unref so a pending re-check never holds the process open by itself.
+			setTimeout(attempt, CONFIG.deliveryPollMs).unref?.();
+			return;
+		}
 		pi.sendMessage<RunProgress>(
 			{
 				customType: RESULT_MESSAGE,
@@ -1269,17 +1336,11 @@ function deliverResult(pi: ExtensionAPI, ctx: ExtensionContext, run: WorkflowRun
 				display: true,
 				details: structuredClone(run.progress),
 			},
-			// Mid-turn: ride the current run as a follow-up. Idle: wake the agent
-			// so the result gets processed, the way a task notification would.
-			idle ? { triggerTurn: true } : { deliverAs: "followUp" },
+			{ triggerTurn: true },
 		);
-		return true;
-	} catch {
-		// A dead session cannot receive anything: every field of a replaced
-		// session's context throws (pi's getters call assertActive), and a run
-		// cancelled by session_shutdown settles on exactly that path.
-		return false;
-	}
+		onSettled(true);
+	};
+	attempt();
 }
 
 /**

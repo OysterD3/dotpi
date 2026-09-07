@@ -144,6 +144,17 @@ export const CONFIG = {
 	 */
 	retainRuns: 50,
 	/**
+	 * How often a finished background run re-checks a busy session, in ms, and
+	 * how many times before it gives up and leaves the outcome owed.
+	 *
+	 * The cap is not a deadline for the user — it is a bound on a timer nobody
+	 * is watching. Ten minutes of one continuous turn is long enough that the
+	 * next session saying it (see undeliveredOutcomes) is the better answer
+	 * than a poll that outlives everything around it.
+	 */
+	deliveryPollMs: 500,
+	deliveryAttempts: 1_200,
+	/**
 	 * Process-wide ceiling on concurrent subagents, across ALL runs.
 	 *
 	 * Not the per-run throttle that was removed — that capped one run and made
