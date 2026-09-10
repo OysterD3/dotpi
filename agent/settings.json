@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.84.4",
+  "lastChangelogVersion": "0.85.1",
   "theme": "one-dark-pro",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6-astra",
@@ -69,7 +69,7 @@
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#506df9a",
     "npm:pi-web-access",
-    "npm:@ryan_nookpi/pi-extension-codex-fast-mode@0.2.6",
+    "npm:pi-openai-fast-mode",
     "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055",
     "npm:@ff-labs/pi-fff@0.10.1",
     "npm:pi-mcp-adapter"
