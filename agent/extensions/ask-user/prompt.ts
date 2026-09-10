@@ -477,7 +477,12 @@ export async function showAsk(
 	 * a prompt the user opened themselves while the agent carries on working.
 	 */
 	blocking = true,
+	signal?: AbortSignal,
 ): Promise<AskOutcome> {
+	if (signal?.aborted) return { kind: "dismissed" };
+	let close: (() => void) | undefined;
+	const abort = () => close?.();
+	signal?.addEventListener("abort", abort, { once: true });
 	const first = session.questions[0];
 	pi.events.emit(ASK_CHANNEL, {
 		active: true,
@@ -492,20 +497,24 @@ export async function showAsk(
 	});
 	try {
 		const outcome = await ctx.ui.custom<AskOutcome>(
-			(tui, theme, _keybindings, done) =>
-				new AskPrompt(
+			(tui, theme, _keybindings, done) => {
+				close = () => done({ kind: "dismissed" });
+				if (signal?.aborted) close();
+				return new AskPrompt(
 					session,
 					theme,
 					done,
 					() => tui.requestRender(),
 					() => tui.terminal?.rows ?? CONFIG.assumedRows,
-				),
+				);
+			},
 			{ overlay: false },
 		);
 		// The component always resolves through done(), but a host that tore it
 		// down some other way would leave this undefined.
 		return outcome ?? { kind: "dismissed" };
 	} finally {
+		signal?.removeEventListener("abort", abort);
 		pi.events.emit(ASK_CHANNEL, { active: false, blocking });
 	}
 }

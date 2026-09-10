@@ -8,14 +8,16 @@
  * takes the editor's place while it is up rather than floating over the chat.
  *
  * `executionMode` is "sequential" so it never runs alongside other tool calls —
- * it blocks on a human. In a headless session it degrades gracefully: it tells
+ * it blocks on a human until intercom needs the agent. The question then stays
+ * open, and its eventual answer is sent as a separate message. In a headless session it tells
  * the model no user is reachable rather than hanging.
  */
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG, TOOL_NAME } from "./config.ts";
+import { INCOMING_CHANNEL, type IncomingDelivery } from "../intercom/config.ts";
+import { ASK_CHANNEL, CONFIG, TOOL_NAME } from "./config.ts";
 import { ASK_USER_DESCRIPTION, ASK_USER_GUIDELINES, ASK_USER_SNIPPET } from "./guidance.ts";
-import { type AskOption, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
+import { type AskOption, type AskOutcome, type AskQuestion, AskSession, renderOutcomeText } from "./interaction.ts";
 import { showAsk } from "./prompt.ts";
 
 /**
@@ -89,6 +91,21 @@ export function normalizeQuestions(params: Record<string, unknown>): AskQuestion
 }
 
 export function registerAskUserTool(pi: ExtensionAPI): void {
+	let pending: { interrupt: () => void; cancel: () => void } | undefined;
+	const pendingResult = () => ({
+		content: [{ type: "text" as const, text: "The user question is still open, with their draft saved. No answer or permission has been given. Handle the incoming intercom message, then stop and wait for the user. Their answer will arrive automatically. Do not call ask_user again or continue work that depends on their answer." }],
+		details: { kind: "pending" as const, answers: [] },
+	});
+	const unsubscribe = pi.events.on(INCOMING_CHANNEL, (data) => {
+		if (!pending) return;
+		(data as IncomingDelivery).steer = true;
+		pending.interrupt();
+	});
+	pi.on("session_shutdown", () => {
+		unsubscribe();
+		pending?.cancel();
+	});
+
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Ask User",
@@ -138,7 +155,7 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
 			),
 		}),
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext) {
 			const questions = normalizeQuestions(params as Record<string, unknown>);
 			if (questions.length === 0) throw new Error("ask_user needs at least one question.");
 
@@ -155,8 +172,51 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
 				};
 			}
 
+			// Never replace a still-open question or its partially entered answer.
+			if (pending) return pendingResult();
 			const session = new AskSession(questions);
-			const settled = await showAsk(pi, ctx, session);
+			const controller = new AbortController();
+			const cancel = () => controller.abort();
+			signal?.addEventListener("abort", cancel, { once: true });
+			if (signal?.aborted) cancel();
+			let detached = false;
+			const settled = await new Promise<AskOutcome | undefined>((resolve, reject) => {
+				const current = {
+					cancel,
+					interrupt: () => {
+						if (detached || controller.signal.aborted || session.result) return;
+						detached = true;
+						// End the blocking span for the clock, then keep the footer
+						// hidden for the question that still owns the editor.
+						pi.events.emit(ASK_CHANNEL, { active: false, blocking: true });
+						pi.events.emit(ASK_CHANNEL, { active: true, blocking: false });
+						resolve(undefined);
+					},
+				};
+				pending = current;
+				const cleanup = () => {
+					signal?.removeEventListener("abort", cancel);
+					if (pending === current) pending = undefined;
+				};
+				void showAsk(pi, ctx, session, true, controller.signal).then((outcome) => {
+					cleanup();
+					if (!detached || controller.signal.aborted) {
+						resolve(outcome);
+						return;
+					}
+					pi.sendMessage({
+						customType: "ask-user-answer",
+						content: renderOutcomeText(outcome),
+						display: true,
+						details: outcome,
+					}, { triggerTurn: true, deliverAs: "steer" });
+				}).catch((error) => {
+					cleanup();
+					if (detached) ctx.ui.notify(`Could not finish the user question: ${error}`, "error");
+					else reject(error);
+				});
+			});
+			if (!settled) return pendingResult();
 
 			return {
 				content: [{ type: "text" as const, text: renderOutcomeText(settled) }],

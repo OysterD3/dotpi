@@ -36,6 +36,8 @@ const { closeAsk, drain, ensure, forget, layout, listPeers, openAsk, putAnswer, 
 	await import("./store.ts");
 const { ASK_DESCRIPTION, describePeer, intercomBlock, LAUNDERING_RULE, SEND_DESCRIPTION, summarise } = await import("./prompts.ts");
 const { deliveryFor, registerIntercom } = await import("./index.ts");
+const { registerAskUserTool } = await import("../ask-user/tool.ts");
+const { createEventBus } = await import("@earendil-works/pi-coding-agent");
 
 const dirs: string[] = [];
 const workDir = (prefix: string) => {
@@ -238,6 +240,9 @@ console.log("\n--- two sessions, end to end ---");
 		call: (tool: string, params: unknown, signal?: AbortSignal) => Promise<string>;
 		start: (over?: Record<string, unknown>) => Promise<void>;
 		quit: (reason?: string) => Promise<void>;
+		enableQuestions: () => void;
+		askUser: (questions: unknown[], signal?: AbortSignal) => Promise<any>;
+		prompt: () => any;
 	};
 
 	const open = (id: string, name: string, cwd: string, clock?: () => number): Session => {
@@ -247,14 +252,28 @@ console.log("\n--- two sessions, end to end ---");
 		let sessionId = id;
 		let sessionName = name;
 		let busy = false;
+		let prompt: any;
 		const ctx: Record<string, unknown> = {
 			hasUI: true,
 			cwd,
 			isIdle: () => !busy,
 			sessionManager: { getSessionId: () => sessionId, getSessionName: () => sessionName },
+			ui: {
+				notify: () => {},
+				custom: (factory: any) => new Promise((resolve) => {
+					prompt = factory({ requestRender: () => {} }, { fg: (_key: string, text: string) => text, bold: (text: string) => text }, undefined, (value: unknown) => {
+						prompt = undefined;
+						resolve(value);
+					});
+				}),
+			},
 		};
 		const pi = {
-			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => hooks.set(event, handler),
+			on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+				const previous = hooks.get(event);
+				hooks.set(event, previous ? async (event, ctx) => { await previous(event, ctx); return handler(event, ctx); } : handler);
+			},
+			events: createEventBus(),
 			registerTool: (tool: { name: string; execute: (id: string, params: unknown, signal?: AbortSignal) => Promise<{ content: { text: string }[] }> }) =>
 				tools.set(tool.name, tool),
 			registerMessageRenderer: () => {},
@@ -265,6 +284,9 @@ console.log("\n--- two sessions, end to end ---");
 			hooks,
 			tools,
 			sent,
+			enableQuestions: () => registerAskUserTool(pi as never),
+			askUser: (questions, signal) => (tools.get("ask_user")!.execute as any)("user-call", { questions }, signal, undefined, ctx),
+			prompt: () => prompt,
 			busy: (value: boolean) => {
 				busy = value;
 			},
@@ -487,6 +509,66 @@ console.log("\n--- two sessions, end to end ---");
 	check("as a follow-up, never a turn of its own", headless.sent[0].options, { deliverAs: "followUp" });
 	checkTrue("carrying what was said", headless.sent[0].message.content.includes("while you were idle"));
 	check("and the inbox is emptied now it has landed", readdirSync(inboxFor("dddddddd4444")).length, 0);
+
+	// --- intercom while a real ask_user component owns the editor
+
+	const receiver = open("ffffffff7777", "question receiver", "/work/questions");
+	receiver.enableQuestions();
+	await receiver.start();
+	receiver.busy(true);
+	const questions = [
+		{ question: "Ship it?", options: [{ label: "Yes" }, { label: "No" }] },
+		{ question: "Which target?" },
+	];
+	let userResult: any;
+	void receiver.askUser(questions).then((result) => { userResult = result; });
+	const component = receiver.prompt();
+	component.handleInput("\t");
+	component.handleInput("after review");
+	component.handleInput("\r");
+	component.handleInput("\r");
+	component.handleInput("stag");
+	const peerAsk = a.call(TOOL_ASK, { to: "ffffffff7777", question: "Which port?", timeout_seconds: 2 });
+	await until("intercom releases ask_user before the human answers", () => userResult !== undefined);
+	check("the tool reports pending, not answered or dismissed", userResult?.details.kind, "pending");
+	checkTrue("the agent must not treat intercom as permission", userResult?.content[0].text.includes("No answer or permission"));
+	checkTrue("the question component is still open", receiver.prompt() === component);
+	checkTrue("with the unfinished draft intact", component.render(80).join("\n").includes("stag"));
+	check("the peer message is steered before another model call", receiver.sent[0]?.options, { deliverAs: "steer" });
+	const duringAskId = /ask_[0-9a-f]{8}/.exec(receiver.sent[0]?.message.content ?? "")?.[0] ?? "";
+	await receiver.call(TOOL_SEND, { reply_to: duringAskId, message: "8080" });
+	checkTrue("the peer gets its answer while the user question stays open", (await peerAsk).includes("8080"));
+	checkTrue("replying did not close the question", receiver.prompt() === component);
+
+	await a.call(TOOL_SEND, { to: "ffffffff7777", message: "thanks" });
+	await until("later messages are received while the question is open", () => receiver.sent.length === 2);
+	check("later messages also use steering", receiver.sent[1]?.options, { deliverAs: "steer" });
+	const repeated = await receiver.askUser([{ question: "Replacement?" }]);
+	check("a second ask does not replace the pending question", repeated.details.kind, "pending");
+	checkTrue("the same component still has the draft", receiver.prompt() === component);
+
+	// The agent may have stopped after its reply. The late answer must wake it.
+	receiver.busy(false);
+	component.handleInput("ing");
+	component.handleInput("\r");
+	component.handleInput("\r");
+	await until("the human answer is delivered after the peer reply", () => receiver.sent.length === 3);
+	check("the late answer can wake an idle agent or steer a busy one", receiver.sent[2]?.options, { triggerTurn: true, deliverAs: "steer" });
+	checkTrue("both the draft and note survive", receiver.sent[2]?.message.content.includes("staging") && receiver.sent[2]?.message.content.includes("after review"));
+	check("one answer message is sent", receiver.sent.filter((entry) => entry.message.customType === "ask-user-answer").length, 1);
+	check("submitting closes the prompt", receiver.prompt(), undefined);
+
+	// Cancellation must close a detached prompt without sending into a dead run.
+	let closingResult: any;
+	void receiver.askUser(questions).then((result) => { closingResult = result; });
+	receiver.busy(true);
+	await a.call(TOOL_SEND, { to: "ffffffff7777", message: "before shutdown" });
+	await until("another question can be interrupted", () => closingResult !== undefined);
+	const beforeQuit = receiver.sent.length;
+	await receiver.quit();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	check("shutdown closes the pending prompt", receiver.prompt(), undefined);
+	check("shutdown does not send a false user answer", receiver.sent.length, beforeQuit);
 
 	await headless.quit();
 	await a.quit();

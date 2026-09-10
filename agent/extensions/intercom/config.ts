@@ -11,6 +11,10 @@
 /** customType of the delivered message entry (and its renderer). */
 export const MESSAGE_TYPE = "intercom";
 
+/** Synchronous delivery handshake. ask_user sets steer when its question is open. */
+export const INCOMING_CHANNEL = "intercom:incoming";
+export type IncomingDelivery = { steer: boolean };
+
 export const TOOL_PEERS = "intercom_peers";
 export const TOOL_SEND = "intercom_send";
 export const TOOL_ASK = "intercom_ask";

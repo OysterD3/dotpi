@@ -378,6 +378,7 @@ function install(hasUI = true, idle = false, model?: FakeModel, cwd = AGENT, tru
 		isProjectTrusted: () => trusted,
 	};
 	register({
+		events: { on: () => () => {}, emit: () => {} },
 		on: (event: string, handler: Handler) => handlers.set(event, handler),
 		registerTool: () => {},
 		registerCommand: () => {},

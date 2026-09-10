@@ -53,7 +53,7 @@
 
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { CONFIG, MESSAGE_TYPE } from "./config.ts";
+import { CONFIG, INCOMING_CHANNEL, type IncomingDelivery, MESSAGE_TYPE } from "./config.ts";
 import { intercomBlock, summarise } from "./prompts.ts";
 import {
 	type AliveCheck,
@@ -75,7 +75,7 @@ export type IntercomDetails = {
 	items: { from: string; summary: string; asking: boolean }[];
 	count: number;
 	/** How it landed: a turn of its own, or the run that was already going. */
-	delivery: "turn" | "followUp";
+	delivery: "turn" | "followUp" | "steer";
 };
 
 export type Deps = {
@@ -90,6 +90,7 @@ function renderIntercom(details: IntercomDetails, theme: Theme): Text {
 		lines.push(theme.fg("muted", `${item.from} — ${item.summary}${item.asking ? " (waiting for an answer)" : ""}`));
 	}
 	if (details.delivery === "followUp") lines.push(theme.fg("dim", "picked up by the turn already running"));
+	if (details.delivery === "steer") lines.push(theme.fg("dim", "received while a user question is open"));
 	return new Text(lines.join("\n"), 0, 0);
 }
 
@@ -169,7 +170,11 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		const envelopes = drain(l, me.id, CONFIG.maxDrainPerTick);
 		if (envelopes.length === 0) return;
 		try {
-			const delivery = deliveryFor(me.wakeable !== false, ctx.isIdle());
+			// Release ask_user's tool wait, but keep its question and draft on screen.
+			// A follow-up would wait for all tools to finish and could deadlock again.
+			const incoming: IncomingDelivery = { steer: false };
+			pi.events.emit(INCOMING_CHANNEL, incoming);
+			const delivery = incoming.steer && !ctx.isIdle() ? "steer" : deliveryFor(me.wakeable !== false, ctx.isIdle());
 			pi.sendMessage<IntercomDetails>(
 				{
 					customType: MESSAGE_TYPE,

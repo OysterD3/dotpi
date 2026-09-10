@@ -32,6 +32,9 @@ agent/file-history/
 # SCRIPTS live in agent/workflows/ and are tracked; only the runs are ignored.
 agent/workflow-runs/
 
+# Intercom runtime data: live peers, inboxes, and pending answers. Never publish.
+agent/intercom/
+
 # agent/settings.json IS tracked, deliberately, despite pi rewriting it at
 # runtime (thinking level, active model, package pins). It holds no secrets —
 # credentials live in agent/auth.json and the extension key files, all ignored

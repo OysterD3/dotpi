@@ -1374,11 +1374,17 @@ docs [cccccccc]      ·  working  ·  /work/docs  ·  started 5m ago
 The bracketed id is the address, and it is what settles a name two sessions share — an ambiguous
 name is refused with the ids that would answer it rather than delivered to whichever sorted first.
 
-Delivery follows background-shell's rule exactly, because it is the same problem — something
+Normal delivery follows background-shell's rule, because it is the same problem — something
 arrived from outside the turn. An **idle** session is woken by it, a **busy** one gets it as a
 follow-up on the run it is already doing, and one poll tick's whole drain becomes one message, so
 three peers do not become three turns. Each message carries a one-line `summary` for the chat row,
 its own or the first line of what was said.
+
+While `ask_user` is open, incoming messages release its tool wait and use steering instead.
+The question stays on screen with selections, notes, and draft text intact. The agent can reply
+to peers; the user's answer arrives once as a separate message when submitted. An interruption
+is not an answer or permission to continue work that needs the user's decision.
+Runtime peers, inboxes, and answers under `agent/intercom/` are gitignored; extension source is tracked.
 
 Waking is the choice, not the default, and it is the one place this deliberately parts from Claude
 Code — which never wakes a peer, so a message waits for the receiver's next tool round. That
