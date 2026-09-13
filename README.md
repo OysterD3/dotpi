@@ -386,7 +386,7 @@ legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, an
 matches every use of the tool.
 
 **Rules can name extension tools too**, and every tool the extensions in here register is allowed
-outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Recall`, `Lsp_diagnostics`,
+outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
 `Bash_output`, `Kill_shell`, and the three `Intercom_*`. Unknown names pass through lower-cased
 (`resolveToolName`), so `Workflow` resolves to the `workflow` tool; the capital is required by the
 rule syntax. In `auto` mode an unlisted tool goes to a model that has never heard of it, and the
@@ -1165,7 +1165,7 @@ is tracked: putting them there commits one person's preferences to a config othe
 makes every toggle a diff in a file pi already rewrites and conflicts on during `git pull`. All of
 that is still true. It optimised for the wrong half — everything else about this setup is in
 `settings.json` *precisely* so a new machine reproduces it from a clone, and skill loading is
-configuration in the same sense the permissions policy and the context-diet budgets are. A preference
+configuration in the same sense the permissions policy is. A preference
 kept where `git clean` cannot reach is also one a re-clone silently forgets, and one you cannot find
 by opening the single file that is supposed to describe this agent. So the consequence is accepted
 rather than avoided: a toggle is a diff, and a clone inherits these modes. A leftover
@@ -2653,159 +2653,11 @@ both copies are pinned by assertions in their own suites.
 | `index.ts` | One `before_agent_start` append — chained, never replacing |
 | `tool-batching.test.ts` | The text, the short subagent variant, and that the append does not clobber |
 
-**`agent/extensions/context-diet/`** — stops a long turn paying for context it stopped reading.
-
-pi decides whether to compact in exactly two places: after `agent_end`, and before a new prompt.
-Both are turn boundaries. Inside a turn, `_runAgentPrompt` awaits the whole tool loop before the
-check is reached (`agent-session.js:776`), so `shouldCompact()` is unreachable for the duration —
-however many hundred calls that is. Its own docstring says as much: *"Called after agent_end and
-before prompt submission."*
-
-Session `019fcad1` is what that costs. One prompt, one turn, 2h44m, 399 model calls, 530 tool calls,
-**$125.86**:
-
-| | |
-| --- | --- |
-| context, first call → last | 12,641 → **375,108** tokens, against a 272,000 window |
-| calls above the window | **219 of 397** |
-| first compaction | overflow recovery, *after* the API returned "your input exceeds the context window" |
-| second compaction | at `agent_end`, 51s after the final answer — 347k summarised, then never read |
-| both compactions | $7.47, cache disabled by design, billed at the over-window rate |
-
-The threshold itself was set correctly — `272000 - 16384` reserve is 255,616, comfortably under the
-cliff. It was simply never evaluated. And the cliff is where the money is: gpt-5.6 doubles every
-rate above 272k (in $5→$10, cached $0.50→$1.00, out $30→$45 per Mtok), so those 219 calls cost
-$81.85 of the $107 main-loop spend. The split is exactly clean — the largest 1× call carried
-269,836 tokens, the smallest 2× call 273,729.
-
-So this trims what gets *sent*, per call, and leaves the turn alone. The `context` hook runs inside
-`streamAssistantResponse` on every LLM call and rewrites only the copy bound for the provider;
-`context.messages`, the session and the JSONL are untouched, so `/compact`, `/rewind`, fork and tree
-navigation all still see the full history. Nothing is aborted — which rules out the obvious
-alternative, because `ctx.compact()` can be called mid-turn but opens with `await this.abort()`, and
-killing a 2.7-hour harness run to save tokens is not a trade worth making.
-
-Over the high-water mark (80% of the window) a round drops the bodies of old tool results, oldest
-first, down to a target of 55%. Errors are never dropped, nor are the newest 24 results — the live
-working set. Two kinds of staleness reach inside that recent window anyway: screenshots (only the
-newest 3 survive, because one goes stale the moment the next is taken and costs ~1.2k tokens to
-keep saying so) and superseded reads — when a file has been read again, every older copy is a
-*stale* version of something the model is probably editing, so rounds sweep those even past the
-target. "Superseded" is deliberately narrow: a later whole-file read covers any earlier read of
-that path, an identical (path, offset, limit) covers its exact duplicate, and a later partial read
-covers nothing — the model may still be using the rest. The measured session read three of its own
-source files three times each. Each dropped body becomes one line naming the call and its size —
-plus the `toolCallId` to recall it by, or for a superseded read, a note that the fresh copy is
-below — so the model can find what it actually wants.
-
-The way back from a stub is the `recall` tool, not re-running. A stub names its `toolCallId`, and
-`recall` returns the stored body from the session branch by that id — every original is still there,
-because the hook only ever rewrites the provider-bound copy, and `getBranch()` is the raw root→leaf
-walk, so a result older than a compaction can still be recalled. Re-running was the only way back
-before, and it is wrong twice over: a `bash` call repeats whatever it did, and a `read` returns the
-file as it is now, not as the model was reasoning about it. Recall is precise, but what it returns
-re-enters context as a new result and is evicted like any other; a recalled body that is dropped
-again gets a stub labelled with the id it came from.
-
-`dropOldReasoning` (default **off**, experimental) lets rounds also strip thinking blocks from all
-but the newest 10 assistant messages. The measured session carried 1MB of encrypted reasoning
-signatures across 455 messages — on the order of 10–25% of peak context, re-read on every call;
-replaying with the flag on saves another ~$6 (est., likely high — the replay prices signatures at
-chars/4 and the API bills the decoded reasoning). Off by default because the failure mode is a hard
-400, not a quality dip: the Responses API can reject a replayed `function_call` whose paired
-reasoning item is missing, and whether that check reaches long-completed rounds is undocumented.
-Validation plan: turn it on for one real harness session; if a turn dies with "was provided without
-its required reasoning item", turn it back off — nothing else changes and the session is intact.
-
-Two invariants carry the whole thing, and both are asserted directly:
-
-- **A dropped result is replaced, never removed.** Remove the message and every later request is
-  rejected for having a tool call with no result — which reads as a provider outage, not a bug here.
-- **A stub renders byte-identically forever.** Evictions are permanent for the session and built
-  from facts fixed when they were made. The prompt cache invalidates from the first byte that
-  differs, so a diet that re-decided each call would move that byte every call and re-bill the whole
-  context uncached — ten times the cached rate, and strictly worse than doing nothing. The gap
-  between the two ratios is the hysteresis that keeps rounds rare; narrowing it is the one change
-  here that can cost more than it saves.
-
-The set lives in memory, and that was a hole. pi emits `session_start` on every process start, resume
-and reload; the handler reset the set and nothing rebuilt it. The next call then anchored on the last
-billed figure — the *trimmed* size, under the high-water mark — so no round fired and the hook passed
-the full history through. Two real sessions did exactly that on the first call after a resume:
-`019fcc5c` sent ~837k tokens and `019fd429` ~565k, and both got "Your input exceeds the context
-window" back — the failure this extension exists to prevent, caused by its own state loss. Each round
-entry now records its decisions (`records`, `reasoningKeys`), and `session_start` / `session_tree`
-rebuild the set from the branch, byte-identically, so the stubs — and the prompt cache — survive a
-restart. Rounds written before the fields existed cannot be rebuilt; they make the first call distrust
-the billed anchor once and measure the raw history instead, which is what the replay of both sessions
-now does: a round fires on the resumed call and the request leaves trimmed.
-
-**The escalation reminder was answered instead of acted on.** Past `escalateAfterRounds` rounds in
-one turn the model is told once, directly, to change strategy — and unexplained `Understood.` replies
-started appearing in transcripts. Two separate defects, and they compounded.
-
-*It fired far too often.* Any round counted, and with `dropOldReasoning` on a round fires on **every
-single call** once the context is over the mark: each call appends one assistant message, which pushes
-exactly one more out of the `keepRecentReasoning` window, so the reasoning sweep always has one new key
-to hand back. The threshold was therefore reached three calls after crossing the mark, on every long
-turn, and told a model that had re-read nothing that it was "reading faster than the window holds".
-Only rounds that actually **evict a result** count now; a reasoning-only sweep is still a round in the
-transcript, but it is the diet's own bookkeeping ticking, not evidence of the behaviour the reminder is
-about.
-
-*And it was sent from the wrong place.* The reminder went out from inside the `context` hook, which is
-inside a model call. A steering message enqueued during a turn's **last** call is not consumed by that
-call: `agent-loop.js` drains the steer queue after every turn and re-enters on
-`while (hasMoreToolCalls || pendingMessages.length > 0)`, so a turn that was finishing ran one extra
-assistant call carrying nothing but the reminder — which reaches the model as a plain **user** message,
-since custom messages convert to `role: "user"`. A user message carrying only instructions gets
-answered. `Understood.` And because the reminder is `display: false`, the user saw an assistant message
-replying to nothing.
-
-It is now **armed** in the `context` hook and **delivered from the next `tool_call`** — the only moment
-that proves the turn is still going and guarantees another model call for the steer to land before. A
-turn that ends first sends nothing: it stopped, which is what the reminder was asking for. The
-`ctx.ui.notify` moved with it, so "Told the model to change strategy" is only printed when the model
-was actually told, and the reminder itself now ends with *"this is a notice, not a request: do not
-reply to it"* — belt and braces for the one case the gate cannot cover, a tool batch that terminates
-the turn after delivery.
-
-Sibling extensions share the `ctx.isIdle() ? triggerTurn : deliverAs` idiom and so share the shape of
-this hazard — `ask-user`'s nudge, `background-shell`'s exit message, `dynamic-workflow`'s edit-streak
-nudge, `test-streak`. None of them is fixed here; the difference is that this one fires from a hook
-that runs on *every* model call, so it is the one that lands on a turn's last call by default.
-
-Replaying `019fcad1` through it, charging each round's cache break in full:
-
-| | real | with the diet |
-| --- | --- | --- |
-| peak context | 375k | **218k** |
-| calls above the cliff | 219 | **0** |
-| main-loop cost | $107.00 | **$52.71** |
-
-Five rounds across the session, 180 results stubbed. Peak never reaches 255,616 either, so the
-overflow that forced the first compaction does not happen and the unread second one does not fire —
-the $7.47 goes too. Main-session only: workflow and `task` subagents spawn with `--no-extensions`,
-and they were never the problem — 270 subagent calls cost $5.35 between them, because each starts
-empty.
-
-| File | Role |
-| --- | --- |
-| `diet.ts` | **What gets dropped, and what the model reads instead** (pure) |
-| `session.ts` | The per-session eviction sets — stickiness and hysteresis (pure) |
-| `config.ts` | Settings, defaults, and the validation that rejects an inverted pair |
-| `index.ts` | The `context` hook, the escalation's arm-and-deliver gate, the `recall` tool's registration, the resets, and the restore that rebuilds the set from the branch |
-| `render.ts` | The one-line transcript entry |
-| `recall.ts` | The `recall` tool's lookup — the stored body behind a stub's id (pure) |
-| `context-diet.test.ts` | Both invariants included. Imports pi for types only, so it runs from a bare checkout |
-| `context-diet.e2e.ts` | The wiring the unit suite cannot see: **when** the escalation is delivered. Imports `index.ts`, so it needs pi's runtime |
-
 **`agent/extensions/test-streak/`** — says something when the suite is being re-run instead of read.
 
 A turn that keeps running `pnpm test` with nothing changed between the calls stopped verifying
 anything after the first one. Nothing else here catches it: every run is a legitimate tool call, the
-turn never stalls, and `context-diet` sees a turn doing work. From inside
-the loop each round looks like the first. The failure is already recorded in this repo — the
+turn never stalls. From inside the loop each round looks like the first. The failure is already recorded in this repo — the
 workflow agent that ran `pnpm check` twenty-five times and reported success without once starting
 the thing it built (see **Why the output did not work** above).
 
@@ -2820,8 +2672,7 @@ does; that is the threshold, and it repeats at every multiple, up to three times
 heuristic would eventually refuse the one that mattered. A wrong reminder costs a sentence of
 context and the model is free to disagree with it.
 
-It is delivered as **`steer`, not `followUp`** — the same reasoning `context-diet` writes out at its
-escalation, and the reason that mode exists. `followUp` only drains once the model stops calling
+It is delivered as **`steer`, not `followUp`**. `followUp` only drains once the model stops calling
 tools of its own accord, which is precisely the behaviour this exists to interrupt; a nudge sent
 that way would be invisible to exactly the runaway turn it was written for. `steer` is polled every
 round, right after the tool results that triggered it. The test asserts the mode, because nothing at

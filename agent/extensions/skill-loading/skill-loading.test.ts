@@ -376,7 +376,7 @@ const FOREIGN = {
 	theme: "one-dark-pro",
 	permissions: { defaultMode: "auto", allow: ["Bash(git status *)"] },
 	packages: ["npm:pi-web-access"],
-	contextDiet: { dropOldReasoning: false },
+	scratchpad: { enabled: true },
 };
 const writeForeign = () => writeFileSync(SETTINGS, JSON.stringify(FOREIGN, null, 2));
 const withoutBlock = (o: Record<string, unknown>) => JSON.stringify({ ...o, skillOverrides: undefined });

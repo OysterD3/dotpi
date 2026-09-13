@@ -12,8 +12,7 @@
  * mattered; a wrong reminder costs a sentence of context and the model can
  * disagree with it. See streak.ts for what counts and what clears.
  *
- * Delivered as `steer`, not `followUp` — the same reasoning context-diet
- * writes out at its escalation: followUp only drains once the model stops
+ * Delivered as `steer`, not `followUp`: followUp only drains once the model stops
  * calling tools of its own accord, which is the exact behaviour this exists to
  * interrupt. `steer` is polled every round, right after the tool results that
  * triggered it.

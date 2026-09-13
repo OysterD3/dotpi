@@ -13,8 +13,8 @@
  * That argument is real and it lost anyway. It optimised for the wrong half:
  * everything else about this setup is in `settings.json` precisely so a new
  * machine reproduces it from a clone, and skill loading is configuration in
- * exactly the same sense the permissions policy and the context-diet budgets
- * are. A preference kept somewhere `git clean` cannot reach is also a
+ * exactly the same sense the permissions policy is. A preference kept somewhere
+ * `git clean` cannot reach is also a
  * preference a re-clone silently forgets, and one you cannot read by opening
  * the one file that is supposed to describe this agent. One file that says
  * everything beats two files where the second is invisible.

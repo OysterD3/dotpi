@@ -38,7 +38,6 @@
       "Task",
       "Memory",
       "Scratchpad",
-      "Recall",
       "Lsp_diagnostics",
       "Bash_output",
       "Kill_shell",
@@ -62,9 +61,6 @@
   },
   "dynamicWorkflow": {
     "alwaysOn": true
-  },
-  "contextDiet": {
-    "dropOldReasoning": false
   },
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#506df9a",

@@ -60,7 +60,6 @@
       "Task",
       "Memory",
       "Scratchpad",
-      "Recall",
       "Lsp_diagnostics",
       "Bash_output",
       "Kill_shell",
@@ -104,16 +103,6 @@
     "enabled": true,
     "reserveTokens": 16384,
     "keepRecentTokens": 20000
-  },
-  "contextDiet": {
-    "enabled": true,
-    "highWaterRatio": 0.8,
-    "targetRatio": 0.55,
-    "keepRecentResults": 24,
-    "keepImages": 3,
-    "minResultBytes": 512,
-    "dropOldReasoning": false,
-    "keepRecentReasoning": 10
   },
   "dynamicWorkflow": {
     "keywordTrigger": true,

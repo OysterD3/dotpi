@@ -95,8 +95,8 @@ export default function (pi: ExtensionAPI) {
 	// is worth showing. See retireThinking() in patch.ts.
 	//
 	// agent_start re-fires on retries and on queued continuations inside the
-	// same run, so only the first one opens a turn; the same guard elapsed and
-	// context-diet keep, for the same reason.
+	// same run, so only the first one opens a turn; elapsed keeps the same guard
+	// for the same reason.
 	let turnActive = false;
 	pi.on("agent_start", () => {
 		if (turnActive) return;
