@@ -81,6 +81,12 @@ agent/qoder-cn-models-cache.json
 agent/qoder-machine-id
 agent/state/
 
+# Cache optimizer counters, local overrides and repair receipts. Model backups
+# can contain credentials; never publish them.
+agent/pi-cache-optimizer-*
+agent/deepseek-cache-optimizer-stats.json*
+models.json.backup-cache-optimizer-*
+
 
 # pi's own memory store (personal notes/feedback, may hold project details) — never
 # publish. The `memory` extension reads a store under ~/.claude (outside this repo);

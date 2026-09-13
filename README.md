@@ -3085,7 +3085,7 @@ is committed to a public repo. Keys belong in a gitignored file that is also lis
 
 ## Installed packages
 
-Five third-party packages are pinned in `settings.packages`. `pi install` vendors them into
+Third-party packages are listed in `settings.packages`. `pi install` vendors them into
 `agent/npm/` and `agent/git/`, both gitignored — the pins are the record, not the trees.
 
 | Package | What it does | Configured by |
@@ -3093,6 +3093,7 @@ Five third-party packages are pinned in `settings.packages`. `pi install` vendor
 | `pi-provider-qoder` | The Qoder provider. Pinned to a fork carrying five fixes upstream hasn't merged: dropped tool-result images, tool calls silently discarded when arguments arrive empty, one billed request set per turn instead of one per model call, plus the two known `finish_reason`/`usage` bugs. | `models.providers.qoder` |
 | `pi-openai-server-compaction` | Codex-style **server-side** compaction for OpenAI models: sends `compaction_trigger` through `POST /v1/responses` and gets an encrypted `compaction` item back, instead of a text summary. | `agent/openai-server-compaction.json` — **not** `settings.compaction` |
 | `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
+| `pi-cache-optimizer` | Pinned to `2.8.10`. Cache diagnostics and provider-specific request optimizations. Codex skips prompt rewrites; cache hits are not guaranteed. Run `/cache-optimizer stats` or `/cache-optimizer doctor` after `/reload`. | `agent/pi-cache-optimizer-config.json` and local statistics (gitignored); the custom footer hides its status chip. |
 | `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
 | `@ff-labs/pi-fff` | **Replaces the built-in `find` and `grep`** with FFF, a Rust-native indexed searcher: fuzzy matching, frecency ranking, git-aware, no `fd`/`rg` subprocess per call. Also backs `@` file autocomplete. | `PI_FFF_MODE` env var / `--fff-mode` flag |
 
@@ -3113,10 +3114,9 @@ and the last of those only persists for one session (it is stored as a session e
 `env` extension gone there is no `.env` to put it in either, so the shell profile is the only
 durable place left.
 
-**All five are pinned to an exact version or commit.** The lockfile that would otherwise record what
-landed lives in `agent/npm/`, which is gitignored, so anything left floating lets a clone silently
-get a different build — `pi-web-access` and `codex-fast-mode` used to float for exactly that reason
-and no longer do. Bump the pins deliberately; nothing else in the repo records what you were running.
+**Use exact versions or commits for reproducible installs.** The lockfile lives in `agent/npm/`,
+which is gitignored, so floating packages can resolve to a different build on another machine.
+Bump pins deliberately; the package entries are the tracked record.
 
 **Compaction moved out of tracked config.** The local `compaction` extension was removed because
 `pi-openai-server-compaction` registers the same `session_before_compact` hook and one would silently
