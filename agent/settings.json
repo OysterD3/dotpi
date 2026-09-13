@@ -69,7 +69,7 @@
     "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055",
     "npm:@ff-labs/pi-fff@0.10.1",
     "npm:pi-mcp-adapter",
-    "npm:pi-cache-optimizer@2.8.10"
+    "npm:pi-cache-optimizer"
   ],
   "models": {
     "active": "openai",
