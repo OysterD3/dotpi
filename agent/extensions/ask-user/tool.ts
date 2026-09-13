@@ -221,7 +221,7 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
 			return {
 				content: [{ type: "text" as const, text: renderOutcomeText(settled) }],
 				details: {
-					kind: settled.kind,
+					...settled,
 					answers: settled.kind === "answered" ? settled.answers : [],
 				},
 			};

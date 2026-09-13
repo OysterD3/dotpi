@@ -30,6 +30,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
+const { CURSOR_MARKER, visibleWidth } = await import("@earendil-works/pi-tui");
 const { AskSession, CUSTOM_KEY, renderOutcomeText } = await import("./interaction.ts");
 const { AskPrompt, extractPaste, flattenPaste, isPrintable, showAsk, windowBlocks, wrap } = await import("./prompt.ts");
 const { normalizeOptions, normalizeQuestions, registerAskUserTool } = await import("./tool.ts");
@@ -137,8 +138,9 @@ check("a bare top-level question is not a call shape", normalizeQuestions({ ques
 console.log("\n--- rows and selection ---");
 {
 	const { session } = drive([Q()]);
-	check("a free-text row follows the presets", session.rows().length, OPTS.length + 1);
-	check("last row is the free-text row", session.rows().at(-1), { kind: "custom" });
+	check("free text and clarification follow the presets", session.rows().length, OPTS.length + 2);
+	check("the free-text row keeps its position", session.rows()[OPTS.length], { kind: "custom" });
+	check("the last row requests clarification", session.rows().at(-1), { kind: "clarify" });
 }
 {
 	// Single-select replaces rather than accumulating.
@@ -242,7 +244,7 @@ const R = (over: Record<string, unknown> = {}) =>
 }
 {
 	const { session, send, type } = drive([R(), R({ question: "Second?" })]);
-	send(KEY.down, KEY.down);
+	send(KEY.down);
 	type("mine");
 	send(KEY.enter, KEY.left);
 	check("returning to free text lands on the free-text row", session.cursor, session.question.options.length);
@@ -436,6 +438,37 @@ console.log("\n--- a paste reaches the answer and the note ---");
 	d.prompt.handleInput(PASTE("kept"));
 	check("pasting does not cancel the edit", d.session.editing?.target, "note");
 	check("nor dismiss the prompt", d.result(), undefined);
+}
+
+console.log("\n--- long pasted answers stay within the terminal width ---");
+for (const [name, text] of [
+	["multiline", `${"a long pasted answer\n".repeat(100)}END`],
+	["unbroken", `${"x".repeat(2000)}END`],
+	["wide Unicode", `${"中文 👩‍💻 café e\u0301 ".repeat(100)}END`],
+]) {
+	for (const target of ["answer", "note"]) {
+		const d = drive([Q()], 24);
+		if (target === "answer") d.send(KEY.down, KEY.down);
+		else d.send(KEY.tab);
+		d.send(PASTE(text!));
+		const label = `${name} ${target}`;
+		const widths = [20, 40, 80, 120];
+		const fits = () => widths.every((width) => d.prompt.render(width).every((line) => visibleWidth(line) <= width));
+		checkTrue(`${label}: editing lines fit after resize`, fits());
+		checkTrue(`${label}: the pasted tail and cursor stay visible`, widths.every((width) => {
+			const rendered = d.prompt.render(width).join("\n");
+			return rendered.replace(/\s+/g, "").includes("END") && rendered.includes(CURSOR_MARKER);
+		}));
+
+		d.send(KEY.enter);
+		if (target === "answer") d.send(KEY.left);
+		checkTrue(`${label}: saved lines fit`, fits());
+		d.send(KEY.right);
+		checkTrue(`${label}: review lines fit`, fits());
+		d.send(KEY.enter);
+		const answer = d.result().answers[0];
+		check(`${label}: submission keeps the full text`, target === "answer" ? answer.custom : answer.notes[0].note, flattenPaste(text!));
+	}
 }
 
 console.log("\n--- windowBlocks ---");
@@ -690,5 +723,68 @@ console.log("\n--- tool.execute ---");
 	checkTrue("no usable question throws", threw);
 }
 
+console.log("\n--- clarification returns to chat without submitting answers ---");
+for (const scenario of [
+	{ name: "single choice", questions: [Q()], keys: [KEY.down, KEY.down, KEY.down], activate: KEY.enter },
+	{ name: "open-ended", questions: [Q({ options: [] })], keys: [KEY.down], activate: KEY.space },
+	{
+		name: "batch with drafts",
+		questions: [Q(), Q({ question: "Which trade-off should we use?", header: "Trade-off", multiSelect: true })],
+		keys: [
+			KEY.tab, "prior note", KEY.enter, KEY.right,
+			KEY.space, KEY.down, KEY.space, KEY.down, "typed draft", KEY.enter,
+			KEY.tab, "draft note", KEY.enter, KEY.down,
+		],
+		activate: KEY.enter,
+	},
+]) {
+	const h = makePi();
+	registerAskUserTool(h.pi as never);
+	const tool = h.tools.get("ask_user");
+	let closes = 0;
+	const ui = {
+		...uiStub,
+		async custom(factory: any) {
+			let outcome: unknown;
+			const component = factory({ requestRender: () => {}, terminal: { rows: 24 } }, theme, undefined, (value: unknown) => {
+				closes++;
+				outcome = value;
+			});
+			for (const key of scenario.keys) component.handleInput(key);
+			const lines = component.render(60);
+			checkTrue(`${scenario.name}: clarification action is visible`, lines.join("\n").includes("Ask for clarification"));
+			checkTrue(`${scenario.name}: activation hint is shown`, lines.join("\n").includes("Enter/Space explain"));
+			checkTrue(`${scenario.name}: the action fits narrow terminals`, component.render(20).every((line: string) => visibleWidth(line) <= 20));
+			// The action is not an answer field and cannot acquire a note.
+			for (const key of [KEY.tab, "not an answer", PASTE("not an answer")]) component.handleInput(key);
+			check(`${scenario.name}: navigation and typing do not close it`, closes, 0);
+			component.handleInput(scenario.activate);
+			return outcome;
+		},
+	};
+	const result = await tool.execute("clarify", { questions: scenario.questions }, undefined, undefined, { hasUI: true, ui });
+	check(`${scenario.name}: one activation closes the panel`, closes, 1);
+	check(`${scenario.name}: result is clarification, not dismissal`, result.details.kind, "clarification");
+	check(`${scenario.name}: no answers are submitted`, result.details.answers, []);
+	check(`${scenario.name}: the current question is identified`, result.details.question?.question, scenario.questions.at(-1)?.question);
+	check(`${scenario.name}: its position in the batch is kept`, result.details.questionIndex, scenario.questions.length - 1);
+	checkTrue(`${scenario.name}: the model is told to explain in chat`, result.content[0].text.includes("Explain this question in simpler terms in chat"));
+	checkTrue(`${scenario.name}: the model is told to ask again`, result.content[0].text.includes("ask_user again"));
+	checkTrue(`${scenario.name}: drafts are not permission`, result.content[0].text.includes("not confirmed answers or permission"));
+	check(`${scenario.name}: the footer is restored`, h.emitted.map((entry) => entry.data.active), [true, false]);
+	if (scenario.name === "batch with drafts") {
+		const drafts = result.details.drafts ?? [];
+		check("prior answer and note remain in context", drafts[0]?.notes, [{ answer: "Looks good", note: "prior note" }]);
+		check("multi-select draft is preserved", drafts[1]?.labels, ["Looks good", "Needs tweaks"]);
+		check("typed draft is preserved", drafts[1]?.custom, "typed draft");
+		check("its note is preserved", drafts[1]?.notes, [{ answer: "typed draft", note: "draft note" }]);
+		checkTrue("the model sees the earlier draft", result.content[0].text.includes("prior note"));
+	}
+	// Clarification must release the pending slot so the agent can ask again.
+	const next = await tool.execute("after-clarify", { questions: [Q()] }, undefined, undefined, { hasUI: true, ui: uiStub });
+	check(`${scenario.name}: a new question is allowed`, next.details.kind, "dismissed");
+}
+
 rmSync(ROOT, { recursive: true, force: true });
 console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}`);
+process.exitCode = failures === 0 ? 0 : 1;

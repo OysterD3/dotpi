@@ -21,35 +21,14 @@
  * instead: the option list windows around the focused row and says how many rows
  * are out of view, so no answer is ever silently unreachable.
  */
-import { CURSOR_MARKER, matchesKey } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { ASK_CHANNEL, CONFIG } from "./config.ts";
 import { type AskOutcome, AskSession, type Row } from "./interaction.ts";
 
-/** Word-wrap to `width`, hard-splitting any word longer than the line. */
+/** Wrap by terminal columns, without splitting Unicode grapheme clusters. */
 export function wrap(text: string, width: number): string[] {
-	if (width <= 1) return [text];
-	const lines: string[] = [];
-	let line = "";
-	for (const word of text.split(/\s+/).filter(Boolean)) {
-		let candidate = word;
-		while (candidate.length > width) {
-			if (line) {
-				lines.push(line);
-				line = "";
-			}
-			lines.push(candidate.slice(0, width));
-			candidate = candidate.slice(width);
-		}
-		if (!line) line = candidate;
-		else if (line.length + 1 + candidate.length <= width) line += ` ${candidate}`;
-		else {
-			lines.push(line);
-			line = candidate;
-		}
-	}
-	if (line) lines.push(line);
-	return lines.length > 0 ? lines : [""];
+	return wrapTextWithAnsi(text.split(/\s+/).filter(Boolean).join(" "), Math.max(1, width));
 }
 
 /** True for ordinary typed text (not an escape sequence or control byte). */
@@ -168,9 +147,12 @@ export function windowBlocks(blocks: string[][], focused: number, budget: number
 
 	const lines = blocks.slice(start, end).flat();
 	const room = Math.max(1, budget - markers());
+	// A long edited answer must show its tail, where new input and the cursor are.
+	const cursorLine = lines.findIndex((line) => line.includes(CURSOR_MARKER));
+	const firstLine = Math.max(0, cursorLine - room + 1);
 	return {
-		// Only bites when the focused block alone is taller than the screen can hold.
-		lines: lines.length > room ? lines.slice(0, room) : lines,
+		// Without a cursor, oversized blocks still show their start.
+		lines: lines.length > room ? lines.slice(firstLine, firstLine + room) : lines,
 		hiddenBefore: start,
 		hiddenAfter: blocks.length - end,
 	};
@@ -253,6 +235,10 @@ export class AskPrompt {
 			session.type(data);
 		}
 
+		if (session.result) {
+			this.finish();
+			return;
+		}
 		this.requestRender();
 	}
 
@@ -269,14 +255,17 @@ export class AskPrompt {
 	 * be, since the footer is standing down for us.
 	 */
 	render(width: number): string[] {
+		if (width <= 0) return [];
 		const theme = this.theme;
-		const inner = Math.max(20, width - 2);
+		const inner = Math.max(1, width - 2);
 		const rule = theme.fg("border", "─".repeat(Math.max(1, width)));
 		const hints = this.hints(inner);
 		const budget = this.bodyBudget(hints.length);
 		const body = this.session.phase === "review" ? this.reviewBody(inner, budget) : this.questionBody(inner, budget);
 
-		return [rule, ...body.map((line) => ` ${line}`), rule, ...hints.map((line) => ` ${line}`)];
+		// Text wraps above; fixed prefixes must also fit if the terminal is tiny.
+		return [rule, ...body.map((line) => ` ${line}`), rule, ...hints.map((line) => ` ${line}`)]
+			.map((line) => truncateToWidth(line, width, ""));
 	}
 
 	/** Lines the body may use: the screen, less the frame, the hints, and room to read. */
@@ -319,6 +308,11 @@ export class AskPrompt {
 		const session = this.session;
 		const lines: string[] = [];
 		const caret = focused ? theme.fg("accent", "▸") : " ";
+		if (row.kind === "clarify") {
+			return wrap("Ask for clarification", width - 4).map((line, index) =>
+				(index === 0 ? `${caret} ? ` : "    ") + theme.fg("accent", line),
+			);
+		}
 		const selected = session.isSelected(row);
 		const editingCustom = session.editing?.target === "custom" && row.kind === "custom";
 		const noteKey = session.rowKey(row);
@@ -327,16 +321,14 @@ export class AskPrompt {
 		if (row.kind === "custom") {
 			const text = session.state.custom;
 			const glyph = theme.fg(selected ? "success" : "muted", selected ? "◉" : "✎");
-			let body: string;
-			if (editingCustom) {
-				body = theme.fg("text", text) + CURSOR_MARKER;
-			} else if (text) {
-				body = theme.fg("text", text);
-			} else {
-				// The placeholder IS the affordance — there is no "Other" to pick.
-				body = theme.fg("muted", CONFIG.customPlaceholder);
-			}
-			lines.push(`${caret} ${glyph} ${body}`);
+			// The placeholder IS the affordance — there is no "Other" to pick.
+			const placeholder = !text && !editingCustom;
+			const wrapped = wrapTextWithAnsi(placeholder ? CONFIG.customPlaceholder : text, Math.max(1, width - 4));
+			wrapped.forEach((line, index) => {
+				const prefix = index === 0 ? `${caret} ${glyph} ` : "    ";
+				const cursor = editingCustom && index === wrapped.length - 1 ? CURSOR_MARKER : "";
+				lines.push(prefix + theme.fg(placeholder ? "muted" : "text", line) + cursor);
+			});
 		} else {
 			const option = session.question.options[row.index]!;
 			const box = session.question.multiSelect ? (selected ? "◉" : "○") : selected ? "●" : "○";
@@ -367,9 +359,12 @@ export class AskPrompt {
 
 		const note = session.noteFor(row);
 		if (note !== undefined || editingNote) {
-			const text = note ?? "";
-			const shown = editingNote ? theme.fg("text", text) + CURSOR_MARKER : theme.fg("text", text);
-			lines.push(`     ${theme.fg("warning", "↳ note:")} ${shown}`);
+			const wrapped = wrapTextWithAnsi(note ?? "", Math.max(1, width - 13));
+			wrapped.forEach((line, index) => {
+				const prefix = index === 0 ? `     ${theme.fg("warning", "↳ note:")} ` : "             ";
+				const cursor = editingNote && index === wrapped.length - 1 ? CURSOR_MARKER : "";
+				lines.push(prefix + theme.fg("text", line) + cursor);
+			});
 		}
 		return lines;
 	}
@@ -438,6 +433,8 @@ export class AskPrompt {
 			parts.push("Enter save", "Esc discard");
 		} else if (session.phase === "review") {
 			parts.push("Enter send", "← back", "Esc cancel");
+		} else if (session.focusedRow.kind === "clarify") {
+			parts.push("↑↓ move", "Enter/Space explain", "Esc cancel");
 		} else {
 			parts.push("↑↓ move");
 			// Enter means different things on the two question types, so it is named

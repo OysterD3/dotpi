@@ -43,8 +43,9 @@ export const ASK_USER_DESCRIPTION = [
 	"",
 	"For each question the user can:",
 	"  - pick one of your options (or several, when multiSelect is set),",
-	"  - type their own answer into the free-text row, or",
-	"  - annotate any answer with a note.",
+	"  - type their own answer into the free-text row,",
+	"  - annotate any answer with a note, or",
+	"  - request clarification of the current question and return to chat.",
 	"",
 	"Provide 2-4 concise, mutually exclusive options when you can; omit options entirely for an open-ended question. A free-text row is always present, so never add an \"Other\" option yourself.",
 	"",
@@ -54,7 +55,7 @@ export const ASK_USER_DESCRIPTION = [
 	"",
 	"Do NOT use this to ask permission for an action you should just take, to confirm something you could verify yourself, or to hand back a judgment call the task already answers. The line is whether the answer is information only the user has: if the code or the request can tell you, go and find out instead, act on it, and say what you assumed.",
 	"",
-	"Returns each question with the user's answer and any notes, or that they dismissed the questions.",
+	"Returns answers and notes, a dismissal, or a clarification request with unsubmitted drafts. For clarification, explain the question and options in chat, then call ask_user again with clearer wording. Drafts are context, not confirmed answers or permission.",
 ].join("\n");
 
 /**
