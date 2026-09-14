@@ -14,6 +14,8 @@
  * Pure: no filesystem, no pi APIs.
  */
 
+import { homedir } from "node:os";
+import { join, normalize } from "node:path";
 import { matchCommandPattern, matchGlob } from "./glob.ts";
 import { PATH_TOOLS, resolveToolName } from "./tools.ts";
 
@@ -78,6 +80,12 @@ export function parseRules(raws: string[]): { rules: Rule[]; errors: string[] } 
 /** The part of a tool call a rule is matched against. */
 export function ruleTarget(tool: string, input: Record<string, unknown>): string | undefined {
 	if (tool === "bash") return typeof input.command === "string" ? input.command : undefined;
+	// Image generation is not a local-only PATH_TOOL: a scratchpad destination
+	// must not implicitly approve sending its prompt. Match the path it saves.
+	if (tool === "generate_image" && typeof input.path === "string") {
+		const path = input.path.replace(/^@/, "");
+		return normalize(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+	}
 	if (PATH_TOOLS.has(tool)) return typeof input.path === "string" ? input.path : undefined;
 	return undefined;
 }

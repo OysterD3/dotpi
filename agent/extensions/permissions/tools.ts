@@ -27,7 +27,7 @@ const ALIASES: Record<string, string> = {
 export const PATH_TOOLS = new Set(["read", "write", "edit"]);
 
 /** Tools that can change the machine, used by the write-oriented modes. */
-export const MUTATING_TOOLS = new Set(["write", "edit", "bash"]);
+export const MUTATING_TOOLS = new Set(["write", "edit", "bash", "generate_image"]);
 
 /**
  * pi built-ins that only ever read, and read nothing but the filesystem.

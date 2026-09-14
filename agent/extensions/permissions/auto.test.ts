@@ -55,6 +55,15 @@ const behavior = (policy: CompiledPolicy, tool: string, input: Record<string, un
 	decide(policy, { tool, input, cwd: CWD }).behavior;
 
 // ---------------------------------------------------------------------------
+console.log("image generation — file writes and an external request");
+
+eq("askMutating prompts for image generation", behavior(policyFor({ defaultMode: "askMutating" }), "generate_image", { prompt: "a circle", path: "image.png" }), "ask");
+for (const path of ["private/image.png", "@private/image.png", "public/../private/image.png"]) {
+	eq(`image path deny rules apply to ${path}`, behavior(policyFor({ deny: ["Generate_image(private/**)"] }), "generate_image", { path }), "deny");
+}
+eq("a scratchpad destination does not pre-approve the external request", decide(policyFor({ defaultMode: "auto" }), { tool: "generate_image", input: { prompt: "a circle", path: "/scratch/image.png" }, cwd: CWD, scratchDir: "/scratch" }).behavior, "classify");
+
+// ---------------------------------------------------------------------------
 console.log("\nverdict parsing — only a literal `safe: true` clears a command");
 
 eq("safe:true is safe", toVerdict({ safe: true, reason: "reads a file" }).kind, "safe");

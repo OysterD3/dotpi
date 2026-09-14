@@ -20,6 +20,20 @@ helper module. That is pi's documented multi-file layout, and it's required here
 would be loaded as an extension and fail. The lone top-level file is `cmux-session.ts`, which is
 cmux's own generated bridge rather than one of ours — see `agent/extensions/cmux-notify/` below.
 
+**`agent/extensions/image-generation/`** — adds `generate_image`: one PNG from a text prompt,
+using `/login openai-codex` (ChatGPT sign-in), with no OpenAI API key. Run `/reload`, then ask,
+for example: `Generate a blue circle and save it as assets/circle.png`.
+
+Requests `gpt-image-2.5-flare` by default; the tool also accepts `gpt-image-2.5-sunburst`.
+Codex can replace the requested model. Every result shows the requested and server-reported
+image model, with a warning if they differ or the server does not report a model. A valid image
+is still saved. The reported name does not prove which underlying model OpenAI used.
+
+Uses the active Codex text model to invoke image generation, or `gpt-5.5` if another provider
+is active. Only the image prompt is sent, not the session history. ChatGPT usage limits apply.
+This uses Codex's internal endpoint, which can change. Text-to-image only, PNG output, no
+file overwrites, and no API-key fallback.
+
 **`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
 provider reports any. Below those, one line per active workflow run and one per running
@@ -427,7 +441,7 @@ the network into a shell. Modes, from most to least permissive:
 | `allowAll` | Never prompt. Rules still apply. |
 | `askDestructive` | Prompt only for destructive commands. **Default.** |
 | `auto` | `askDestructive`, plus a model's verdict on everything the table cleared. |
-| `askMutating` | Prompt for anything that writes: bash, write, edit. |
+| `askMutating` | Prompt for anything that writes: bash, write, edit, generate_image. |
 | `askAll` | Prompt for every tool call. |
 | `denyAll` | Refuse everything not explicitly allowed. |
 

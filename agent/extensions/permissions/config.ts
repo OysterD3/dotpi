@@ -34,7 +34,7 @@ export const MODE_HELP: Record<Mode, string> = {
 	allowAll: "Never prompt. Rules still apply.",
 	askDestructive: "Prompt only for commands that destroy, publish, or escalate. The default.",
 	auto: "askDestructive, plus a model's verdict on everything the table cleared. Costs one small call per unrecognised tool call.",
-	askMutating: "Prompt for anything that writes: bash, write, edit.",
+	askMutating: "Prompt for anything that writes: bash, write, edit, generate_image.",
 	askAll: "Prompt for every tool call.",
 	denyAll: "Refuse everything not explicitly allowed.",
 };
