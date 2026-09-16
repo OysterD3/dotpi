@@ -289,6 +289,8 @@ console.log("\n--- two sessions, end to end ---");
 			prompt: () => prompt,
 			busy: (value: boolean) => {
 				busy = value;
+				const type = value ? "agent_start" : "agent_settled";
+				void hooks.get(type)?.({ type }, ctx);
 			},
 			call: async (tool, params, signal) => (await tools.get(tool)!.execute("call", params, signal)).content[0].text,
 			start: async (over = {}) => {
@@ -345,7 +347,7 @@ console.log("\n--- two sessions, end to end ---");
 	await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "one" });
 	await a.call(TOOL_SEND, { to: "bbbbbbbb", message: "two" });
 	await until("a busy receiver still gets it", () => b.sent.length === 2);
-	check("riding the turn it is already doing", b.sent[1].options, { deliverAs: "followUp" });
+	check("riding the turn it is already doing, or waking it if it finished", b.sent[1].options, { deliverAs: "followUp", triggerTurn: true });
 	checkTrue("and one tick's messages arrive as one turn's worth", b.sent[1].message.content.includes("one") && b.sent[1].message.content.includes("two"));
 	check("counted as two", (b.sent[1].message.details as { count: number }).count, 2);
 	b.busy(false);
@@ -534,7 +536,7 @@ console.log("\n--- two sessions, end to end ---");
 	checkTrue("the agent must not treat intercom as permission", userResult?.content[0].text.includes("No answer or permission"));
 	checkTrue("the question component is still open", receiver.prompt() === component);
 	checkTrue("with the unfinished draft intact", component.render(80).join("\n").includes("stag"));
-	check("the peer message is steered before another model call", receiver.sent[0]?.options, { deliverAs: "steer" });
+	check("the peer message is steered before another model call", receiver.sent[0]?.options, { deliverAs: "steer", triggerTurn: true });
 	const duringAskId = /ask_[0-9a-f]{8}/.exec(receiver.sent[0]?.message.content ?? "")?.[0] ?? "";
 	await receiver.call(TOOL_SEND, { reply_to: duringAskId, message: "8080" });
 	checkTrue("the peer gets its answer while the user question stays open", (await peerAsk).includes("8080"));
@@ -542,7 +544,7 @@ console.log("\n--- two sessions, end to end ---");
 
 	await a.call(TOOL_SEND, { to: "ffffffff7777", message: "thanks" });
 	await until("later messages are received while the question is open", () => receiver.sent.length === 2);
-	check("later messages also use steering", receiver.sent[1]?.options, { deliverAs: "steer" });
+	check("later messages also use steering", receiver.sent[1]?.options, { deliverAs: "steer", triggerTurn: true });
 	const repeated = await receiver.askUser([{ question: "Replacement?" }]);
 	check("a second ask does not replace the pending question", repeated.details.kind, "pending");
 	checkTrue("the same component still has the draft", receiver.prompt() === component);

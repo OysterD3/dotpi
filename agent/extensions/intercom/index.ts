@@ -126,6 +126,7 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 	let startedAt = 0;
 	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let poller: ReturnType<typeof setInterval> | undefined;
+	let running = false;
 
 	const unref = (timer: unknown) => (timer as { unref?: () => void }).unref?.();
 
@@ -160,6 +161,10 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		const me = self;
 		const ctx = uiCtx;
 		if (!me || !ctx) return;
+		// Busy does not always mean an agent run exists. Manual compaction and
+		// branch summaries have no loop to consume a follow-up. Hold mail until
+		// Pi is idle instead of appending it without a response or racing them.
+		if (!isIdle() && !running) return;
 		// A headless run between turns has nowhere to put this. Waking it is not
 		// available — that is what `wakeable: false` means — and `drain` DELETES
 		// what it reads, so reading the inbox here would lose the mail rather
@@ -193,7 +198,9 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 						delivery,
 					},
 				},
-				delivery === "turn" ? { triggerTurn: true } : { deliverAs: delivery },
+				// Keep the wake request even when our idle check chose a queue.
+				// Pi decides whether there is still a running turn at delivery time.
+				delivery === "turn" ? { triggerTurn: true } : { deliverAs: delivery, ...(me.wakeable !== false ? { triggerTurn: true } : {}) },
 			);
 		} catch {
 			/* a session on its way out cannot receive anything */
@@ -223,6 +230,7 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		if (self) (returning ? removePresence : forget)(l, self.id);
 		self = undefined;
 		uiCtx = undefined;
+		running = false;
 	};
 
 	registerIntercomTools(pi, { layout: l, self: () => self, now, alive });
@@ -268,6 +276,11 @@ export function registerIntercom(pi: ExtensionAPI, deps: Deps): void {
 		self = { ...self, name: event.name?.trim() || self.id.slice(0, CONFIG.idChars) };
 		beat();
 	});
+
+	// agent_end is too early: retries and automatic compaction can still
+	// continue the run. Only agent_settled says that no loop will resume.
+	pi.on("agent_start", () => { running = true; });
+	pi.on("agent_settled", () => { running = false; });
 
 	pi.on("session_shutdown", (event) => {
 		stop();
