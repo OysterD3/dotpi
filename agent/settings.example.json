@@ -8,29 +8,6 @@
   "steeringMode": "all",
   "followUpMode": "all",
   "collapseChangelog": true,
-  "models": {
-    "active": "openai",
-    "providers": {
-      "openai": {
-        "session": "openai-codex/gpt-5.6-sol:max",
-        "frontier": "openai-codex/gpt-5.6-sol",
-        "fast": "openai-codex/gpt-5.6-terra",
-        "cheap": "openai-codex/gpt-5.6-luna"
-      },
-      "anthropic": {
-        "session": "anthropic/claude-opus-5:high",
-        "frontier": "anthropic/claude-opus-5",
-        "fast": "anthropic/claude-sonnet-5",
-        "cheap": "anthropic/claude-haiku-4-5"
-      },
-      "qoder": {
-        "session": "qoder/ultimate",
-        "frontier": "qoder/ultimate",
-        "fast": "qoder/auto",
-        "cheap": "qoder/lite"
-      }
-    }
-  },
   "permissions": {
     "defaultMode": "askDestructive",
     "deny": [
@@ -76,14 +53,14 @@
     "destructiveOverridesAllow": true,
     "askWithoutUi": "deny",
     "auto": {
-      "model": "cheap",
+      "model": "openai-codex/gpt-5.6-luna",
       "skipReadOnly": true,
       "onError": "allow",
       "timeoutMs": 10000
     }
   },
   "goal": {
-    "model": "cheap"
+    "model": "openai-codex/gpt-5.6-luna"
   },
   "scratchpad": {
     "enabled": true,

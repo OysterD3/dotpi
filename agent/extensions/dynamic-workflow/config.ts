@@ -227,6 +227,12 @@ export interface UltracodeSettings {
 	 * in the triggering request, not configured here — see routing.ts.
 	 */
 	model?: string;
+	/**
+	 * Default thinking level for workflow subagents when neither the script nor
+	 * the agentType gives one. Unset, the child pi uses its own
+	 * defaultThinkingLevel, which is often far higher than a subagent needs.
+	 */
+	thinking?: string;
 }
 
 export const DEFAULT_SETTINGS: UltracodeSettings = {

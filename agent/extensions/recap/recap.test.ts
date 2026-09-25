@@ -60,8 +60,9 @@ check("no match is an error", resolveModel("does-not-exist", MODELS).ok, false);
 const err = resolveModel("nope", MODELS);
 check("error mentions the reference", err.ok === false && err.error.includes("nope"), true);
 
-// A role value may end in `:level` (pi's --model syntax). The full reference is
-// matched first, so a colon that belongs to the id can never be split away.
+// A configured reference may end in `:level` (pi's --model syntax). The full
+// reference is matched first, so a colon that belongs to the id can never be
+// split away.
 check("suffixed reference resolves like the bare one", pick("anthropic/claude-sonnet-5:high"), pick("anthropic/claude-sonnet-5"));
 check("suffixed bare id resolves", pick("gpt-5.6-sol:low"), "openai-codex/gpt-5.6-sol");
 check("unknown suffix is matched as part of the id", pick("openrouter/deepseek-chat:free"), "openrouter/deepseek-chat:free");
@@ -75,37 +76,61 @@ check("a level splits", splitThinking("anthropic/claude-opus-5:high"), { referen
 check("a non-level suffix stays put", splitThinking("deepseek/deepseek-chat:free"), { reference: "deepseek/deepseek-chat:free" });
 check("no colon passes through", splitThinking("anthropic/claude-sonnet-5"), { reference: "anthropic/claude-sonnet-5" });
 
-console.log("\n--- selectModel: cheap role by default, session model when roles are absent ---");
+console.log("\n--- selectModel: an explicit model, else the session model ---");
 {
-	const dirWith = (settings: unknown) => {
-		const dir = mkdtempSync(join(tmpdir(), "recap-select-"));
-		writeFileSync(join(dir, "settings.json"), JSON.stringify(settings));
-		return dir;
-	};
-	const roleMap = dirWith({ models: { active: "a", providers: { a: { cheap: "openai-codex/gpt-5.6-sol" } } } });
-	const suffixedMap = dirWith({ models: { active: "a", providers: { a: { cheap: "anthropic/claude-sonnet-5:low" } } } });
-	const deadMap = dirWith({ models: { active: "a", providers: { a: { cheap: "gone/away" } } } });
-	const noCheap = dirWith({ models: { active: "a", providers: { a: { fast: "openai-codex/gpt-5.6-sol" } } } });
-	const bare = dirWith({});
 	const session = M("qoder", "ultimate");
 	const picked = (r: { ok: true; model: { provider: string; id: string } } | { ok: false }) => (r.ok ? `${r.model.provider}/${r.model.id}` : "ERR");
 
 	// Explicit config is a promise: it resolves or the recap fails, session
 	// model or not — a silent stand-in would run the transcript elsewhere.
-	check("an explicit model wins", picked(selectModel("gpt-5.6-sol", session, MODELS, roleMap)), "openai-codex/gpt-5.6-sol");
-	check("an explicit miss fails, never falls back", picked(selectModel("nope", session, MODELS, roleMap)), "ERR");
+	check("an explicit model wins", picked(selectModel("gpt-5.6-sol", session, MODELS)), "openai-codex/gpt-5.6-sol");
+	check("an explicit miss fails, never falls back", picked(selectModel("nope", session, MODELS)), "ERR");
 
-	// Unconfigured: the cheap role when a map defines it...
-	check("the cheap role is the default", picked(selectModel(undefined, session, MODELS, roleMap)), "openai-codex/gpt-5.6-sol");
-	check("a role value's :level strips on the way", picked(selectModel(undefined, session, MODELS, suffixedMap)), "anthropic/claude-sonnet-5");
+	// Unconfigured, the session model: the default configured nothing, so it
+	// must break nothing.
+	check("nothing configured -> session model", picked(selectModel(undefined, session, MODELS)), "qoder/ultimate");
+	check("nothing anywhere is the only failure", selectModel(undefined, undefined, MODELS).ok, false);
+}
 
-	// ...and the session model everywhere else. The default configured nothing,
-	// so it must break nothing: no map, no cheap role, or a cheap role naming a
-	// dead model all degrade to what the session already runs.
-	check("no role map -> session model", picked(selectModel(undefined, session, MODELS, bare)), "qoder/ultimate");
-	check("no cheap role -> session model", picked(selectModel(undefined, session, MODELS, noCheap)), "qoder/ultimate");
-	check("a dead cheap role -> session model", picked(selectModel(undefined, session, MODELS, deadMap)), "qoder/ultimate");
-	check("nothing anywhere is the only failure", selectModel(undefined, undefined, MODELS, bare).ok, false);
+console.log("\n--- full-name fallback: a custom model, as `pi --model` builds one ---");
+{
+	// A different window per provider shows which listed model a custom one copies.
+	const L = (provider: string, id: string, contextWindow: number, name = id) => ({ provider, id, name, contextWindow });
+	const LISTED = [
+		L("anthropic", "claude-sonnet-5", 1_000_000, "Sonnet 5"),
+		L("anthropic", "claude-haiku-4-5", 200_000),
+		L("openrouter", "claude-haiku-4-5", 128_000), // same id, different provider — bare id is ambiguous
+		// Two OpenRouter ids that start with a known provider's name make a full
+		// name that is ambiguous as a whole; MyProxy is spelled with capitals.
+		L("openrouter", "anthropic/claude-x-max", 128_000),
+		L("openrouter", "anthropic/claude-x-mini", 128_000),
+		L("MyProxy", "old-model", 32_000),
+	];
+	const session = L("qoder", "ultimate", 64_000);
+	const table: Array<[label: string, configured: string, want: unknown]> = [
+		["a registered full name is the listed model", "anthropic/claude-sonnet-5", L("anthropic", "claude-sonnet-5", 1_000_000, "Sonnet 5")],
+		["an unregistered full name copies its provider's first model, id and name replaced", "anthropic/claude-opus-9", L("anthropic", "claude-opus-9", 1_000_000)],
+		["the provider matches in any case, spelled as the list spells it", "ANTHROPIC/claude-opus-9", L("anthropic", "claude-opus-9", 1_000_000)],
+		["a :high level is not part of the custom id", "anthropic/claude-opus-9:high", L("anthropic", "claude-opus-9", 1_000_000)],
+		["a suffix that is not a level stays in the custom id", "openrouter/new-model:free", L("openrouter", "new-model:free", 128_000)],
+		["only the first slash splits provider from id", "openrouter/zai-org/glm-5", L("openrouter", "zai-org/glm-5", 128_000)],
+		["an unknown provider is an error", "nobody/claude-opus-9", "ERR"],
+		["an unregistered bare id names no provider, so it is an error", "claude-opus-9", "ERR"],
+		["an empty id is an error", "anthropic/", "ERR"],
+		["an ambiguous reference is still an error", "claude-haiku-4-5", "ERR"],
+		["and so is an ambiguous one with a level", "claude-haiku-4-5:high", "ERR"],
+		["an ambiguous full name with a known provider in front is still an error", "anthropic/claude-x", "ERR"],
+		// pi matches the id among the provider's own models before it makes one up.
+		["a partial name inside a known provider is that provider's listed model", "anthropic/haiku", L("anthropic", "claude-haiku-4-5", 200_000)],
+		["a partial name two of the provider's models share is an error", "anthropic/5", "ERR"],
+		["a provider the list spells with capitals still matches", "myproxy/new-model", L("MyProxy", "new-model", 32_000)],
+	];
+	for (const [label, configured, want] of table) {
+		const r = selectModel(configured, session, LISTED);
+		check(label, r.ok ? r.model : "ERR", want);
+	}
+	const miss = selectModel("nobody/claude-opus-9:high", session, LISTED);
+	check("a miss names the reference as configured", miss.ok === false && miss.error.includes("nobody/claude-opus-9:high"), true);
 }
 
 console.log("\n--- transcript ---");

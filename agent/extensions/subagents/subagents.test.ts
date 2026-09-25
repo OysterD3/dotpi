@@ -1,10 +1,11 @@
 /**
- * Tests for the subagents extension: parsing/validation, the file-first store
- * (agent/subagents.json) and its precedence over the settings.json fallback,
- * effective model/reasoning (including the carried `:level` precedence), the
- * panel, model resolution, the dispatch tool's pre-spawn branches, the
- * interactive wizard (driven by a scripted fake ui), and the /subagents
- * add|edit|remove flows against a fake pi.
+ * Tests for the subagents extension: parsing/validation of the agent files,
+ * discovery (user agents, project agents behind trust, project over user),
+ * the write/read round-trip, effective model/reasoning (including the carried
+ * `:level` precedence), the panel, model resolution, the dispatch tool's
+ * pre-spawn branches for defined and one-time agents, the interactive wizard
+ * (driven by a scripted fake ui), and the /subagents add|edit|remove flows
+ * against a fake pi.
  *
  * The happy path — an actual subagent spawn — needs the network and lives in
  * subagents.live.ts, excluded from this suite.
@@ -20,21 +21,25 @@ const AGENT = join(ROOT, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
 
-const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+const { getAgentDir, ProjectTrustStore } = await import("@earendil-works/pi-coding-agent");
 if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { parseSubagents, effective, loadSubagents, saveSubagents, storePath } = await import("./registry.ts");
+const { parseSubagentFile, serializeSubagent, effective, loadSubagents, userAgentsDir, userAgentPath, writeSubagent } = await import("./registry.ts");
 const { formatReasoning, tableLines } = await import("./panel.ts");
 const { resolveModelReference, modelRef, resolveSuffixedReference, splitThinking } = await import("./models.ts");
 const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
 const { buildArgs } = await import("./spawn.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
-const STORE = storePath(AGENT);
-const rmStore = () => rmSync(STORE, { force: true });
-const writeSettings = (block: unknown) => writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ subagents: block }));
+const USER_DIR = userAgentsDir(AGENT);
+const rmAgents = () => rmSync(USER_DIR, { recursive: true, force: true });
+const writeAgent = (dir: string, file: string, content: string) => {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, file), content);
+};
+const namesIn = (agents: Array<{ name: string }>) => agents.map((a) => a.name);
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -54,73 +59,140 @@ const MODELS = [
 
 // --------------------------------------------------------------- parsing
 
-console.log("--- registry: parsing and validation ---");
-const RAW = {
-	defaults: { model: "gpt-5.6-luna", reasoning: "high" },
-	agents: [
-		{ name: "code-explorer", reasoning: "high", tools: ["read", "grep", "find", "ls"], purpose: "Read-only codebase discovery and investigation" },
-		{ name: "code-reviewer", model: "gpt-5.6-sol", reasoning: "low", purpose: "Review diffs for correctness, security, and quality" },
-		{ name: "bad-reasoning", reasoning: "banana", purpose: "kept, reasoning dropped" },
-		{ name: "", purpose: "no name" },
-		{ name: "no-purpose" },
-		{ name: "code-explorer", purpose: "duplicate" },
-		{ name: "bad-tools", tools: "read", purpose: "kept, tools dropped" },
-		"not-an-object",
-	],
-};
-const parsed = parseSubagents(RAW);
-check("keeps only the valid agents", parsed.settings.agents.map((a) => a.name), ["code-explorer", "code-reviewer", "bad-reasoning", "bad-tools"]);
-check("defaults parsed", parsed.settings.defaults, { model: "gpt-5.6-luna", reasoning: "high" });
-check("tool allowlist parsed", parsed.settings.agents[0].tools, ["read", "grep", "find", "ls"]);
-check("invalid reasoning is dropped, agent survives", parsed.settings.agents[2].reasoning, undefined);
-check("invalid tools are dropped, agent survives", parsed.settings.agents[3].tools, undefined);
-checkTrue("issues were recorded for every bad entry", parsed.issues.length >= 5);
-check("empty raw is safe", parseSubagents(undefined).settings.agents, []);
-
-console.log("\n--- registry: effective model/reasoning applies defaults ---");
-const D = parsed.settings.defaults;
-check("agent inherits default model, keeps own reasoning", effective(parsed.settings.agents[0], D), { model: "gpt-5.6-luna", reasoning: "high" });
-check("agent overrides model and reasoning", effective(parsed.settings.agents[1], D), { model: "gpt-5.6-sol", reasoning: "low" });
-check("dropped reasoning falls back to default", effective(parsed.settings.agents[2], D), { model: "gpt-5.6-luna", reasoning: "high" });
-
-console.log("\n--- registry: a carried :level sits between the pin and the default ---");
+console.log("--- registry: parsing an agent file ---");
 {
-	// The third argument is the level a model reference resolved with. The pin
-	// names this exact subagent, so it must win; the blanket default must not
-	// silently eat the model-specific level, or the suffix no-ops for anyone
-	// with defaults.reasoning set.
-	const bare = { name: "x", purpose: "y" };
-	check("a per-agent pin beats a carried level", effective({ ...bare, reasoning: "low" }, { reasoning: "medium" }, "high").reasoning, "low");
-	check("a carried level beats the blanket default", effective(bare, { reasoning: "medium" }, "high").reasoning, "high");
-	check("no carried level falls back to the default", effective(bare, { reasoning: "medium" }, undefined).reasoning, "medium");
-	check("a carried level alone stands", effective(bare, {}, "xhigh").reasoning, "xhigh");
+	// One table of real files through the one seam that reads them. A case that
+	// slips through later goes in here.
+	const cases: Array<[string, string, unknown, boolean]> = [
+		// label, file content, the def it must yield (undefined = skipped), whether an issue is reported
+		[
+			"a full file",
+			"---\nname: code-reviewer\ndescription: Review diffs\nmodel: frontier\nreasoning: low\ntools: read, grep, find, ls\n---\n\nReview only. Never edit.\n",
+			{ name: "code-reviewer", purpose: "Review diffs", model: "frontier", reasoning: "low", tools: ["read", "grep", "find", "ls"], prompt: "Review only. Never edit." },
+			false,
+		],
+		["a YAML list of tools", "---\nname: a\ndescription: b\ntools: [read, bash]\n---\n", { name: "a", purpose: "b", tools: ["read", "bash"] }, false],
+		["no tools key means pi's default tools", "---\nname: a\ndescription: b\n---\n", { name: "a", purpose: "b" }, false],
+		["a level is normalised", "---\nname: a\ndescription: b\nreasoning: High\n---\n", { name: "a", purpose: "b", reasoning: "high" }, false],
+		["a bad level is dropped, the agent kept", "---\nname: a\ndescription: b\nreasoning: banana\n---\n", { name: "a", purpose: "b" }, true],
+		["a quoted description with a colon", '---\nname: a\ndescription: "Review: diffs only"\n---\n', { name: "a", purpose: "Review: diffs only" }, false],
+		["a leading BOM", "\uFEFF---\nname: a\ndescription: b\n---\n", { name: "a", purpose: "b" }, false],
+		["missing name is skipped", "---\ndescription: b\n---\n", undefined, true],
+		["missing description is skipped", "---\nname: a\n---\n", undefined, true],
+		// A dropped allowlist would mean pi's default tools (bash, edit, write), so these skip the agent.
+		["an empty tools list is skipped", "---\nname: a\ndescription: b\ntools: []\n---\n", undefined, true],
+		["a null tools key is skipped", "---\nname: a\ndescription: b\ntools:\n---\n", undefined, true],
+		["a tools map is skipped", "---\nname: a\ndescription: b\ntools: { read: true }\n---\n", undefined, true],
+		["broken YAML is skipped", "---\nname: [a\ndescription: b\n---\n", undefined, true],
+		["a YAML scalar frontmatter is skipped", "---\njust text\n---\n", undefined, true],
+		// A README beside the agents is not an agent, and not a problem either.
+		["no frontmatter is passed over silently", "# About these agents\n", undefined, false],
+	];
+	for (const [label, content, want, wantIssue] of cases) {
+		const parsed = parseSubagentFile(content, "x.md");
+		check(label, parsed.def, want);
+		check(`${label}: ${wantIssue ? "an issue" : "no issue"}`, parsed.issues.length > 0, wantIssue);
+	}
 }
 
-// ------------------------------------------------------------ store & precedence
+console.log("\n--- registry: write, then read back ---");
+{
+	// Every value the file writer can meet, including the ones plain YAML would
+	// misread: a colon, a hash, quotes, a word that parses as a boolean or a
+	// number, a model reference that carries a :level, and a body with a rule.
+	const defs = [
+		{ name: "plain", purpose: "Read-only codebase discovery and investigation", model: "fast", reasoning: "high", tools: ["read", "grep", "find", "ls"] },
+		{ name: "tricky", purpose: 'Review: "diffs" only # not a comment', model: "openai-codex/gpt-5.6-sol:low", reasoning: "off", prompt: "Line one.\n\n---\n\nLine after a rule." },
+		{ name: "yes", purpose: "true", model: "1.5" },
+	];
+	for (const def of defs) {
+		check(`${def.name} round-trips`, parseSubagentFile(serializeSubagent(def), "x.md").def, def);
+	}
+	checkTrue("simple values stay plain", serializeSubagent(defs[0]).includes("\ntools: read, grep, find, ls\n"));
+}
 
-console.log("\n--- store: agent/subagents.json round-trip and precedence ---");
-rmStore();
-writeSettings({ agents: [{ name: "from-settings", purpose: "the fallback" }] });
-check("with no store, the settings.json block is the source", loadSubagents(AGENT).source, "settings");
-check("fallback content is read", loadSubagents(AGENT).settings.agents.map((a) => a.name), ["from-settings"]);
+console.log("\n--- registry: effective model/reasoning ---");
+{
+	// The second argument is the level a model reference resolved with. The pin
+	// names this exact subagent, so it must win.
+	const bare = { name: "x", purpose: "y" };
+	check("a per-agent pin beats a carried level", effective({ ...bare, reasoning: "low" }, "high").reasoning, "low");
+	check("a carried level alone stands", effective(bare, "xhigh").reasoning, "xhigh");
+	check("neither leaves the session's level", effective(bare).reasoning, undefined);
+	check("the model is the agent's own", effective({ ...bare, model: "fast" }).model, "fast");
+}
 
-saveSubagents(AGENT, { defaults: { model: "gpt-5.6-luna" }, agents: [{ name: "from-store", purpose: "the real one", tools: ["read"] }] });
-checkTrue("the store file was written", existsSync(STORE));
-const afterSave = loadSubagents(AGENT);
-check("the store now wins over settings.json", afterSave.source, "store");
-check("store content is read", afterSave.settings.agents.map((a) => a.name), ["from-store"]);
-check("store round-trips optional fields", afterSave.settings.agents[0].tools, ["read"]);
-checkTrue("store file is pretty-printed", readFileSync(STORE, "utf8").includes("\n  "));
+// ------------------------------------------------------- discovery & trust
 
-console.log("\n--- store: sources and a malformed file ---");
-rmStore();
-writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
-check("no block anywhere -> source none", loadSubagents(AGENT).source, "none");
-writeFileSync(STORE, "{ not json");
-const broken = loadSubagents(AGENT);
-check("a malformed store is reported, not bypassed", broken.source, "store");
-checkTrue("malformed store yields an issue", broken.issues.some((i) => i.includes("not valid JSON")));
-rmStore();
+console.log("\n--- registry: user and project agents ---");
+{
+	rmAgents();
+	const REPO = join(ROOT, "repo");
+	const DEEP = join(REPO, "src", "deep");
+	const PROJECT_DIR = join(REPO, ".pi", "agents");
+	mkdirSync(DEEP, { recursive: true });
+
+	check("no directory at all is no agents and no issues", loadSubagents(AGENT, DEEP, true), { agents: [], user: [], issues: [] });
+
+	writeAgent(USER_DIR, "reviewer.md", "---\nname: reviewer\ndescription: user reviewer\n---\n");
+	writeAgent(USER_DIR, "explorer.md", "---\nname: explorer\ndescription: user explorer\n---\n");
+	writeAgent(USER_DIR, "z-clash.md", "---\nname: explorer\ndescription: same name again\n---\n");
+	writeAgent(USER_DIR, "notes.txt", "not an agent");
+	writeAgent(PROJECT_DIR, "reviewer.md", "---\nname: reviewer\ndescription: project reviewer\ntools: read\n---\n");
+	writeAgent(PROJECT_DIR, "migrator.md", "---\nname: migrator\ndescription: project only\n---\n");
+
+	const untrusted = loadSubagents(AGENT, DEEP, false);
+	check("untrusted: only user agents run", namesIn(untrusted.agents), ["explorer", "reviewer"]);
+	check("untrusted: the user reviewer is the one", untrusted.agents.find((a) => a.name === "reviewer")?.purpose, "user reviewer");
+	checkTrue("untrusted: the skipped project dir is said out loud", untrusted.issues.some((i) => i.includes(PROJECT_DIR) && i.includes("not trusted")));
+	check("a later duplicate name is skipped", untrusted.agents.find((a) => a.name === "explorer")?.purpose, "user explorer");
+	checkTrue("and reported", untrusted.issues.some((i) => i.includes("z-clash.md") && i.includes("duplicate")));
+	check("the project dir is found from a subdirectory", untrusted.projectDir, PROJECT_DIR);
+
+	// pi calls a session trusted without asking when .pi/ holds only agents/,
+	// and it looks at the cwd only. So a trusted session proves nothing here:
+	// the folder that holds .pi/agents needs a decision the user saved.
+	const store = new ProjectTrustStore(AGENT);
+	const unsaved = loadSubagents(AGENT, DEEP, true);
+	check("a trusted session with nothing saved keeps project agents out", namesIn(unsaved.agents), ["explorer", "reviewer"]);
+	checkTrue("and says to run /trust for the repo", unsaved.issues.some((i) => i.includes("/trust") && i.includes(REPO)));
+	store.set(DEEP, true);
+	check("trust saved for a subfolder does not reach the repo above it", namesIn(loadSubagents(AGENT, DEEP, true).agents), ["explorer", "reviewer"]);
+	store.set(DEEP, null);
+	store.set(REPO, false);
+	checkTrue("a saved 'not trusted' keeps them out", loadSubagents(AGENT, DEEP, true).issues.some((i) => i.includes("saved as not trusted")));
+	store.set(REPO, null);
+	store.set(ROOT, true);
+	check("trust saved for a parent folder covers the repo", namesIn(loadSubagents(AGENT, DEEP, true).agents).sort(), ["explorer", "migrator", "reviewer"]);
+	store.set(ROOT, null);
+	store.set(REPO, true);
+	check("a saved decision does not outrank an untrusted session", namesIn(loadSubagents(AGENT, DEEP, false).agents), ["explorer", "reviewer"]);
+
+	const trusted = loadSubagents(AGENT, DEEP, true);
+	check("trusted: project agents join", namesIn(trusted.agents).sort(), ["explorer", "migrator", "reviewer"]);
+	const reviewer = trusted.agents.find((a) => a.name === "reviewer");
+	check("trusted: a project agent replaces the user one of the same name", [reviewer?.purpose, reviewer?.source, reviewer?.tools], ["project reviewer", "project", ["read"]]);
+	check("the user list still holds the shadowed agent", trusted.user.find((a) => a.name === "reviewer")?.purpose, "user reviewer");
+	check("each agent knows its file", trusted.agents.find((a) => a.name === "migrator")?.filePath, join(PROJECT_DIR, "migrator.md"));
+	checkTrue("trusted: no trust issue", !trusted.issues.some((i) => i.includes("not trusted")));
+
+	check("outside the repo there is no project dir", loadSubagents(AGENT, ROOT, true).projectDir, undefined);
+	store.set(REPO, null);
+	rmAgents();
+	rmSync(REPO, { recursive: true, force: true });
+}
+
+console.log("\n--- registry: the file a new agent gets ---");
+check("kebab-case names map to <name>.md", userAgentPath(AGENT, "code-reviewer"), join(USER_DIR, "code-reviewer.md"));
+for (const bad of ["../escape", "a/b", "Code Reviewer", "", "x.md"]) {
+	let threw = false;
+	try {
+		userAgentPath(AGENT, bad);
+	} catch {
+		threw = true;
+	}
+	checkTrue(`"${bad}" is refused as a file name`, threw);
+}
 
 // ----------------------------------------------------------------- panel
 
@@ -133,7 +205,7 @@ const table = tableLines([
 checkTrue("header has all four columns", ["Subagent", "Model", "Reasoning", "Purpose"].every((h) => table[0].includes(h)));
 checkTrue("a rule separates the header", /^─+$/.test(table[1]));
 checkTrue("columns are aligned", table[2].startsWith("code-explorer") && table[3].startsWith("code-reviewer"));
-checkTrue("empty config says so", tableLines([])[0].includes("No subagents configured"));
+checkTrue("empty config says so", tableLines([])[0].includes("No subagents defined"));
 checkTrue("a long purpose is clipped", tableLines([{ name: "x", model: "m", reasoning: "High", purpose: "y".repeat(200) }], 40)[2].includes("…"));
 
 // ----------------------------------------------------------------- models
@@ -147,7 +219,7 @@ check("bare id -> canonical", rid("gpt-5.6-luna"), "openai-codex/gpt-5.6-luna");
 check("partial name", rid("sol"), "openai-codex/gpt-5.6-sol");
 check("unknown is an error", rid("nope"), "ERR");
 
-console.log("\n--- model resolution: a role value's :level suffix ---");
+console.log("\n--- model resolution: a reference's :level suffix ---");
 {
 	// Ids with colons are real (OpenRouter ships :free) — including one that
 	// ends in a level name, the case the full-first order exists for.
@@ -197,11 +269,68 @@ console.log("\n--- model resolution: a role value's :level suffix ---");
 	check("splitThinking passes a plain reference through", splitThinking("a/b"), { reference: "a/b" });
 }
 
+console.log("\n--- model resolution: a full name pi does not list ---");
+{
+	// pi's `--model` accepts a "provider/id" its list does not hold yet, when
+	// the provider is known: the model is a copy of that provider's first
+	// listed model, with the id and the name set to the id. The extra fields
+	// here stand in for the provider fields (api, base URL) that must be
+	// copied. The two OpenRouter ids that hold a slash make a reference that
+	// is ambiguous AND has a known provider, so the ambiguity rows prove the
+	// fallback never replaces that error.
+	const LISTED = [
+		{ id: "gpt-5.6-luna", name: "GPT 5.6 Luna", provider: "openai-codex", api: "openai-codex-responses", contextWindow: 272000 },
+		{ id: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "openai-codex", api: "openai-codex-responses", contextWindow: 400000 },
+		{ id: "deepseek-chat", name: "DeepSeek Chat", provider: "deepseek", api: "openai-completions", contextWindow: 128000 },
+		{ id: "deepseek/deepseek-chat", name: "DeepSeek Chat (OpenRouter)", provider: "openrouter", api: "openai-completions", contextWindow: 64000 },
+		{ id: "deepseek/deepseek-coder", name: "DeepSeek Coder (OpenRouter)", provider: "openrouter", api: "openai-completions", contextWindow: 64000 },
+	];
+	const codex = (id: string) => ({ ...LISTED[0], id, name: id });
+	const openrouter = (id: string) => ({ ...LISTED[3], id, name: id });
+	const miss = (ref: string) => ({ ok: false, error: `model "${ref}" matched no available model` });
+	const cases: Array<[string, string, unknown]> = [
+		// label, reference, the resolution it must give
+		["a listed full name is the listed model", "openai-codex/gpt-5.6-sol", { ok: true, model: LISTED[1] }],
+		["an unlisted full name on a known provider is a copy of its first model", "openai-codex/gpt-6-sol", { ok: true, model: codex("gpt-6-sol") }],
+		["the provider matches without case, and keeps the list's spelling", "OpenAI-Codex/gpt-6-sol", { ok: true, model: codex("gpt-6-sol") }],
+		["a :level is split off the id and carried", "openai-codex/gpt-6-sol:high", { ok: true, model: codex("gpt-6-sol"), thinking: "high" }],
+		["a suffix that is not a level stays in the id", "openrouter/new-model:free", { ok: true, model: openrouter("new-model:free") }],
+		["the id is everything after the first slash", "openrouter/qwen/qwen-9", { ok: true, model: openrouter("qwen/qwen-9") }],
+		["an unknown provider is an error", "nobody/gpt-6-sol", miss("nobody/gpt-6-sol")],
+		["an unlisted bare id has no provider to copy", "gpt-6-sol", miss("gpt-6-sol")],
+		["with a level, the error names the reference as configured", "gpt-6-sol:high", miss("gpt-6-sol:high")],
+		["an empty id is an error", "openai-codex/", miss("openai-codex/")],
+		["an empty provider is an error", "/gpt-6-sol", miss("/gpt-6-sol")],
+		["an ambiguous reference stays an error", "deepseek/deepseek-c", { ok: false, error: 'model "deepseek/deepseek-c" matches several models — use a more specific id' }],
+		["and so does its :level form", "deepseek/deepseek-c:high", { ok: false, error: 'model "deepseek/deepseek-c" matches several models — use a more specific id' }],
+		// pi matches the id among the provider's own models before it makes one up.
+		["a partial name inside a known provider is that provider's listed model", "openai-codex/luna", { ok: true, model: LISTED[0] }],
+		["and carries its level", "openai-codex/sol:high", { ok: true, model: LISTED[1], thinking: "high" }],
+		[
+			"a partial name two of the provider's models share is an error",
+			"openai-codex/gpt-5.6",
+			{ ok: false, error: 'model "openai-codex/gpt-5.6" matches several models of that provider — use a more specific id' },
+		],
+	];
+	for (const [label, reference, want] of cases) check(label, resolveSuffixedReference(reference, LISTED), want);
+	const proxy = { id: "old-model", name: "Old Model", provider: "MyProxy" };
+	check("a provider the list spells with capitals still matches", resolveSuffixedReference("myproxy/new-model", [proxy]), {
+		ok: true,
+		model: { ...proxy, id: "new-model", name: "new-model" },
+	});
+}
+
 // ------------------------------------------------------------- tool description
 
 console.log("\n--- the task tool description + usage mapping ---");
-const desc = buildTaskDescription(parsed.settings);
-checkTrue("lists each subagent and purpose", desc.includes("code-explorer: Read-only codebase discovery") && desc.includes("subagent_type"));
+{
+	const desc = buildTaskDescription([{ name: "code-explorer", purpose: "Read-only codebase discovery and investigation" }]);
+	checkTrue("lists each subagent and purpose", desc.includes("code-explorer: Read-only codebase discovery") && desc.includes("subagent_type"));
+	checkTrue("offers the one-time form", desc.includes("One-time agent: omit subagent_type"));
+	checkTrue("its model is a model reference, the session model by default", desc.includes("model (a model reference such as provider/id; default: the session model)"));
+	const none = buildTaskDescription([]);
+	checkTrue("with no files it still offers the one-time form", none.includes("One-time agent") && !none.includes("Defined subagents"));
+}
 check("SpawnUsage -> pi Usage", toPiUsage({ input: 5, output: 7, cacheRead: 1, cacheWrite: 2, cost: 0.25, totalTokens: 12, turns: 3 }), {
 	input: 5, output: 7, cacheRead: 1, cacheWrite: 2, totalTokens: 12,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
@@ -231,16 +360,20 @@ console.log("\n--- the spawn preamble ---");
 console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 {
 	let toolDef: any;
-	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, {
-		settings: () => ({ defaults: {}, agents: [{ name: "explorer", purpose: "look", model: "luna", tools: ["read"] }, { name: "ghost", purpose: "x", model: "does-not-exist" }, { name: "suffixed", purpose: "x", model: "openai-codex/gpt-5.6-luna:high" }] }) as never,
-	});
+	const agents = [{ name: "explorer", purpose: "look", model: "luna", tools: ["read"] }, { name: "ghost", purpose: "x", model: "does-not-exist" }, { name: "suffixed", purpose: "x", model: "openai-codex/gpt-5.6-luna:high" }];
+	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, { agents, load: () => agents });
 	const ctx = { cwd: ROOT, model: { id: "gpt-5.6-luna", provider: "openai-codex" }, modelRegistry: { getAll: () => MODELS }, isProjectTrusted: () => false };
 	const throws = async (params: any) => {
 		try { await toolDef.execute("id", params, undefined, undefined, ctx); return ""; } catch (e) { return (e as Error).message; }
 	};
 	checkTrue("unknown subagent lists valid options", (await throws({ subagent_type: "nobody", prompt: "hi" })).includes("Valid options"));
+	checkTrue("and points at the one-time form", (await throws({ subagent_type: "nobody", prompt: "hi" })).includes("Omit subagent_type"));
 	checkTrue("empty prompt is rejected", (await throws({ subagent_type: "explorer", prompt: " " })).includes("needs a prompt"));
 	checkTrue("unresolvable model is rejected", (await throws({ subagent_type: "ghost", prompt: "go" })).includes("could not be used"));
+	// A defined agent's file is the promise: the caller cannot widen its tools
+	// or move its model.
+	checkTrue("inline tools on a defined agent are refused", (await throws({ subagent_type: "explorer", prompt: "go", tools: ["read", "bash"] })).includes("apply only to a one-time agent"));
+	checkTrue("so is an inline model", (await throws({ subagent_type: "explorer", prompt: "go", model: "sol" })).includes("apply only to a one-time agent"));
 
 	// A pre-aborted signal stops runSubagent before any subprocess, but after
 	// the model was resolved and reported — so this pins that a carried
@@ -259,31 +392,85 @@ console.log("\n--- the task tool's pre-spawn branches (no subprocess) ---");
 	check("the carried level is the spawn's reasoning", updates[0]?.details?.reasoning, "high");
 }
 
+console.log("\n--- the task tool: one-time agents (no subprocess) ---");
+{
+	let toolDef: any;
+	// No agent files at all: a one-time agent needs none.
+	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, { agents: [], load: () => [] });
+	const ctx = { cwd: ROOT, model: { id: "gpt-5.6-luna", provider: "openai-codex" }, modelRegistry: { getAll: () => MODELS }, isProjectTrusted: () => false };
+	const run = async (params: any) => {
+		const updates: any[] = [];
+		let error = "";
+		try {
+			await toolDef.execute("id", params, AbortSignal.abort(), (u: any) => updates.push(u), ctx);
+		} catch (e) {
+			error = (e as Error).message;
+		}
+		return { details: updates[0]?.details, error };
+	};
+
+	const bare = await run({ prompt: "count the files" });
+	check("no subagent_type runs a one-time agent on the session model", [bare.details?.subagent, bare.details?.model], ["one-time", "openai-codex/gpt-5.6-luna"]);
+	checkTrue("and reaches the spawn", bare.error.includes("aborted"));
+	check("an empty subagent_type is the same", (await run({ subagent_type: " ", prompt: "go" })).details?.subagent, "one-time");
+
+	const chosen = await run({ prompt: "go", model: "openai-codex/gpt-5.6-sol:max", reasoning: "Low" });
+	check("the call's model is resolved, its pin beats the carried level", [chosen.details?.model, chosen.details?.reasoning], ["openai-codex/gpt-5.6-sol", "low"]);
+	check("a carried level alone is used", (await run({ prompt: "go", model: "openai-codex/gpt-5.6-sol:max" })).details?.reasoning, "max");
+	const unlisted = await run({ prompt: "go", model: "openai-codex/gpt-6-sol:high" });
+	check("a full name pi does not list spawns as given, its level carried", [unlisted.details?.model, unlisted.details?.reasoning], ["openai-codex/gpt-6-sol", "high"]);
+
+	const badLevel = await run({ prompt: "go", reasoning: "extreme" });
+	checkTrue("a bad level is refused before any spawn", badLevel.details === undefined && badLevel.error.includes("not a thinking level"));
+	// Dropping an unknown tool would leave the rest, or none, and none means ALL.
+	const tools = await run({ prompt: "go", tools: ["read", "workflow"] });
+	checkTrue("a tool a subagent cannot run is refused", tools.details === undefined && tools.error.includes("workflow cannot run in a subagent"));
+	checkTrue("an empty tool list is refused", (await run({ prompt: "go", tools: [] })).error.includes("at least one"));
+	checkTrue("an unknown model is refused", (await run({ prompt: "go", model: "nope" })).error.includes("could not be used"));
+	checkTrue("an empty prompt is refused", (await run({ prompt: " " })).error.includes("needs a prompt"));
+
+	const { oneTimeAgent } = await import("./tool.ts");
+	check("tools are normalised and de-duplicated", oneTimeAgent({ tools: ["Read", "grep", "read"] }).tools, ["read", "grep"]);
+	checkTrue("its role prompt is the one-time role", rolePrompt(oneTimeAgent({})).startsWith("You are a one-time subagent."));
+}
+
+console.log("\n--- the task tool: a file added mid-session runs at once ---");
+{
+	rmAgents();
+	let toolDef: any;
+	const load = (c: any) => loadSubagents(AGENT, c.cwd, c.isProjectTrusted()).agents;
+	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, { agents: [], load });
+	const ctx = { cwd: ROOT, model: { id: "gpt-5.6-luna", provider: "openai-codex" }, modelRegistry: { getAll: () => MODELS }, isProjectTrusted: () => false };
+	writeAgent(USER_DIR, "late.md", "---\nname: late\ndescription: added after registration\nmodel: sol\n---\n");
+	const updates: any[] = [];
+	try {
+		await toolDef.execute("id", { subagent_type: "late", prompt: "go" }, AbortSignal.abort(), (u: any) => updates.push(u), ctx);
+	} catch {
+		/* the pre-aborted signal is the point */
+	}
+	check("the new file is found by name", [updates[0]?.details?.subagent, updates[0]?.details?.model], ["late", "openai-codex/gpt-5.6-sol"]);
+	rmAgents();
+}
+
+
 // ------------------------------------- the carried :level precedence, end to end
 
 console.log("\n--- the task tool: carried :level precedence (no subprocess) ---");
 {
 	// The registry carries an id whose tail LOOKS like a level, to pin that a
-	// whole match never manufactures one; the role in settings.json carries a
-	// real level, so the suffix arrives the way a provider profile ships it.
+	// whole match never manufactures one; the agent files carry real levels,
+	// on a listed model and on a full name pi does not list.
 	const REGISTRY = [...MODELS, { id: "prompt-machine:high", name: "Prompt Machine", provider: "weird" }];
-	writeFileSync(
-		join(AGENT, "settings.json"),
-		JSON.stringify({ models: { active: "test", providers: { test: { boosted: "openai-codex/gpt-5.6-sol:max" } } } }),
-	);
 
 	let toolDef: any;
-	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, {
-		settings: () => ({
-			defaults: { reasoning: "medium" },
-			agents: [
-				{ name: "pinned", purpose: "x", model: "openai-codex/gpt-5.6-luna:high", reasoning: "low" },
-				{ name: "role-carried", purpose: "x", model: "boosted" },
-				{ name: "whole-match", purpose: "x", model: "weird/prompt-machine:high" },
-				{ name: "plain", purpose: "x", model: "openai-codex/gpt-5.6-luna" },
-			],
-		}) as never,
-	});
+	const agents = [
+		{ name: "pinned", purpose: "x", model: "openai-codex/gpt-5.6-luna:high", reasoning: "low" },
+		{ name: "carried", purpose: "x", model: "openai-codex/gpt-5.6-sol:max" },
+		{ name: "unlisted", purpose: "x", model: "openai-codex/gpt-6-sol:high" },
+		{ name: "whole-match", purpose: "x", model: "weird/prompt-machine:high" },
+		{ name: "plain", purpose: "x", model: "openai-codex/gpt-5.6-luna" },
+	];
+	registerTaskTool({ registerTool: (def: any) => (toolDef = def) } as never, { agents, load: () => agents });
 	const ctx = { cwd: ROOT, modelRegistry: { getAll: () => REGISTRY }, isProjectTrusted: () => false };
 	const spawnDetails = async (agentName: string) => {
 		const updates: any[] = [];
@@ -296,15 +483,16 @@ console.log("\n--- the task tool: carried :level precedence (no subprocess) ---"
 	};
 
 	check("a per-agent pin beats the carried level", (await spawnDetails("pinned")).reasoning, "low");
-	const carried = await spawnDetails("role-carried");
-	check("a role-carried level beats the blanket default", carried.reasoning, "max");
-	check("and the role's model spawns bare", carried.model, "openai-codex/gpt-5.6-sol");
+	const carried = await spawnDetails("carried");
+	check("a carried level is the spawn's reasoning", carried.reasoning, "max");
+	check("and the model spawns bare", carried.model, "openai-codex/gpt-5.6-sol");
+	const unlisted = await spawnDetails("unlisted");
+	check("a full name pi does not list spawns bare", unlisted.model, "openai-codex/gpt-6-sol");
+	check("with its carried level", unlisted.reasoning, "high");
 	const whole = await spawnDetails("whole-match");
-	check("a whole-matched level-shaped tail yields no level", whole.reasoning, "medium");
+	check("a whole-matched level-shaped tail yields no level", whole.reasoning, undefined);
 	check("with the colon kept in the model id", whole.model, "weird/prompt-machine:high");
-	check("no suffix anywhere falls back to the default", (await spawnDetails("plain")).reasoning, "medium");
-
-	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+	check("no suffix anywhere leaves the session's level", (await spawnDetails("plain")).reasoning, undefined);
 }
 
 console.log("\n--- spawn args: the reasoning becomes --thinking ---");
@@ -362,6 +550,12 @@ function scriptedCtx(script: { input?: (string | undefined)[]; select?: (string 
 	// Cancel at the name.
 	const { ctx } = scriptedCtx({ input: [undefined] });
 	check("empty name cancels", await runWizard(ctx as never, undefined, new Set()), undefined);
+}
+{
+	// The name becomes the file name, so anything but kebab-case is refused.
+	const { ctx, notices } = scriptedCtx({ input: ["../escape"] });
+	check("a name that is not a safe file name is refused", await runWizard(ctx as never, undefined, new Set()), undefined);
+	checkTrue("and explained", notices.some(([lvl, m]) => lvl === "error" && m.includes("lowercase letters")));
 }
 {
 	// Duplicate name is refused.
@@ -438,7 +632,7 @@ function makePi() {
 const extension = (await import("./index.ts")).default;
 
 {
-	rmStore();
+	rmAgents();
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
 	const h = makePi();
 	extension(h.pi as never);
@@ -447,8 +641,8 @@ const extension = (await import("./index.ts")).default;
 	const notices: Array<[string, string]> = [];
 	const statuses: Array<[string, string | undefined]> = [];
 	const q = {
-		input: ["reviewer", "Review diffs"],
-		select: ["openai-codex/gpt-5.6-sol", "low", "All tools"],
+		input: ["reviewer", "Review diffs: correctness first"],
+		select: ["openai-codex/gpt-5.6-sol", "low", "Read-only (read, grep, find, ls)"],
 		confirm: [false /* prompt? */, true /* save? */],
 	};
 	const ctx: any = {
@@ -456,6 +650,7 @@ const extension = (await import("./index.ts")).default;
 		cwd: ROOT,
 		model: { id: "gpt-5.6-luna", provider: "openai-codex" },
 		modelRegistry: { getAll: () => MODELS },
+		isProjectTrusted: () => false,
 		ui: {
 			input: async () => q.input.shift(),
 			select: async () => q.select.shift(),
@@ -467,21 +662,101 @@ const extension = (await import("./index.ts")).default;
 	};
 
 	h.commands.get("on:session_start")!({}, ctx);
-	checkTrue("task tool inactive with no subagents", !h.getActive().includes("task"));
+	checkTrue("task tool is active with no agent files", h.getActive().includes("task"));
 
 	await h.commands.get("subagents").handler("add", ctx);
-	checkTrue("the store file was created", existsSync(STORE));
-	check("the new subagent persisted", loadSubagents(AGENT).settings.agents.map((a) => a.name), ["reviewer"]);
-	checkTrue("task tool now active", h.getActive().includes("task"));
-	checkTrue("confirmation names the file and the agent", notices.some(([lvl, m]) => lvl === "info" && m.includes('Added "reviewer"') && m.includes("subagents.json")));
+	const FILE = join(USER_DIR, "reviewer.md");
+	checkTrue("the agent file was created", existsSync(FILE));
+	check("and reads back as what the wizard built", parseSubagentFile(readFileSync(FILE, "utf8"), FILE).def, {
+		name: "reviewer",
+		purpose: "Review diffs: correctness first",
+		model: "openai-codex/gpt-5.6-sol",
+		reasoning: "low",
+		tools: ["read", "grep", "find", "ls"],
+	});
+	checkTrue("confirmation names the file and the agent", notices.some(([lvl, m]) => lvl === "info" && m.includes('Added "reviewer"') && m.includes("reviewer.md")));
+	checkTrue("the tool description now lists it", h.tools.find((t) => t.name === "task")?.description.includes("- reviewer: Review diffs"));
+
+	// Edit it: keep the purpose, drop the model pin, open the tools.
+	const q3 = { input: [""], select: ["(session default)", "high", "All tools"], confirm: [false, true] };
+	const ctx3: any = { ...ctx, ui: { ...ctx.ui, input: async () => q3.input.shift(), select: async () => q3.select.shift(), confirm: async () => q3.confirm.shift() ?? false } };
+	await h.commands.get("subagents").handler("edit reviewer", ctx3);
+	check("edit rewrites the same file", parseSubagentFile(readFileSync(FILE, "utf8"), FILE).def, { name: "reviewer", purpose: "Review diffs: correctness first", reasoning: "high" });
+
+	// A second add of the same name is refused before any file is touched.
+	const qDup = { input: ["reviewer"] };
+	const ctxDup: any = { ...ctx, ui: { ...ctx.ui, input: async () => qDup.input.shift() } };
+	await h.commands.get("subagents").handler("add", ctxDup);
+	checkTrue("a taken name is refused", notices.some(([lvl, m]) => lvl === "error" && m.includes("already exists")));
+
+	// A file that does not parse is not a taken name, but it is still not ours to overwrite.
+	writeAgent(USER_DIR, "broken.md", "---\nname: [broken\n---\n");
+	const qBroken = { input: ["broken", "anything"], select: ["(session default)", "(inherit)", "All tools"], confirm: [false, true] };
+	const ctxBroken: any = { ...ctx, ui: { ...ctx.ui, input: async () => qBroken.input.shift(), select: async () => qBroken.select.shift(), confirm: async () => qBroken.confirm.shift() ?? false } };
+	await h.commands.get("subagents").handler("add", ctxBroken);
+	check("an unparsable file is left as it was", readFileSync(join(USER_DIR, "broken.md"), "utf8"), "---\nname: [broken\n---\n");
+	rmSync(join(USER_DIR, "broken.md"));
 
 	// Remove it.
 	const q2 = { confirm: [true] };
 	const ctx2: any = { ...ctx, ui: { ...ctx.ui, confirm: async () => q2.confirm.shift() ?? false } };
 	await h.commands.get("subagents").handler("remove reviewer", ctx2);
-	check("subagent removed from the store", loadSubagents(AGENT).settings.agents.map((a) => a.name), []);
-	checkTrue("task tool inactive again", !h.getActive().includes("task"));
-	rmStore();
+	checkTrue("remove deletes the file", !existsSync(FILE));
+	check("and nothing is left to run", namesIn(loadSubagents(AGENT, ROOT, false).agents), []);
+	checkTrue("task tool stays active", h.getActive().includes("task"));
+	rmAgents();
+}
+
+console.log("\n--- wiring: project agents are shown, but not edited here ---");
+{
+	rmAgents();
+	const REPO = join(ROOT, "wired-repo");
+	const PROJECT_DIR = join(REPO, ".pi", "agents");
+	writeAgent(PROJECT_DIR, "migrator.md", "---\nname: migrator\ndescription: repo migrations\n---\n");
+	new ProjectTrustStore(AGENT).set(REPO, true);
+	const h = makePi();
+	extension(h.pi as never);
+	const notices: Array<[string, string]> = [];
+	let asked = false;
+	const ctx: any = {
+		hasUI: true,
+		cwd: REPO,
+		modelRegistry: { getAll: () => MODELS },
+		isProjectTrusted: () => true,
+		ui: {
+			input: async () => undefined,
+			select: async () => ((asked = true), undefined),
+			confirm: async () => ((asked = true), true),
+			editor: async () => undefined,
+			notify: (m: string, l: string) => notices.push([l, m]),
+			setStatus: () => {},
+		},
+	};
+	h.commands.get("on:session_start")!({}, ctx);
+	checkTrue("a trusted project's agent reaches the tool description", h.tools.find((t) => t.name === "task")?.description.includes("- migrator: repo migrations"));
+	await h.commands.get("subagents").handler("list", ctx);
+	checkTrue("the table marks it as a project agent", notices.some(([, m]) => m.includes("migrator (project)")));
+	await h.commands.get("subagents").handler("remove migrator", ctx);
+	checkTrue("remove refuses it and says where it lives", notices.some(([, m]) => m.includes("project agent") && m.includes(join(PROJECT_DIR, "migrator.md"))));
+	checkTrue("without asking anything", !asked);
+	checkTrue("and the file is untouched", existsSync(join(PROJECT_DIR, "migrator.md")));
+
+	const untrusted = { ...ctx, isProjectTrusted: () => false };
+	h.commands.get("on:session_start")!({}, untrusted);
+	checkTrue("untrusted, the tool description leaves it out", !h.tools.find((t) => t.name === "task")?.description.includes("migrator"));
+
+	// The review's case: nothing saved, and pi calling the session trusted.
+	new ProjectTrustStore(AGENT).set(REPO, null);
+	h.commands.get("on:session_start")!({}, ctx);
+	checkTrue("with no saved decision the repo's agent stays out of the description", !h.tools.find((t) => t.name === "task")?.description.includes("migrator"));
+	let refused = "";
+	try {
+		await h.tools.find((t) => t.name === "task").execute("id", { subagent_type: "migrator", prompt: "go" }, AbortSignal.abort(), undefined, { ...ctx, model: { id: "gpt-5.6-luna", provider: "openai-codex" } });
+	} catch (e) {
+		refused = (e as Error).message;
+	}
+	checkTrue("and task will not run it by name", refused.includes('Unknown subagent "migrator"'));
+	rmSync(REPO, { recursive: true, force: true });
 }
 
 console.log("\n--- wiring: the panel shows what a spawn would use ---");
@@ -489,12 +764,9 @@ console.log("\n--- wiring: the panel shows what a spawn would use ---");
 	// A suffixed model with no per-agent pin and a blanket default: the
 	// Reasoning column must show the carried level, and the Model column the
 	// bare id — a suffix leaking into either would misreport the spawn.
-	rmStore();
+	rmAgents();
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
-	saveSubagents(AGENT, {
-		defaults: { reasoning: "medium" },
-		agents: [{ name: "veiled", purpose: "suffix carrier", model: "openai-codex/gpt-5.6-luna:high" }],
-	});
+	writeSubagent(userAgentPath(AGENT, "veiled"), { name: "veiled", purpose: "suffix carrier", model: "openai-codex/gpt-5.6-luna:high" });
 	const h = makePi();
 	extension(h.pi as never);
 	const notices: Array<[string, string]> = [];
@@ -502,22 +774,24 @@ console.log("\n--- wiring: the panel shows what a spawn would use ---");
 		hasUI: true,
 		cwd: ROOT,
 		modelRegistry: { getAll: () => MODELS },
+		isProjectTrusted: () => false,
 		ui: { notify: (m: string, l: string) => notices.push([l, m]), setStatus: () => {} },
 	};
 	await h.commands.get("subagents").handler("list", ctx);
 	const table = notices.find(([, m]) => m.includes("Subagent"))?.[1] ?? "";
 	checkTrue("the model cell is the bare id", table.includes("gpt-5.6-luna") && !table.includes(":high"));
-	checkTrue("the reasoning cell is the carried level, not the default", table.includes("High") && !table.includes("Medium"));
-	rmStore();
+	checkTrue("the reasoning cell is the carried level", table.includes("High"));
+	checkTrue("the table says where the files are", table.includes(USER_DIR));
+	rmAgents();
 }
 
 // ------------------------------------------------- drafting from a sentence
 
 console.log("\n--- parseDraft: the catalogue is the law ---");
 {
-	const { parseDraft, buildCatalog, profileRoles } = await import("./draft.ts");
-	const catalog = buildCatalog(AGENT, MODELS, ["reviewer"]);
-	const draft = (body: string) => parseDraft(body, catalog, MODELS, AGENT);
+	const { parseDraft, buildCatalog } = await import("./draft.ts");
+	const catalog = buildCatalog(MODELS, ["reviewer"]);
+	const draft = (body: string) => parseDraft(body, catalog, MODELS);
 	const json = (over: Record<string, unknown> = {}) =>
 		JSON.stringify({ name: "migrator", purpose: "Runs schema migrations", model: null, reasoning: null, tools: null, prompt: null, ...over });
 
@@ -541,6 +815,11 @@ console.log("\n--- parseDraft: the catalogue is the law ---");
 	{
 		const out = draft(json({ model: "gpt-5.6-sol" })) as any;
 		check("a model that resolves is kept", out.def.model, "gpt-5.6-sol");
+		// A person may write a full name pi does not list; a drafter that
+		// invents one has left the catalogue it was given.
+		const invented = draft(json({ model: "openai-codex/gpt-7-invented" })) as any;
+		check("a full name pi does not list is dropped from a draft", invented.def.model, undefined);
+		checkTrue("with a note", invented.notes.some((n: string) => n.includes("gpt-7-invented")));
 	}
 	{
 		const out = draft(json({ reasoning: "extreme" })) as any;
@@ -566,23 +845,28 @@ console.log("\n--- parseDraft: the catalogue is the law ---");
 		const out = draft(json({ prompt: "  Review only. Never edit.  " })) as any;
 		check("a role prompt is trimmed and kept", out.def.prompt, "Review only. Never edit.");
 	}
+}
 
-	// Roles come from the active profile and beat literal ids, so they resolve
-	// even though they are not model names.
-	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ models: { active: "p", providers: { p: { fast: "openai-codex/gpt-5.6-luna", frontier: "openai-codex/gpt-5.6-sol" } } } }));
-	check("profile roles are listed", profileRoles(AGENT), ["fast", "frontier"]);
-	{
-		const withRoles = buildCatalog(AGENT, MODELS, []);
-		checkTrue("the catalogue offers them", withRoles.roles.includes("frontier"));
-		const out = parseDraft(json({ model: "frontier" }), withRoles, MODELS, AGENT) as any;
-		check("and a role name survives validation", out.def.model, "frontier");
-	}
-	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
+console.log("\n--- draftSubagent: the session model drafts ---");
+{
+	// No model is configured for the draft, so it runs on the session model.
+	// A registry that refuses every model stops the draft before any network
+	// call, and still shows which model the draft asked to call.
+	const { buildCatalog, draftSubagent } = await import("./draft.ts");
+	const asked: string[] = [];
+	const registry = {
+		getAll: () => MODELS,
+		getApiKeyAndHeaders: async (model: any) => (asked.push(modelRef(model)), { ok: false as const, error: "not signed in" }),
+	};
+	const outcome = await draftSubagent({ model: MODELS[2], modelRegistry: registry }, "a read-only reviewer", buildCatalog(MODELS, []), 1000);
+	check("the draft asks for the session model", asked, ["anthropic/claude-opus-4-8"]);
+	check("and a model it cannot call fails the draft", outcome, { ok: false, error: "not signed in" });
+	check("with no session model there is nothing to draft with", await draftSubagent({ modelRegistry: registry }, "x", buildCatalog(MODELS, []), 1000), { ok: false, error: "no model available to draft with" });
 }
 
 console.log("\n--- wiring: /subagents add <description> ---");
 {
-	rmStore();
+	rmAgents();
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
 	const h = makePi();
 	extension(h.pi as never);
@@ -592,6 +876,7 @@ console.log("\n--- wiring: /subagents add <description> ---");
 	const ctx: any = {
 		hasUI: true,
 		cwd: ROOT,
+		isProjectTrusted: () => false,
 		// No model anywhere, so the draft fails at the first seam rather than
 		// reaching a real provider from a test.
 		model: undefined,
@@ -614,12 +899,12 @@ console.log("\n--- wiring: /subagents add <description> ---");
 	checkTrue("the draft is announced before the wait", notices.some(([, m]) => m.includes("Drafting")));
 	checkTrue("a failed draft says why", notices.some(([l, m]) => l === "warning" && m.includes("Could not draft")));
 	checkTrue("and does not silently fall into the wizard", !wizardRan);
-	check("nothing was stored", existsSync(storePath(AGENT)), false);
+	check("nothing was stored", existsSync(USER_DIR), false);
 
 	// No description is still the wizard.
 	await h.commands.get("subagents")!.handler("add", ctx);
 	checkTrue("a bare add runs the wizard", wizardRan);
-	rmStore();
+	rmAgents();
 }
 
 rmSync(ROOT, { recursive: true, force: true });

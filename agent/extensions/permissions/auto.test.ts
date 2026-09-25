@@ -460,9 +460,9 @@ eq("BUILTIN.auto.model is untouched", BUILTIN.auto.model, undefined);
 eq("BUILTIN.additionalDirectories is untouched", BUILTIN.additionalDirectories.length, 0);
 
 // ---------------------------------------------------------------------------
-console.log("model resolution — a role value may carry a :level the registry never sees");
+console.log("model resolution — a reference may carry a :level the registry never sees");
 
-// A role can end in pi's `--model` suffix (`anthropic/claude-opus-5:high`).
+// A reference can end in pi's `--model` suffix (`anthropic/claude-opus-5:high`).
 // The registry knows no such reference, so resolution retries without the
 // suffix — but only after the full string misses, because ids with colons are
 // real: OpenRouter ships `deepseek/deepseek-chat:free`. The level itself goes
@@ -503,6 +503,64 @@ console.log("model resolution — a role value may carry a :level the registry n
 	eq("only the last colon is the seam", splitThinking("openrouter/model:free:high").reference, "openrouter/model:free");
 	eq("no suffix passes through", splitThinking("openai-codex/gpt-5.4-mini").reference, "openai-codex/gpt-5.4-mini");
 	eq("a lone :level refuses to split", splitThinking(":high").reference, ":high");
+}
+
+// ---------------------------------------------------------------------------
+console.log("model resolution — a full name resolves even when pi's list does not have it");
+
+// `pi --model` accepts a `provider/id` that its list does not have, if the list
+// has that provider: pi's buildFallbackModel copies the provider's first listed
+// model and gives it the new id. permissions.auto.model does the same, so a
+// classifier model newer than this pi release still resolves. The first
+// anthropic model here is the only one with a `contextWindow`, so a custom model
+// built from the wrong base shows it. Only a clean miss falls back: an
+// ambiguous reference DID find models, and a name without a provider has no
+// base to copy.
+{
+	const models = [
+		{ provider: "anthropic", id: "claude-opus-5", name: "Claude Opus 5", contextWindow: 123_456 },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+		{ provider: "openrouter", id: "claude-haiku-4-5", name: "Claude Haiku 4.5 (OpenRouter)" },
+		// Two OpenRouter ids that start with a known provider's name make a full
+		// name that is ambiguous as a whole; MyProxy is spelled with capitals.
+		{ provider: "openrouter", id: "myproxy/x-max", name: "X Max" },
+		{ provider: "openrouter", id: "myproxy/x-mini", name: "X Mini" },
+		{ provider: "MyProxy", id: "old-model", name: "Old Model" },
+	];
+	const describe = (reference: string): string => {
+		const r = resolveModel(reference, models);
+		return r.ok ? `${r.model.provider}/${r.model.id} name=${r.model.name} window=${r.model.contextWindow ?? "-"}` : `ERR: ${r.error}`;
+	};
+	const cases: Array<[string, string, string]> = [
+		["a registered full name is the listed model", "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5 name=Claude Haiku 4.5 window=-"],
+		["an unregistered full name on a known provider is a custom model", "anthropic/claude-opus-9", "anthropic/claude-opus-9 name=claude-opus-9 window=123456"],
+		["a :level is split off the custom id and dropped", "anthropic/claude-opus-9:high", "anthropic/claude-opus-9 name=claude-opus-9 window=123456"],
+		["the provider matches in any case and keeps the list's spelling", "Anthropic/claude-opus-9", "anthropic/claude-opus-9 name=claude-opus-9 window=123456"],
+		["only the first / splits provider from id", "openrouter/deepseek/deepseek-chat", "openrouter/deepseek/deepseek-chat name=deepseek/deepseek-chat window=-"],
+		["an unknown provider is an error", "nope/x", 'ERR: permissions.auto.model "nope/x" matched no available model'],
+		["an unknown provider with a level names the reference as configured", "nope/x:high", 'ERR: permissions.auto.model "nope/x:high" matched no available model'],
+		["a provider with no id is an error", "anthropic/", 'ERR: permissions.auto.model "anthropic/" matched no available model'],
+		["an unregistered bare id with no provider is an error", "gpt-9", 'ERR: permissions.auto.model "gpt-9" matched no available model'],
+		[
+			"an ambiguous reference stays an error",
+			"claude-haiku-4-5",
+			'ERR: permissions.auto.model "claude-haiku-4-5" matches more than one model — qualify it as provider/id',
+		],
+		[
+			"an ambiguous full name with a known provider in front stays an error",
+			"myproxy/x",
+			'ERR: permissions.auto.model "myproxy/x" matches several models — use a more specific id',
+		],
+		// pi matches the id among the provider's own models before it makes one up.
+		["a partial name inside a known provider is that provider's listed model", "anthropic/haiku", "anthropic/claude-haiku-4-5 name=Claude Haiku 4.5 window=-"],
+		[
+			"a partial name two of the provider's models share is an error",
+			"anthropic/claude",
+			'ERR: permissions.auto.model "anthropic/claude" matches several models of that provider — use a more specific id',
+		],
+		["a provider the list spells with capitals still matches", "myproxy/new-model", "MyProxy/new-model name=new-model window=-"],
+	];
+	for (const [label, reference, want] of cases) eq(label, describe(reference), want);
 }
 
 // ---------------------------------------------------------------------------

@@ -53,14 +53,6 @@ export const CONFIG = {
 	 */
 	minFullBudgetTokens: 2_000,
 
-	/**
-	 * The role tried for the summariser. Same policy as recap: a distillation
-	 * is exactly the job role maps put on their cheapest model, and the
-	 * session model stands in when no role map defines it (selectModel in
-	 * model.ts).
-	 */
-	defaultModelRole: "cheap",
-
 	/** Share of the SUMMARISER model's window its transcript input may take. */
 	summaryTranscriptFraction: 0.5,
 

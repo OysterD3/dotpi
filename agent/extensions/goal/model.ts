@@ -12,11 +12,17 @@
  *   3. bare `id`                          exact, but rejected if ambiguous
  *   4. partial                            substring of id or name; prefer an alias
  *
- * A role may hand this a reference wearing a `:level` thinking suffix (see
- * splitThinking at the bottom). The whole ladder runs on the full reference
+ * A reference may end in a `:level` thinking suffix, pi's own `--model` syntax
+ * (see splitThinking at the bottom). The whole ladder runs on the full reference
  * first, and the suffix is split off only when that misses — the order pi's own
  * parseModelPattern uses, and the only defence for ids that genuinely contain a
  * colon.
+ *
+ * When both tries miss, a full `provider/id` name still resolves if pi's list
+ * has that provider: the result is a custom model that copies the provider's
+ * first listed model and takes the new id. That is pi's own buildFallbackModel,
+ * and it is why `goal.model` accepts a model the list does not have yet, the
+ * same way `pi --model` does.
  *
  * Ambiguity is an error rather than a silent pick: a judge running on a model you
  * did not choose is worse than being told the reference was ambiguous.
@@ -25,9 +31,6 @@
  * extension in this repo is independently installable, so a file may not import
  * across extension boundaries.
  */
-
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
@@ -120,46 +123,55 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
 		if (split) return split;
 	}
 
+	// Both tries missed cleanly, so no model in the list has this name. A full
+	// `provider/id` name still resolves when the list has that provider, the
+	// way `pi --model` accepts a model pi does not list yet. The id is the bare
+	// one when a level was split off, and that level is dropped here too.
+	const custom = fallbackModel(thinking ? bare : reference, models);
+	if (custom === "ambiguous") return { ok: false, error: `goal.model "${reference}" matches several models of that provider — use a more specific id` };
+	if (custom) return { ok: true, model: custom };
+
 	return { ok: false, error: `goal.model "${reference}" matched no available model` };
 }
 
 /**
- * Map a model reference through the active provider profile in settings.json.
+ * A custom model for a `provider/id` name that is not in the list: a copy of
+ * the first listed model of that provider, with the new id as its id and its
+ * name. This is pi's buildFallbackModel (dist/core/model-resolver.js), less its
+ * per-provider default model — the first listed model is the base here.
  *
- * A COPY. The `models` block is a data contract shared by string, not a module —
- * extensions here install independently and may not import across boundaries —
- * so this fifteen-line reader is duplicated into every extension that resolves a
- * model. See agent/extensions/provider/roles.ts for the original and the shape.
- *
- * Roles are checked before any matching, so a role always beats a model whose id
- * merely contains the same text. Every failure returns the reference unchanged:
- * no block, a malformed one, an unreadable file, or an undefined role all mean
- * "this was a literal model reference", which is what it meant before roles.
+ * The provider compares case-insensitively, and the result keeps the list's
+ * own spelling of it, because every field except id and name comes from the
+ * listed model. `undefined` when the name has no provider part, no id part, or
+ * a provider that no listed model has. Only the part before the FIRST `/` is
+ * the provider, so `openrouter/deepseek/deepseek-chat` keeps its id whole.
  */
-export function resolveRole(reference: string, agentDir: string): string {
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw.models as { active?: unknown; providers?: unknown } | undefined;
-		if (!block || typeof block !== "object") return reference;
-		const active = typeof block.active === "string" ? block.active : undefined;
-		const providers = block.providers as Record<string, Record<string, unknown>> | undefined;
-		if (!active || !providers || typeof providers !== "object") return reference;
-		const profile = providers[active];
-		if (!profile || typeof profile !== "object") return reference;
-		const mapped = profile[reference];
-		return typeof mapped === "string" && mapped.trim().length > 0 ? mapped.trim() : reference;
-	} catch {
-		return reference;
-	}
+function fallbackModel<M extends ModelLike>(reference: string, models: readonly M[]): M | "ambiguous" | undefined {
+	const trimmed = reference.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash === -1) return undefined;
+	const provider = trimmed.slice(0, slash).trim().toLowerCase();
+	const id = trimmed.slice(slash + 1).trim();
+	if (!provider || !id) return undefined;
+	const own = models.filter((m) => m.provider.toLowerCase() === provider);
+	if (own.length === 0) return undefined;
+	// pi matches the id among that provider's models before it makes one up
+	// (parseModelPattern, then buildFallbackModel), so "openai-codex/luna" is
+	// the listed luna model, not a new id "luna". An id that two of them
+	// contain is ambiguous, as it is anywhere else.
+	const listed = exactMatch(id, own) ?? partialMatch(id, own);
+	if (listed) return listed;
+	return { ...own[0], id, name: id };
 }
 
 /**
  * Split an optional trailing `:level` — pi's own `--model` syntax — off a model
- * reference, so a role can carry the thinking level its model should run at.
+ * reference, so a reference can name the thinking level its model runs at.
  *
- * A COPY, like resolveRole above; see agent/extensions/provider/roles.ts for the
- * original. Only pi's seven levels split, and resolveModel honours the
- * full-reference-first order the original's comment demands.
+ * A COPY: every extension here that resolves a model keeps its own, because
+ * each one installs on its own and may not import across extension boundaries.
+ * Only pi's seven levels split, and resolveModel keeps the full-reference-first
+ * order that pi's own parseModelPattern uses.
  */
 export function splitThinking(reference: string): { reference: string; thinking?: string } {
 	const colon = reference.lastIndexOf(":");

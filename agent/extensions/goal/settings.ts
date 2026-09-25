@@ -12,10 +12,11 @@
  * current file, so foreign keys survive).
  *
  * `goal.model` and `goal.autoCapture` are the settings with a trust dimension.
- * `model` names an already-registered pi model, so a project cannot register a
+ * `model` names a model on a provider pi already lists (the id itself may be one
+ * pi does not list, the way `--model` allows), so a project cannot register a
  * provider or supply a key through this block — at worst a hostile repo points
- * the evaluator at a model you already have. `autoCapture` turns on an
- * unattended judge call plus a stop-gate that can hold the agent to up to
+ * the evaluator at a model on a provider you already have. `autoCapture` turns
+ * on an unattended judge call plus a stop-gate that can hold the agent to up to
  * `maxIterations` extra turns per session — behaviour and spend a project
  * should not be able to switch on for a user who never opted in. Even so,
  * project settings are honoured only when the project is trusted, matching the

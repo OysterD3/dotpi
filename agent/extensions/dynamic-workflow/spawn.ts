@@ -195,7 +195,7 @@ export function buildArgs(request: SpawnRequest): string[] {
 	if (request.model) args.push("--model", scrubArg(request.model));
 	if (request.thinking) args.push("--thinking", scrubArg(request.thinking));
 	if (request.tools && request.tools.length > 0) args.push("--tools", scrubArg(request.tools.join(",")));
-	// The role prompt comes from subagents.json and the task prompt carries
+	// The role prompt comes from an agent file and the task prompt carries
 	// forked context and earlier results — both are arbitrary text from
 	// elsewhere, so both are scrubbed.
 	if (request.appendSystemPrompt) args.push("--append-system-prompt", scrubArg(request.appendSystemPrompt));

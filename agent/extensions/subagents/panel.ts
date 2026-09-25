@@ -35,7 +35,7 @@ function widthOf(rows: PanelRow[], key: keyof PanelRow, header: string): number 
  */
 export function tableLines(rows: PanelRow[], purposeCap = 60): string[] {
 	if (rows.length === 0) {
-		return ["No subagents configured. Add them under \"subagents\" in agent/settings.json."];
+		return ["No subagents defined. Add one with /subagents add, or write agent/agents/<name>.md. A one-time agent needs none."];
 	}
 
 	const clipped = rows.map((row) => ({

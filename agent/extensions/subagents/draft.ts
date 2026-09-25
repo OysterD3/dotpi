@@ -1,11 +1,11 @@
 /**
  * Drafting a subagent from one sentence.
  *
- * `/subagents add a read-only reviewer on the frontier model` reaches here: the
- * cheap-role model turns the description into a full SubagentDef and you get
- * one confirm instead of the wizard's seven dialogs. The wizard is still there
- * — `/subagents add` with no description runs it, and a draft you do not like
- * opens it pre-seeded rather than throwing the work away.
+ * `/subagents add a read-only reviewer` reaches here: the session model turns
+ * the description into a full SubagentDef and you get one confirm instead of
+ * the wizard's seven dialogs. The wizard is still there — `/subagents add`
+ * with no description runs it, and a draft you do not like opens it pre-seeded
+ * rather than throwing the work away.
  *
  * ## Why the draft is validated rather than trusted
  *
@@ -13,9 +13,8 @@
  * a thinking level that does not exist, or a tool a headless subagent cannot be
  * given. Every one of those produces a subagent that fails only when it is
  * first spawned, which may be days later. So the drafter is handed the actual
- * catalogue — the roles in the active profile, the models that resolve, the
- * seven thinking levels, the tools a spawn accepts — and everything that comes
- * back is checked against it again.
+ * catalogue — the models that resolve, the seven thinking levels, the tools a
+ * spawn accepts — and everything that comes back is checked against it again.
  *
  * The two halves fail differently on purpose. A name or purpose that is missing
  * is a draft that failed: there is nothing to save. An unusable model, level or
@@ -23,25 +22,15 @@
  * confirm, because a subagent with no model pinned is a working subagent and
  * refusing the whole draft over one bad field would be worse.
  *
- * ## Why a role name is preferred over a model id
- *
- * `fast` follows `/provider` to whatever the new profile calls fast; a literal
- * `openai-codex/gpt-5.6-luna` keeps billing the old provider after a switch.
- * The prompt says so, and the validator accepts either.
- *
  * parseDraft() is pure, so every rule above is testable without a model call.
  */
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { SPAWNABLE_TOOLS, type SubagentDef, THINKING_LEVELS } from "./config.ts";
-import { type ModelLike, modelRef, resolveRole, resolveSuffixedReference } from "./models.ts";
+import { NAME_PATTERN, SPAWNABLE_TOOLS, type SubagentDef, THINKING_LEVELS } from "./config.ts";
+import { type ModelLike, modelRef, resolveSuffixedReference } from "./models.ts";
 
 /** What the drafter may choose from, and what the validator checks against. */
 export interface Catalog {
-	/** Role names in the active profile — preferred over literal model ids. */
-	roles: string[];
 	/** `provider/id` for every model that actually resolves. */
 	models: string[];
 	tools: string[];
@@ -49,27 +38,8 @@ export interface Catalog {
 	takenNames: string[];
 }
 
-/** Role names defined by the active profile in settings.json, if any. */
-export function profileRoles(agentDir: string): string[] {
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw.models as { active?: unknown; providers?: unknown } | undefined;
-		const active = typeof block?.active === "string" ? block.active : undefined;
-		const providers = block?.providers as Record<string, Record<string, unknown>> | undefined;
-		const profile = active && providers ? providers[active] : undefined;
-		if (!profile || typeof profile !== "object") return [];
-		return Object.entries(profile)
-			.filter(([, value]) => typeof value === "string" && value.trim().length > 0)
-			.map(([role]) => role)
-			.sort();
-	} catch {
-		return [];
-	}
-}
-
-export function buildCatalog(agentDir: string, models: readonly ModelLike[], takenNames: string[]): Catalog {
+export function buildCatalog(models: readonly ModelLike[], takenNames: string[]): Catalog {
 	return {
-		roles: profileRoles(agentDir),
 		models: models.map(modelRef).sort(),
 		tools: [...SPAWNABLE_TOOLS],
 		levels: [...THINKING_LEVELS],
@@ -83,7 +53,7 @@ export const DRAFT_SYSTEM = [
 	"{",
 	'  "name": "kebab-case-name",',
 	'  "purpose": "one line, what it is for — the main agent reads this to decide when to delegate",',
-	'  "model": "a role name or a model id from the catalogue, or null to inherit",',
+	'  "model": "a model id from the catalogue, or null to inherit",',
 	'  "reasoning": "a thinking level from the catalogue, or null to inherit",',
 	'  "tools": ["subset of the catalogue tools"] or null for all tools,',
 	'  "prompt": "the role prompt: how this subagent should work, in the second person. null when the purpose says it all",',
@@ -91,7 +61,6 @@ export const DRAFT_SYSTEM = [
 	"}",
 	"",
 	"Rules:",
-	"- Prefer a ROLE name over a model id when one fits: a role follows the user's provider switches, a model id does not.",
 	"- Never name a model, level or tool that is not in the catalogue. Use null instead.",
 	"- A read-only agent gets read-only tools. An agent that must change code needs edit and write, and bash only if it has to run something.",
 	"- Reasoning: low for mechanical work, medium for ordinary implementation, high for review, design and debugging.",
@@ -104,7 +73,6 @@ export function draftRequest(description: string, catalog: Catalog): string {
 		`Description: ${description}`,
 		"",
 		"Catalogue:",
-		`  roles: ${catalog.roles.length > 0 ? catalog.roles.join(", ") : "(none defined)"}`,
 		`  models: ${catalog.models.join(", ")}`,
 		`  thinking levels: ${catalog.levels.join(", ")}`,
 		`  tools: ${catalog.tools.join(", ")}`,
@@ -123,14 +91,12 @@ function extractJson(text: string): string | undefined {
 	return start !== -1 && end > start ? body.slice(start, end + 1) : undefined;
 }
 
-const NAME = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-
 /**
  * Check a draft against the catalogue. Name and purpose are required; every
  * other field degrades to the inherited default with a note rather than
  * failing the whole draft.
  */
-export function parseDraft(raw: string, catalog: Catalog, models: readonly ModelLike[], agentDir: string): DraftOutcome {
+export function parseDraft(raw: string, catalog: Catalog, models: readonly ModelLike[]): DraftOutcome {
 	const json = extractJson(raw);
 	if (!json) return { ok: false, error: "the drafter did not return JSON" };
 	let parsed: Record<string, unknown>;
@@ -148,7 +114,7 @@ export function parseDraft(raw: string, catalog: Catalog, models: readonly Model
 
 	const name = str("name");
 	if (!name) return { ok: false, error: "the draft has no name" };
-	if (!NAME.test(name)) return { ok: false, error: `"${name}" is not a kebab-case name` };
+	if (!NAME_PATTERN.test(name)) return { ok: false, error: `"${name}" is not a kebab-case name` };
 	if (catalog.takenNames.includes(name)) return { ok: false, error: `a subagent named "${name}" already exists` };
 
 	const purpose = str("purpose");
@@ -156,9 +122,12 @@ export function parseDraft(raw: string, catalog: Catalog, models: readonly Model
 
 	let model = str("model");
 	if (model) {
-		const known = catalog.roles.includes(model) || resolveSuffixedReference(resolveRole(model, agentDir), models).ok;
-		if (!known) {
-			notes.push(`dropped model "${model}" — it is not a role or a model that resolves here`);
+		// The full-name fallback accepts any id under a known provider. That is
+		// right for a name a person wrote, and wrong for one a model made up: the
+		// drafter was handed the catalogue, so its answer has to be in it.
+		const resolved = resolveSuffixedReference(model, models);
+		if (!resolved.ok || !catalog.models.includes(modelRef(resolved.model))) {
+			notes.push(`dropped model "${model}" — it is not a model pi lists here`);
 			model = undefined;
 		}
 	}
@@ -203,21 +172,18 @@ export interface DraftCtx {
 }
 
 /**
- * Draft a definition with the cheap-role model — the same policy recap and
- * session-ref use, for the same reason: shaping one paragraph into JSON is the
- * job a role map puts on its cheapest model.
+ * Draft a definition with the session model. The draft has no model setting
+ * of its own, and a feature with no model configured uses the session model.
  */
 export async function draftSubagent(
 	ctx: DraftCtx,
 	description: string,
 	catalog: Catalog,
-	agentDir: string,
 	timeoutMs: number,
 	onSpend?: (spend: SpendReport) => void,
 ): Promise<DraftOutcome> {
 	const models = ctx.modelRegistry.getAll();
-	const resolved = resolveSuffixedReference(resolveRole("cheap", agentDir), models);
-	const model = resolved.ok ? resolved.model : ctx.model;
+	const model = ctx.model;
 	if (!model) return { ok: false, error: "no model available to draft with" };
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model as never);
@@ -244,14 +210,16 @@ export async function draftSubagent(
 			.filter((block): block is { type: "text"; text: string } => block.type === "text")
 			.map((block) => block.text)
 			.join("\n");
-		const outcome = parseDraft(text, catalog, models, agentDir);
-		// Resolving against the registry says the id EXISTS, not that you can
-		// call it. The catalogue cannot know that — auth is a separate async
-		// lookup — so the one model that was actually chosen is checked here.
-		// Without this the subagent saves cleanly and dies on its first spawn,
-		// which is exactly the delayed failure this file exists to prevent.
-		if (outcome.ok && outcome.def.model && !catalog.roles.includes(outcome.def.model)) {
-			const pick = resolveSuffixedReference(resolveRole(outcome.def.model, agentDir), models);
+		const outcome = parseDraft(text, catalog, models);
+		// Resolving against the registry says the id EXISTS (or, for a full
+		// name the registry does not list, that its provider does), not that
+		// you can call it. The catalogue cannot know that — auth is a separate
+		// async lookup — so the one model that was actually chosen is checked
+		// here. Without this the subagent saves cleanly and dies on its first
+		// spawn, which is exactly the delayed failure this file exists to
+		// prevent.
+		if (outcome.ok && outcome.def.model) {
+			const pick = resolveSuffixedReference(outcome.def.model, models);
 			if (pick.ok) {
 				const usable = await ctx.modelRegistry.getApiKeyAndHeaders(pick.model as never);
 				if (!usable.ok) {

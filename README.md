@@ -844,85 +844,6 @@ nor, in auto mode, anything a model was talked out of naming.
 | `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
-**`agent/extensions/provider/`** — adds `/provider`: switch every model this config uses, at once.
-
-Six extensions here resolve a model reference of their own — goal, permissions' auto
-classifier, recap, session-ref, subagents, ultracode — and pi has `defaultProvider`/`defaultModel` on top.
-Written out concretely, changing provider means finding seven fully-qualified `provider/id` strings
-across two files, and every one you miss goes on quietly billing the old provider.
-
-So a setting names a **role**, and roles are defined per provider:
-
-```jsonc
-// agent/settings.json
-"models": {
-  "active": "openai",
-  "providers": {
-    "openai":    { "session": "openai-codex/gpt-5.6-sol:max", "frontier": "openai-codex/gpt-5.6-sol", "fast": "openai-codex/gpt-5.6-terra", "cheap": "openai-codex/gpt-5.6-luna" },
-    "anthropic": { "session": "anthropic/claude-opus-5:high", "frontier": "anthropic/claude-opus-5",  "fast": "anthropic/claude-sonnet-5", "cheap": "anthropic/claude-haiku-4-5" },
-    "qoder":     { "session": "qoder/ultimate",               "frontier": "qoder/ultimate",           "fast": "qoder/auto",                "cheap": "qoder/lite" }
-  }
-},
-
-"goal":        { "model": "cheap" },
-"permissions": { "auto": { "model": "cheap" } }
-```
-
-`/provider anthropic` then moves all of it, including the live session model, and prints what each
-role became. `/provider` on its own shows where things stand. Role names are yours — `session` is
-the only reserved one, and it is what `/provider` writes into pi's `defaultProvider`/`defaultModel`
-and pushes into the running session with `setModel`. Those two keys can't be roles themselves: pi
-resolves them before any extension runs.
-
-**A reference may end in `:level`** — pi's own `--model` syntax, one of `off` `minimal` `low`
-`medium` `high` `xhigh` `max` — to pin the thinking level that model runs at. The level rides with
-the model, not the profile, because levels are not portable: `max` is right for one session model
-and a waste or an unsupported request on another, and a mixed profile holds both at once. On
-switch, the `session` role's level is applied live (`setModel` first — pi clamps the level to what
-the model supports, and the applied level is read back and reported when it differs) and persisted
-as `defaultThinkingLevel` next to the split-off `defaultModel`; a profile that states no level
-leaves your current level alone. Splitting is registry-aware in the other direction too: the full
-reference is matched first and the split is committed only when the registry confirms the bare
-reference, so an id that genuinely ends in a level-shaped token — OpenRouter ships
-`deepseek/deepseek-chat:free`-style ids — is never mangled, and a reference the registry cannot
-confirm at all is persisted exactly as configured, level untouched. The role consumers resolve
-suffixed values the same way (`splitThinking` is copied and drift-locked alongside `resolveRole`);
-recap, goal, permissions, session-ref, and ultracode strip the level because their thinking is task-pinned,
-while subagents honor it — explicit pin beats the carried level beats the fallback.
-Changing the level live has one audible side effect: ultracode exits its mode when the level moves
-under it, and says so itself.
-
-**`session` and `frontier` are worth keeping apart even when they name the same model**, which they
-do above. They answer different questions — what you talk to, versus the best thing available — and
-the day you put the session on something faster, anything pointed at `session` follows it down.
-The `code-reviewer` subagent in `agent/subagents.json` is the case that makes this concrete: it is
-pinned to `frontier` so a review runs on the best thing available, and pointing that at `session`
-quietly defeats it.
-
-**The map is a data contract, not a module.** Every extension here installs independently and may
-not import across boundaries, so each carries its own fifteen-line reader — the same arrangement as
-the `usage:spend` channel. Consequences worth knowing: this extension is optional (roles work
-without it; you just edit `models.active` by hand), and `provider.test.ts` asserts the seven copies
-have not drifted from the original, so a fix in one is not silently missing from the others.
-
-Every failure returns the reference untouched — no block, a malformed one, an unreadable
-settings.json, a role nobody defined. So the feature can be absent, broken, or half-configured and
-model resolution behaves exactly as it did before roles existed. A concrete `provider/id` still
-works everywhere, for the settings you want pinned regardless of provider.
-
-Two things the switch report says out loud, because both are how you would otherwise find out from
-a bill: a role the new profile does **not** define stops being a role and starts being read as a
-literal model reference, and a `session` role whose provider has no API key leaves the live model
-where it was. `setModel` returns false in that case, so that is reported rather than guessed.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | The `/provider` command |
-| `roles.ts` | Reading the block; **`resolveRole` and `splitThinking` are the copied part** |
-| `settings.ts` | Rewriting settings.json — atomically, preserving every key it does not own |
-| `config.ts` | The contract and the reserved `session` role |
-| `provider.test.ts` | Fallbacks, the switch plan, the writer, and copy drift |
-
 **`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
 directory into the session's workspace:
 
@@ -1185,14 +1106,13 @@ by opening the single file that is supposed to describe this agent. So the conse
 rather than avoided: a toggle is a diff, and a clone inherits these modes. A leftover
 `~/.config/pi/skill-loading.json` is no longer read and can be deleted.
 
-Living in the shared file costs the writer three invariants it did not need before, all copied from
-`/provider`, the other thing here that writes `settings.json`: the whole parsed object is written
-back so **every unknown key survives**, the swap is a **temp file and a rename** so a torn write
-cannot truncate the one file that holds everything, and the read happens **immediately before** the
-write so a change pi made in between is carried forward. One is new: an **unparseable settings.json
-refuses the save** and the picker says why. The old store treated a malformed file as "no
-preferences" and wrote a fresh one over it — right for a file holding nothing else, destructive for
-this one.
+Living in the shared file costs the writer three invariants it did not need before: the whole parsed
+object is written back so **every unknown key survives**, the swap is a **temp file and a rename**
+so a torn write cannot truncate the one file that holds everything, and the read happens
+**immediately before** the write so a change pi made in between is carried forward. One is new: an
+**unparseable settings.json refuses the save** and the picker says why. The old store treated a
+malformed file as "no preferences" and wrote a fresh one over it — right for a file holding nothing
+else, destructive for this one.
 
 Exact names beat globs, longer globs beat shorter ones, and the picker always writes an exact name
 so a later glob edit cannot silently move a skill you pinned.
@@ -1270,7 +1190,7 @@ pick:
 ```jsonc
 {
   "recap": {
-    "model": "<small-fast-model>", // optional; default: the `cheap` role if defined, else the active model
+    "model": "<provider>/<small-fast-model>", // optional; unset = the session model
     "autoOnReturn": true,           // optional; on by default — see below
     "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
     "minUserTurns": 3               // optional
@@ -1284,8 +1204,8 @@ the end of the trace while you are away, so it is on screen when you get back.
 - `/recap` is always available and does exactly what it says.
 - Auto-on-return is a timer, armed when the agent settles and fired once the absence has lasted
   `idleThresholdMs`. It is **on by default**: a recap that must be configured first is a recap that
-  never gets seen (this one ran for weeks without producing an entry). The cost is one cheap-model
-  call per absence; opt out with `recap.autoOnReturn: false`.
+  never gets seen (this one ran for weeks without producing an entry). The cost is one model call
+  per absence; opt out with `recap.autoOnReturn: false`.
 
 It used to be generated on the way *in* — held in front of your next message so it landed above it.
 That put the summary of an absence behind the act of ending it: it did not exist until you had
@@ -1331,13 +1251,12 @@ check ##[dark mode work·0a3f1c2b]           # two hashes ask for the full trans
 
 On submit the marker becomes the session's name in quotes and the session arrives ahead of your
 prompt, so the sentence you wrote still reads as one. **Summary** is a structured handoff (goal,
-done, decisions, state, open items) written by the cheap-role model — the same zero-config policy
-as recap: the `cheap` role when the role map defines it, the session model otherwise. **Full** is
-the flattened transcript (messages and tool-call lines; tool results are not replayed), and it is
-always behind a confirm that states the price in tokens against the context you actually have
-LEFT, not the window on paper — the injection becomes part of this session's context and re-costs
-on every future turn. When it cannot fit, the oldest messages drop first and the drop is said out
-loud.
+done, decisions, state, open items) written by the session model; there is no setting for it.
+**Full** is the flattened transcript (messages and tool-call lines; tool results are not replayed),
+and it is always behind a confirm that states the price in tokens against the context you actually
+have LEFT, not the window on paper — the injection becomes part of this session's context and
+re-costs on every future turn. When it cannot fit, the oldest messages drop first and the drop is
+said out loud.
 
 The two modes are deliberately asymmetric: a summary is a bounded model call, so `#` never asks
 anything; a full transcript re-costs forever, so `##` always does.
@@ -1360,7 +1279,7 @@ to nothing is left in the prompt exactly as typed rather than silently going mis
 | `sessions.ts` | Picker rules (pure) and loading the chosen branch |
 | `transcript.ts` | Branch → budgeted plain text (recap's flattening, adapted) |
 | `summarize.ts` | The handoff-summary call |
-| `model.ts` | Cheap-role model policy (recap's, copied) |
+| `model.ts` | Choosing the summariser model (recap's, copied) |
 | `prompts.ts` | Summariser prompt + the injected block |
 | `config.ts` | Budgets and thresholds |
 | `session-ref.test.ts` | Picker rules, branch loading, budgets, marker and trigger rules, and `#`-to-submit end-to-end |
@@ -1776,8 +1695,9 @@ seeds that agent's session with recent turns of the conversation, whole files, o
 background, instead of the script pasting everything into a prompt string. It is built with pi's
 own `SessionManager` as a user message plus a one-line assistant acknowledgement — both are
 required, since providers reject consecutive user messages and pi only flushes a session to disk
-once it holds an assistant turn. `agentType` borrows a standing definition from `subagents.json`
-(its tools, role prompt, model and reasoning level), and `tools` pins an allowlist directly.
+once it holds an assistant turn. `agentType` borrows a standing definition from the subagent files
+(`agent/agents/<name>.md`, plus a trusted project's `.pi/agents/`: its tools, role prompt, model and
+reasoning level), and `tools` pins an allowlist directly.
 
 **Agents can share a session.** By default every agent is a fresh pi run that forgets everything on
 exit, so a three-stage pipeline derives the same understanding three times — which is most of why
@@ -1969,22 +1889,24 @@ ultracode audit this with haiku
 The agent gives each subagent a model *reference* drawn from what you asked for, and every
 reference is resolved with pi's own `--model` rules (partial names fine, aliases preferred over
 dated ids, ambiguity is a loud error) before anything spawns — so a typo fails that one agent with
-the reason in the run log, never silently on the wrong model. When a triggering request names
+the reason in the run log, never silently on the wrong model. The one exception is the id part of a
+full `provider/id` under a provider pi knows: like `pi --model`, it is taken as a model pi does not
+list yet, so a typo there fails when the provider refuses the id. When a triggering request names
 models, a reminder rides that turn so the instruction lands on the workflow rather than being read
-as conversation; roles you did not mention use the default subagent model, and a routing
+as conversation; agents your request does not route use the default subagent model, and a routing
 instruction holds for later workflows until you change it.
 
 **What an agent inherits, most specific first:** `agent(…, { model })` → the agentType's own model →
-`subagents.json`'s `defaults.model` → the run default (`dynamicWorkflow.model`, else the **session's**
-model). The same chain applies to the reasoning level.
+the run default (`dynamicWorkflow.model`, else the **session's** model). The reasoning level follows
+the same chain and ends at `dynamicWorkflow.thinking`.
 
-The `defaults` link was missing until it was measured. `agents.ts` has always parsed
-`subagents.json`'s `{ defaults: { model, reasoning } }` and `tool.ts` only ever read `types`, so a
-configured default was silently ignored and every unpinned agent fell straight through to whichever
-model you happened to be talking to. The reasoning half was worse: with no `--thinking` passed, the
-child pi reads its *own* `defaultThinkingLevel` from `settings.json` — so a session set to `max` ran
-every subagent at max reasoning, which is a third to two thirds of output tokens in the measured
-runs, and no amount of configuring `subagents.json` changed it.
+The run default was missing until it was measured. A `defaults` block was parsed and then never
+read, so every unpinned agent fell straight through to whichever model you happened to be talking
+to. The reasoning half was worse: with no `--thinking` passed, the child pi reads its *own*
+`defaultThinkingLevel` from `settings.json` — so a session set to `max` ran every subagent at max
+reasoning, which is a third to two thirds of output tokens in the measured runs. That block lived in
+`subagents.json`; since the subagent definitions moved to Markdown files, the run-wide default is
+this extension's own setting, which is where a default for every agent in a run belongs.
 
 **A word is only a model name if it resolves to one.** The vocabulary that reminder is built from
 comes from splitting registry ids into segments — which quietly turned a provider called
@@ -2012,7 +1934,8 @@ of letting a fleet spawn and die one agent at a time.
   "dynamicWorkflow": {
     "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
     "alwaysOn": false,        // optional; start every session in the mode
-    "model": "fast"           // optional default for agents no request routes; a role or a reference
+    "model": "openai-codex/gpt-6-sol", // optional default for agents no request routes; unset, the session model
+    "thinking": "high"        // optional level for agents nothing else gives one; unset, the child pi's own
   }
 }
 ```
@@ -2064,7 +1987,7 @@ the model to always await.
 | `store.ts` | The on-disk run store: run.json, journal, script, agent sessions |
 | `journal.ts` | Journal records and the content-keyed replay index (pure) |
 | `context.ts` | What an agent is forked — rendering (pure) and session seeding |
-| `agents.ts` | `agentType` resolved against `subagents.json` (pure) |
+| `agents.ts` | `agentType` resolved against the subagent files (`agents/*.md`) |
 | `tui.ts` | **The `/workflows` control panel** — runs, agents, pause/cancel/export |
 | `spawn.ts` | One subagent as a headless pi subprocess, with its own session |
 | `runs.ts` | The in-process run registry — status, pause gate, cancellation |
@@ -2547,82 +2470,102 @@ bridge sends `stop`.
 | `cmux-notify.test.ts` | Unit and wiring coverage |
 
 **`agent/extensions/subagents/`** — configurable subagents. You define a set of named subagents,
-each pinned to a model, a reasoning (thinking) level, a purpose, and optionally a tool allowlist and
-a role prompt; the main agent delegates a scoped task to one by name through the `task` tool, and it
-runs in its own context and reports back.
+one Markdown file each, pinned to a model, a reasoning (thinking) level, a purpose, and optionally a
+tool allowlist and a role prompt; the main agent delegates a scoped task to one by name through the
+`task` tool, and it runs in its own context and reports back. Leave the name out and `task` runs a
+**one-time agent** instead, on the model, reasoning level and tools the call itself names.
 
 `/subagents` shows the table:
 
 ```
-Subagent           Model         Reasoning  Purpose
-───────────────────────────────────────────────────
-code-explorer      gpt-5.6-terra  High      Read-only codebase discovery and investigation
-quick-implementer  gpt-5.6-terra  High      Small, well-defined changes in one or two files
-implementer        gpt-5.6-terra  High      Features and bug fixes with tests and validation
-code-reviewer      gpt-5.6-sol    Low       Review diffs for correctness, security, and quality
-commit-pusher      gpt-5.6-luna   Low       Stage, commit, and push completed changes
+Subagent           Model        Reasoning  Purpose
+──────────────────────────────────────────────────
+code-explorer      gpt-6-sol    High       Read-only codebase discovery and investigation
+code-reviewer      gpt-6-astra  Low        Review diffs for correctness, security, and quality
+commit-pusher      gpt-6-luna   Low        Stage, commit, and push completed changes
+implementer        gpt-6-sol    High       Features and bug fixes with tests and validation
+quick-implementer  gpt-6-sol    High       Small, well-defined changes in one or two files
 ```
 
-Every subagent names a **role** rather than a model (see the `provider` extension): `fast` for the
-three that do the engineering, `frontier` for the reviewer, `cheap` for the one that only runs git.
-Each says its own role even where `defaults` would supply the same one — a subagent's tier is part
-of what it is, and reading it off the agent beats inferring it from a default three entries up. `code-reviewer` names `frontier` and not `session` deliberately — reviewing diffs wants the
-best model available, so tying it to whatever you happen to be chatting with would quietly downgrade
-it the moment you moved the session to something quicker.
+Every subagent names its model directly, as a full `provider/id`: `openai-codex/gpt-6-sol` for the
+three that do the engineering, `openai-codex/gpt-6-astra` for the reviewer, `openai-codex/gpt-6-luna`
+for the one that only runs git. Each file says its own model — a subagent's tier is part of what it
+is, and reading it off the agent beats inferring it from somewhere else. `code-reviewer` deliberately
+pins the strongest model rather than leaving the line out — reviewing diffs wants the best model
+available, so tying it to whatever you happen to be chatting with would quietly downgrade it the
+moment you moved the session to something quicker.
 
 Each subagent runs as a headless `pi` subprocess with its `--model`, `--thinking` (the reasoning
 level), and `--tools` (the allowlist), plus its role prompt via `--append-system-prompt` — the same
 spawn mechanism the ultracode workflow uses, here driven by standing definitions instead of a script.
-A subagent that pins no model inherits the session model; `defaults` supplies a shared
-model/reasoning for the ones that omit them. The `task` tool is offered only when at least one
-subagent is configured (active-tool sync), so an empty config adds nothing to the
-prompt, and its description lists the available subagents so the model knows what it can delegate to.
+A subagent that pins no model inherits the session model. The `task` tool is always offered, since a
+one-time agent needs no file, and its description lists the named subagents and the fields a one-time
+agent takes, so the model knows what it can delegate to and decides for itself when a job is
+worth handing off.
+
+**One file per agent**, the same shape pi's own example subagent extension and Claude Code read, so
+a file moves between them:
+
+```markdown
+---
+name: code-reviewer
+description: Review diffs for correctness, security, and quality
+model: openai-codex/gpt-6-astra  # optional: a model reference; absent means the session model
+reasoning: low                   # optional: a pi thinking level
+tools: read, grep, find, ls, bash  # optional: absent means pi's default tools
+---
+
+Optional role prompt. The body becomes the subagent's system-prompt preamble.
+```
+
+Yours live in `agent/agents/`. A repository can add its own in `.pi/agents/`, found from the working
+directory upwards, and those replace a user agent of the same name — but **only in a trusted
+project**, and trusted here means a decision you saved. An agent file is a prompt the repository
+wrote, run by a subagent with `bash`. pi's own trust flag is not enough to go on: it calls a session
+trusted without asking when `.pi/` holds only `agents/` (pi does not gate that folder), and it looks
+at the working directory only, while the agents folder is found by walking up. So the folder that
+holds `.pi/agents` needs a saved "trust" in pi's trust store, for it or a parent folder — run
+`/trust` there — and a session started with `--no-approve` still keeps them out. Anything else is
+skipped, and `/subagents` says which folder to trust. A bad file is skipped with a reason under
+`/subagents`, never fatal; a `tools` line that names nothing skips the agent rather than being
+ignored, because an ignored allowlist is pi's default tools, `bash`, `edit` and `write` among them.
+
+**A one-time agent is the call's own.** `task` without `subagent_type` takes an optional `model` (a
+model reference such as `provider/id`), `reasoning`, and `tools`; unset, it runs on the session model
+with pi's default tools (`read`, `bash`, `edit`, `write`, unless `defaultTools` in settings says
+otherwise). A tool a headless subagent cannot run (`workflow`, `web_search`) is
+refused rather than dropped, for the same reason as above. Those three fields are refused on a
+*named* agent: its file is the promise, and a read-only reviewer must not come back able to edit
+because the caller asked.
 
 **Describe one, don't fill in seven dialogs.** `/subagents add a read-only reviewer on the frontier
-model that only greps and reads` hands the sentence to the cheap-role model, which drafts the whole
+model that only greps and reads` hands the sentence to the session model, which drafts the whole
 definition — name, purpose, model, reasoning, tools, role prompt — and you get one confirm. The
-drafter is given the actual catalogue (the roles in your active profile, the models that resolve,
-the seven thinking levels, the tools a headless spawn accepts) and its answer is checked against
-that catalogue again, because a model asked for JSON will invent a model id that is not signed in.
-Name and purpose are required — without them there is no draft; an unusable model, level or tool is
-dropped to the inherited default and said out loud in the confirm, since a subagent with nothing
-pinned still works. It prefers a **role** over a model id: `fast` follows `/provider` to whatever the
-next profile calls fast, a literal id keeps billing the old one. Decline the confirm and the wizard
-opens pre-filled rather than throwing the draft away.
+drafter is given the actual catalogue (the models that resolve, the seven thinking levels, the tools
+a headless spawn accepts) and its answer is checked against that catalogue again, because a model
+asked for JSON will invent a model id that is not signed in. Name and purpose are required — without
+them there is no draft; an unusable model, level or tool is dropped to the inherited default and
+said out loud in the confirm, since a subagent with nothing pinned still works. Decline the confirm
+and the wizard opens pre-filled rather than throwing the draft away.
 
 **The wizard is still there.** `/subagents add` with no description, plus `edit` and `remove`, walk
 through pi's dialogs — name, model (picked from your registry), reasoning, purpose, tools (all /
-read-only / custom), and an optional role prompt. Both paths write `agent/subagents.json`. That file is the source of truth and takes
-precedence over a `subagents` block in `settings.json`, which is kept only as a read fallback for
-manual or legacy config; the first interactive edit migrates such a block into the store. A bad entry
-is dropped with a reason (shown under `/subagents`), never fatal. The store ships seeded with the set
-below — edit or clear it with `/subagents`:
-
-```jsonc
-// agent/subagents.json — managed by /subagents (pretty-printed, git-friendly)
-{
-  "defaults": { "model": "gpt-5.6-luna", "reasoning": "high" },
-  "agents": [
-    { "name": "code-explorer", "reasoning": "high", "tools": ["read", "grep", "find", "ls"],
-      "purpose": "Read-only codebase discovery and investigation" },
-    { "name": "code-reviewer", "model": "gpt-5.6-sol", "reasoning": "low", "tools": ["read", "grep", "find", "ls", "bash"],
-      "purpose": "Review diffs for correctness, security, and quality" }
-    // …
-  ]
-}
-```
+read-only / custom), and an optional role prompt. Both paths write `agent/agents/<name>.md`, so the
+name has to be kebab-case to be a file name. They touch your agents only: a project agent is edited in
+its repository, and `/subagents edit` says where the file is instead. The five above ship as files in
+`agent/agents/`.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Load, tool registration, active-tool sync, `/subagents add\|edit\|remove`, status chip |
+| `index.ts` | Load on session start (cwd + trust), tool registration, `/subagents add\|edit\|remove` |
 | `draft.ts` | One sentence → a validated definition: the catalogue, the prompt, and the check (pure parse) |
 | `manage.ts` | The interactive wizard over pi's dialogs (pure of pi imports; scriptable in tests) |
-| `tool.ts` | The `task` dispatch tool: validate, resolve the pinned model, spawn, return the report + usage |
-| `registry.ts` | Parse/validate the definitions, the file-first store (`subagents.json`), and its save (pure) |
+| `tool.ts` | The `task` dispatch tool: a named or one-time agent, resolve the model, spawn, return the report + usage |
+| `registry.ts` | Find the agent files (user, trusted project), parse/validate and write them (parse and write pure) |
 | `panel.ts` | The Subagent / Model / Reasoning / Purpose table (pure) |
 | `models.ts` | Model reference resolution (pure) |
 | `spawn.ts` | The headless `pi` subagent subprocess (model, reasoning, tools, role prompt) |
-| `subagents.test.ts` | Unit and wiring coverage (`subagents.live.ts` spawns a real subagent) |
+| `subagents.test.ts` | Unit and wiring coverage (`subagents.live.ts` spawns a real named and one-time subagent) |
 
 **`agent/extensions/tool-batching/`** — six lines of prompt, because turns are what a task costs.
 
@@ -3180,6 +3123,26 @@ things — extensions, themes, the permissions policy template, subagents — tr
 
 ## Customising
 
+- **Models** — the session model is pi's own `defaultProvider` / `defaultModel` /
+  `defaultThinkingLevel` in `agent/settings.json` (or whatever `/model` picked since). A feature
+  that makes model calls of its own takes a model reference in the same file — `goal.model`,
+  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model` — and a subagent takes one on the
+  `model:` line of `agent/agents/<name>.md`. Unset, the feature uses the session model;
+  session-ref's summary and the `/subagents add` drafter always do. Write the full `provider/id`. A
+  bare id or a distinctive part of one also works, by pi's `--model` rules (exact before partial, an
+  undated alias before a dated id), and an ambiguous reference is an error, never a silent pick.
+  **A full `provider/id` works even when pi's model list does not have the id**, the same way
+  `pi --model` does: when pi knows the provider, the id is first matched among that provider's listed
+  models (so `openai-codex/luna` is the listed luna model), and only when none matches does the
+  feature take a model pi lists for that provider, keep its connection settings, and put your id in
+  its place — so a model released after this pi version works on the day it ships. The cost is the
+  same as on the command line: a typo in that id is not caught before the call, and the provider
+  refuses it then. An unknown provider, or a bare id pi does not list, stays an error. A reference may end in `:level` (`off` `minimal` `low` `medium` `high` `xhigh` `max`), pi's
+  `--model` syntax. The full reference is matched first and the level is split off only when that
+  finds nothing, so an id with a real colon in it — OpenRouter ships
+  `deepseek/deepseek-chat:free`-style ids — is never cut. Subagents run at the carried level unless
+  a `reasoning` value (the agent file's, or a one-time call's) pins one; goal, permissions, recap,
+  and dynamic-workflow set their own thinking and drop the level.
 - **Theme** — drop a JSON file in `agent/themes/`, then set `"theme"` in `agent/settings.json` to
   its `name`. Copy `one-dark-pro.json` as a starting point. A theme is two layers: `vars` is the raw
   palette (`blue: "#61afef"`, …) and `colors` maps semantic roles (`accent`, `error`, `success`,

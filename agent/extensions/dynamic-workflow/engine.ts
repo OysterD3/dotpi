@@ -82,7 +82,7 @@ export interface AgentOptions {
 	model?: string;
 	thinking?: string;
 	schema?: Record<string, unknown>;
-	/** A name from subagents.json: supplies tools, role prompt, model. */
+	/** A defined subagent's name (agents/<name>.md): supplies tools, role prompt, model. */
 	agentType?: string;
 	/** Explicit tool allowlist, overriding the agentType's. */
 	tools?: string[];

@@ -3,7 +3,7 @@
  *
  * Type `#` while writing and the sessions of this project drop into the
  * editor's own autocomplete; pick one and a marker lands where the cursor was.
- * `#` brings the session in as a summary written by the cheap-role model,
+ * `#` brings the session in as a summary written by the session model,
  * `##` as its full transcript. There is no command to run first, because
  * remembering another session is something you realise mid-sentence.
  *
@@ -24,12 +24,12 @@
  *   sessions.ts      picker rows and loading the chosen branch (pure rules)
  *   transcript.ts    branch -> budgeted plain text (recap's flattening, adapted)
  *   summarize.ts     the handoff-summary call
- *   model.ts         cheap-role model policy (recap's, copied)
+ *   model.ts         model policy (recap's, copied)
  *   prompts.ts       summariser prompt + the injected block
  *   config.ts        budgets and thresholds
  */
 
-import { getAgentDir, SessionManager, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { withRefCompletions } from "./autocomplete.ts";
 import { CONFIG, MESSAGE_TYPE } from "./config.ts";
@@ -88,7 +88,6 @@ async function injectReference(
 	row: SessionRow,
 	mode: RefMode,
 	name: string,
-	agentDir: string,
 	load: (path: string) => TranscriptEntry[],
 ): Promise<boolean> {
 	let entries: TranscriptEntry[];
@@ -162,7 +161,7 @@ async function injectReference(
 		// A model call the user did not explicitly start, on the far side of
 		// pressing enter: say so, or submitting looks like it hung.
 		ctx.ui.notify(`Summarising "${name}"…`, "info");
-		const summary = await summarize(ctx, entries, agentDir, ctx.signal, (spend) =>
+		const summary = await summarize(ctx, entries, ctx.signal, (spend) =>
 			pi.events.emit(SPEND_CHANNEL, { source: "session-ref", usage: spend, calls: 1 }),
 		);
 		if (!summary.ok) {
@@ -191,7 +190,6 @@ async function injectReference(
 }
 
 export function registerSessionRef(pi: ExtensionAPI, listers: Listers): void {
-	const agentDir = getAgentDir();
 	const load = listers.load ?? ((path: string) => loadBranchEntries(path) as unknown as TranscriptEntry[]);
 	let installed = false;
 
@@ -267,7 +265,7 @@ export function registerSessionRef(pi: ExtensionAPI, listers: Listers): void {
 			if (done.has(marker.text)) continue;
 			const row = resolved.get(marker.text);
 			if (!row) continue;
-			if (await injectReference(pi, ctx, row, marker.mode, marker.name, agentDir, load)) done.add(marker.text);
+			if (await injectReference(pi, ctx, row, marker.mode, marker.name, load)) done.add(marker.text);
 		}
 		if (done.size === 0) return { action: "continue" };
 

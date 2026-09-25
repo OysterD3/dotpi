@@ -77,6 +77,8 @@
  *                                   included. See the setting in config.ts.
  *   dynamicWorkflow.model           "provider/model-id" for workflow subagents;
  *                                   defaults to the session model
+ *   dynamicWorkflow.thinking        thinking level for workflow subagents that
+ *                                   name none; defaults to the child pi's own
  *   The pre-rename `ultracode.*` block is still read, per field, as a fallback.
  */
 import { readFileSync } from "node:fs";
@@ -170,6 +172,7 @@ export function loadSettings(agentDir: string): UltracodeSettings {
 			keywordTrigger: read<boolean>("keywordTrigger", (v) => typeof v === "boolean") ?? DEFAULT_SETTINGS.keywordTrigger,
 			alwaysOn: read<boolean>("alwaysOn", (v) => typeof v === "boolean") ?? DEFAULT_SETTINGS.alwaysOn,
 			model: read<string>("model", (v) => typeof v === "string"),
+			thinking: read<string>("thinking", (v) => typeof v === "string"),
 		};
 	} catch {
 		return { ...DEFAULT_SETTINGS };

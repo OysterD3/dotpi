@@ -20,15 +20,6 @@ export const CONFIG = {
 	charsPerToken: 4,
 
 	/**
-	 * The role tried when no `recap.model` is configured. A recap is exactly the
-	 * job role maps put on their cheapest model, so the default reaches for the
-	 * role rather than making everyone write one line of settings. When no role
-	 * map defines it, the session model stands in (selectModel in model.ts) — a
-	 * setup without roles configured nothing and must break nothing.
-	 */
-	defaultModelRole: "cheap",
-
-	/**
 	 * Manual `/recap` request timeout. 30s matches what the goal evaluator uses;
 	 * a summary slower than that is not worth waiting on.
 	 */
@@ -66,7 +57,7 @@ export const CONFIG = {
 	 *
 	 * On, because a recap you have to configure first is a recap you never see —
 	 * this ran for weeks without producing a single entry before that lesson
-	 * landed. The cost of being on is a cheap-model call and a few seconds in
+	 * landed. The cost of being on is one model call and a few seconds in
 	 * front of your own message, and only after a genuine 5-minute absence with
 	 * the other gates passed; the wait is bounded by autoTimeoutMs and any
 	 * failure lets the message through untouched. Opt out with

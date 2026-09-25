@@ -48,7 +48,7 @@ Every script must begin with \`export const meta = {...}\` — a PURE object lit
 Script body hooks (plain JavaScript, NOT TypeScript; the body runs in an async context — use await and top-level return):
 - agent(prompt, opts?): Promise<any> — spawn a subagent; returns its final text. On failure agent() returns null (filter with .filter(Boolean)). opts:
   - label, phase — how the agent appears in progress output. Neither affects the result, so relabelling never invalidates a resume.
-  - model — a REFERENCE resolved like pi's --model: "provider/id", a bare id, or a distinctive partial name ("sonnet", "fable", "haiku"). An ambiguous or unknown reference fails that agent with a clear error, so prefer distinctive names.
+  - model — a REFERENCE resolved like pi's --model: "provider/id", a bare id, or a distinctive partial name ("sonnet", "fable", "haiku"). An ambiguous or unknown reference fails that agent with a clear error, so prefer distinctive names. A full "provider/id" works even when pi does not list that id, if pi knows the provider (as with pi --model).
   - thinking — "low" | "medium" | "high" | "xhigh" | "max".
   - schema — a JSON Schema object. The subagent is told to reply with ONLY matching JSON and agent() returns the parsed value, retrying once on unusable output.
   - agentType — the name of a standing subagent (see Agent types below). It supplies the tools, role prompt, model and thinking level; anything you also pass explicitly wins.
@@ -78,7 +78,7 @@ Three rules, all enforced:
 - NEVER REPLAYED. A resume re-runs shared-session agents rather than serving stored results, since a replayed agent leaves no conversation for the next one to continue. Long chains are therefore expensive to resume.
 - SEEDED ONCE. Only the first agent in a chain can take \`context\`; later ones already have the conversation, and their \`context\` is ignored with a log line.
 
-**Agent types.** Reach for a standing subagent instead of describing a role inline: \`agent(prompt, { agentType: 'code-explorer' })\`. An unknown name fails that agent and lists the configured names.
+**Agent types.** Reach for a standing subagent instead of describing a role inline: \`agent(prompt, { agentType: 'code-explorer' })\`. The names are the defined subagents (~/.pi/agent/agents/<name>.md, plus a trusted project's .pi/agents/). An unknown name fails that agent and lists the known names.
 
 **Resume.** A run that failed, was cancelled, or died with its session keeps its journal. Pass \`resumeFromRunId: "<id>"\` (with no \`script\`, to reuse the stored one, or with an edited script) and every agent whose prompt and options are unchanged returns its stored result instantly — only new, edited, and previously FAILED agents actually run. Prefer this to re-running a large workflow from the top. Matching is by content, not call order, so reordering a script is free.
 

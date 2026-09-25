@@ -1,14 +1,15 @@
 /**
  * The interactive /subagents wizard — add, edit, and pick a subagent through
- * pi's dialogs (input / select / confirm / editor) so subagents are configured
- * inside pi, never by hand-editing JSON. The flows return a plain SubagentDef
- * (or undefined when cancelled); index.ts persists it to agent/subagents.json.
+ * pi's dialogs (input / select / confirm / editor) so a subagent can be
+ * configured inside pi instead of by writing its file. The flows return a plain
+ * SubagentDef (or undefined when cancelled); index.ts writes it to
+ * agent/agents/<name>.md.
  *
  * Kept separate from index.ts and free of pi imports so the whole wizard can be
  * driven by a scripted fake `ctx` in tests.
  */
 
-import type { SubagentDef } from "./config.ts";
+import { NAME_PATTERN, type SubagentDef } from "./config.ts";
 
 /** The subset of ExtensionContext the wizard uses; loose so tests can fake it. */
 export interface WizardCtx {
@@ -92,6 +93,12 @@ export async function runWizard(ctx: WizardCtx, existing: SubagentDef | undefine
 		const raw = await ctx.ui.input("Subagent name (e.g. code-reviewer)");
 		name = raw?.trim();
 		if (!name) return undefined;
+		// The name becomes the file name, so it is held to the one shape that is
+		// safe as one: no path separators, no spaces, no case clashes.
+		if (!NAME_PATTERN.test(name)) {
+			ctx.ui.notify(`"${name}" is not a usable name. Use lowercase letters, digits and hyphens, e.g. code-reviewer.`, "error");
+			return undefined;
+		}
 		if (takenNames.has(name)) {
 			ctx.ui.notify(`A subagent named "${name}" already exists.`, "error");
 			return undefined;

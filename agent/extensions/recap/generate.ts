@@ -43,14 +43,13 @@ export type GenerateOptions = {
  * Produce a recap of the current session, or explain why one could not be made.
  *
  * Model selection: an explicit `recap.model` must resolve; unconfigured, the
- * `cheap` role when a role map defines it, else the active session model —
- * selectModel in model.ts states the policy.
+ * active session model — selectModel in model.ts states the policy.
  */
 export async function generateRecap(ctx: ExtensionContext, options: GenerateOptions): Promise<RecapOutcome> {
 	const { settings } = loadSettings(options.agentDir, ctx.cwd, ctx.isProjectTrusted());
 
 	const all = ctx.modelRegistry.getAll() as unknown as ModelLike[];
-	const selected = selectModel(settings.model, ctx.model as ModelLike | undefined, all, options.agentDir);
+	const selected = selectModel(settings.model, ctx.model as ModelLike | undefined, all);
 	if (!selected.ok) return { kind: "failed", reason: selected.error };
 	const model = selected.model;
 

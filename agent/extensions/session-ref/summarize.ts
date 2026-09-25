@@ -1,6 +1,6 @@
 /**
  * The summary call: tool-less, over the referenced session's flattened
- * branch, on the cheap-role model (model.ts selectModel — recap's policy,
+ * branch, on the session model (model.ts selectModel — recap's policy,
  * copied). Mirrors recap's generate.ts because it is the same kind of call;
  * the differences are the prompt (a structured handoff, not a one-liner) and
  * the input (a foreign session's branch, not the current one's).
@@ -25,12 +25,11 @@ type ModelLike = { readonly id: string; readonly name?: string; readonly provide
 export async function summarize(
 	ctx: ExtensionContext,
 	entries: TranscriptEntry[],
-	agentDir: string,
 	signal?: AbortSignal,
 	onSpend?: (spend: SpendReport) => void,
 ): Promise<SummaryOutcome> {
 	const all = ctx.modelRegistry.getAll() as unknown as ModelLike[];
-	const selected = selectModel(undefined, ctx.model as ModelLike | undefined, all, agentDir);
+	const selected = selectModel(undefined, ctx.model as ModelLike | undefined, all);
 	if (!selected.ok) return { ok: false, reason: selected.error };
 	const model = selected.model;
 

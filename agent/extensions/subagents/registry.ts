@@ -1,35 +1,58 @@
 /**
- * Loading and validating the subagent definitions from settings.json.
+ * Finding, parsing and writing the subagent definition files.
  *
- * Parsing is split from file reading so it is testable without a session:
- * parseSubagents() takes already-parsed JSON and returns the clean set plus a
- * list of human-readable issues (a bad entry is dropped, not fatal — one typo
- * should not disable every other subagent). loadSubagents() wraps it with the
- * file read.
+ * One agent per Markdown file, `<name>.md`:
+ *
+ *   ---
+ *   name: code-reviewer
+ *   description: Review diffs for correctness, security, and quality
+ *   model: openai-codex/gpt-6-astra  (optional: a model reference; absent = the session model)
+ *   reasoning: low                   (optional: a pi thinking level)
+ *   tools: read, grep, find          (optional: a comma list or a YAML list; absent = pi's default tools)
+ *   ---
+ *
+ *   Optional role prompt. The body becomes the subagent's system-prompt preamble.
+ *
+ * `name` and `description` are required, the same keys pi's example subagent
+ * extension and Claude Code read, so a file moves between them; `reasoning`
+ * is this extension's own. A Markdown file with no frontmatter at all (a
+ * README beside the agents) is not an agent and is passed over silently.
+ *
+ * Two places are scanned:
+ *   - agent/agents/*.md: user agents, always;
+ *   - the nearest `.pi/agents/` at or above the cwd: project agents, only when
+ *     the project is trusted (projectAgentsRefusal() says what that takes),
+ *     because a repo's agent file is a prompt the repo wrote and the subagent
+ *     runs it with bash. A project agent replaces a user agent of the same name.
+ *
+ * A bad file or field is reported, not fatal: one typo should not disable
+ * every other agent, and the reason shows under /subagents. A malformed
+ * `tools` skips the whole agent rather than dropping the field, because a
+ * dropped allowlist means pi's default tools, bash, edit and write among them,
+ * and a read-only reviewer would come back able to edit.
+ *
+ * parseSubagentFile() and serializeSubagent() are pure; the rest wraps them
+ * with file access.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import {
-	DEFAULT_SETTINGS,
-	SETTINGS_KEY,
-	STORE_FILE,
-	type SubagentDef,
-	type SubagentDefaults,
-	type SubagentsSettings,
-	THINKING_LEVELS,
-} from "./config.ts";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { CONFIG_DIR_NAME, parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { AGENTS_DIR, type LoadedSubagent, NAME_PATTERN, type SubagentDef, THINKING_LEVELS } from "./config.ts";
 
-export interface ParseResult {
-	settings: SubagentsSettings;
-	/** "store" = agent/subagents.json, "settings" = the settings.json fallback, "none" = neither. */
-	source: "store" | "settings" | "none";
+export interface LoadResult {
+	/** What `task` can run: user agents, with project agents replacing same-named ones. */
+	agents: LoadedSubagent[];
+	/** User agents alone, shadowed ones included: the only ones /subagents edits. */
+	user: LoadedSubagent[];
+	/** The project agents directory that was found, trusted or not. */
+	projectDir?: string;
 	issues: string[];
 }
 
-/** Absolute path of the pi-managed store file. */
-export function storePath(agentDir: string): string {
-	return join(agentDir, STORE_FILE);
+/** Absolute path of the user agents directory. */
+export function userAgentsDir(agentDir: string): string {
+	return join(agentDir, AGENTS_DIR);
 }
 
 function asString(value: unknown): string | undefined {
@@ -46,149 +69,191 @@ function parseReasoning(value: unknown, label: string, issues: string[]): string
 	return level;
 }
 
-function parseTools(value: unknown, label: string, issues: string[]): string[] | undefined {
+/** Absent means pi's default tools. Anything present has to name at least one. */
+function parseTools(value: unknown): string[] | undefined | "invalid" {
 	if (value === undefined) return undefined;
-	if (!Array.isArray(value) || value.some((tool) => typeof tool !== "string")) {
-		issues.push(`${label}: tools must be an array of strings — ignored`);
-		return undefined;
+	const raw = typeof value === "string" ? value.split(",") : Array.isArray(value) && value.every((tool) => typeof tool === "string") ? (value as string[]) : undefined;
+	const tools = raw?.map((tool) => tool.trim()).filter(Boolean) ?? [];
+	return tools.length > 0 ? tools : "invalid";
+}
+
+/** One agent file's content to a definition, plus anything wrong with it. */
+export function parseSubagentFile(content: string, label: string): { def?: SubagentDef; issues: string[] } {
+	// pi strips a BOM itself only from 0.85; doing it here keeps older pi agreeing.
+	const text = content.replace(/^\uFEFF/, "");
+	if (!text.startsWith("---")) return { issues: [] };
+
+	let frontmatter: Record<string, unknown>;
+	let body: string;
+	try {
+		const parsed = parseFrontmatter<Record<string, unknown>>(text);
+		const fm = parsed.frontmatter as unknown;
+		frontmatter = fm && typeof fm === "object" && !Array.isArray(fm) ? (fm as Record<string, unknown>) : {};
+		body = parsed.body;
+	} catch (error) {
+		const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+		return { issues: [`${label}: frontmatter is not valid YAML (${reason}) — skipped`] };
 	}
-	const tools = (value as string[]).map((tool) => tool.trim()).filter(Boolean);
-	return tools.length > 0 ? tools : undefined;
-}
 
-function parseDefaults(raw: unknown, issues: string[]): SubagentDefaults {
-	if (!raw || typeof raw !== "object") return {};
-	const block = raw as Record<string, unknown>;
-	return {
-		model: asString(block.model),
-		reasoning: parseReasoning(block.reasoning, "defaults", issues),
-	};
-}
+	const name = asString(frontmatter.name);
+	if (!name) return { issues: [`${label}: missing name — skipped`] };
+	const purpose = asString(frontmatter.description);
+	if (!purpose) return { issues: [`${label}: missing description — skipped`] };
+	const tools = parseTools(frontmatter.tools);
+	if (tools === "invalid") {
+		return { issues: [`${label}: tools must name at least one tool, as a comma list or a YAML list — skipped, since ignoring it would grant pi's default tools`] };
+	}
 
-export interface Parsed {
-	settings: SubagentsSettings;
-	issues: string[];
-}
-
-export function parseSubagents(raw: unknown): Parsed {
 	const issues: string[] = [];
-	if (!raw || typeof raw !== "object") return { settings: { ...DEFAULT_SETTINGS }, issues };
-	const block = raw as Record<string, unknown>;
+	const def: SubagentDef = {
+		name,
+		purpose,
+		model: asString(frontmatter.model),
+		reasoning: parseReasoning(frontmatter.reasoning, label, issues),
+		tools,
+		prompt: body.trim() || undefined,
+	};
+	return { def, issues };
+}
 
-	const defaults = parseDefaults(block.defaults, issues);
-
-	const rawAgents = Array.isArray(block.agents) ? block.agents : [];
-	if (block.agents !== undefined && !Array.isArray(block.agents)) {
-		issues.push("subagents.agents must be an array — ignored");
+function loadDir(dir: string, source: LoadedSubagent["source"], issues: string[]): LoadedSubagent[] {
+	let files: string[];
+	try {
+		files = readdirSync(dir)
+			.filter((file) => file.endsWith(".md"))
+			.sort();
+	} catch {
+		return [];
 	}
-
-	const agents: SubagentDef[] = [];
-	const seen = new Set<string>();
-	for (let i = 0; i < rawAgents.length; i++) {
-		const entry = rawAgents[i];
-		const label = `agent #${i + 1}`;
-		if (!entry || typeof entry !== "object") {
-			issues.push(`${label}: not an object — dropped`);
+	const agents: LoadedSubagent[] = [];
+	for (const file of files) {
+		const filePath = join(dir, file);
+		let content: string;
+		try {
+			// statSync follows a symlink, so a linked-in agent file counts.
+			if (!statSync(filePath).isFile()) continue;
+			content = readFileSync(filePath, "utf8");
+		} catch {
 			continue;
 		}
-		const record = entry as Record<string, unknown>;
-		const name = asString(record.name);
-		const purpose = asString(record.purpose);
-		if (!name) {
-			issues.push(`${label}: missing name — dropped`);
+		const parsed = parseSubagentFile(content, filePath);
+		issues.push(...parsed.issues);
+		if (!parsed.def) continue;
+		if (agents.some((agent) => agent.name === parsed.def!.name)) {
+			issues.push(`${filePath}: duplicate name "${parsed.def.name}" — skipped`);
 			continue;
 		}
-		if (!purpose) {
-			issues.push(`"${name}": missing purpose — dropped`);
-			continue;
-		}
-		if (seen.has(name)) {
-			issues.push(`"${name}": duplicate name — later one dropped`);
-			continue;
-		}
-		seen.add(name);
-		agents.push({
-			name,
-			purpose,
-			model: asString(record.model),
-			reasoning: parseReasoning(record.reasoning, `"${name}"`, issues),
-			tools: parseTools(record.tools, `"${name}"`, issues),
-			prompt: asString(record.prompt),
-		});
+		agents.push({ ...parsed.def, source, filePath });
 	}
+	return agents;
+}
 
-	return { settings: { defaults, agents }, issues };
+/** The nearest `.pi/agents/` directory at or above `cwd`, if there is one. */
+export function findProjectAgentsDir(cwd: string): string | undefined {
+	let dir = cwd;
+	while (true) {
+		const candidate = join(dir, CONFIG_DIR_NAME, AGENTS_DIR);
+		try {
+			if (statSync(candidate).isDirectory()) return candidate;
+		} catch {
+			/* not here; keep walking up */
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
 }
 
 /**
- * Load the subagents, file first. The pi-managed agent/subagents.json wins; if
- * it is absent the settings.json `subagents` block is read as a fallback (so
- * manually-authored config and anything that predates the store still work). A
- * present-but-malformed store is reported, not silently bypassed.
+ * Why a project's agent files may not load, or undefined when they may.
+ *
+ * The session's trust is not enough on its own. pi reports a session trusted
+ * without asking when the project's `.pi/` holds nothing pi itself gates, and
+ * `agents/` is not on its list; it also checks only the cwd, while the agents
+ * folder is found by walking up. So a cloned repo holding just `.pi/agents/`,
+ * or a parent folder the user once refused, would pass. What a repo cannot
+ * produce is a decision the user saved: the folder that holds `.pi/agents`
+ * needs a "trust" entry in pi's own trust store, for it or a parent (`/trust`).
  */
-export function loadSubagents(agentDir: string): ParseResult {
-	const path = storePath(agentDir);
-	if (existsSync(path)) {
-		try {
-			const raw = JSON.parse(readFileSync(path, "utf8"));
-			const parsed = parseSubagents(raw);
-			return { ...parsed, source: "store" };
-		} catch {
-			return { settings: { ...DEFAULT_SETTINGS }, source: "store", issues: [`${STORE_FILE} is not valid JSON — fix it or remove it`] };
-		}
-	}
+export function projectAgentsRefusal(agentDir: string, projectDir: string, sessionTrusted: boolean): string | undefined {
+	if (!sessionTrusted) return "this project is not trusted";
+	const root = dirname(dirname(projectDir));
+	let decision: boolean | null;
 	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		if (raw?.[SETTINGS_KEY] !== undefined) {
-			const parsed = parseSubagents(raw[SETTINGS_KEY]);
-			return { ...parsed, source: "settings" };
-		}
-	} catch {
-		/* no readable settings.json — treat as no config */
+		decision = new ProjectTrustStore(agentDir).get(root);
+	} catch (error) {
+		return `pi's trust store could not be read (${error instanceof Error ? error.message : String(error)})`;
 	}
-	return { settings: { ...DEFAULT_SETTINGS }, source: "none", issues: [] };
+	if (decision === true) return undefined;
+	if (decision === false) return `${root} is saved as not trusted`;
+	return `${root} has no saved trust decision; run /trust there to allow them`;
 }
 
-/** Serialize a subagent, omitting empty optional fields for a clean store file. */
-function cleanAgent(agent: SubagentDef): Record<string, unknown> {
-	const out: Record<string, unknown> = { name: agent.name };
-	if (agent.model) out.model = agent.model;
-	if (agent.reasoning) out.reasoning = agent.reasoning;
-	out.purpose = agent.purpose;
-	if (agent.tools && agent.tools.length > 0) out.tools = agent.tools;
-	if (agent.prompt) out.prompt = agent.prompt;
-	return out;
+/**
+ * Every agent `task` can run from `cwd`. Read from disk on each call, so a
+ * file added or edited mid-session is picked up without a restart.
+ * `trusted` is the session's trust (ctx.isProjectTrusted()).
+ */
+export function loadSubagents(agentDir: string, cwd: string, trusted: boolean): LoadResult {
+	const issues: string[] = [];
+	const user = loadDir(userAgentsDir(agentDir), "user", issues);
+	const byName = new Map(user.map((agent) => [agent.name, agent]));
+	const projectDir = findProjectAgentsDir(cwd);
+	if (projectDir) {
+		const refusal = projectAgentsRefusal(agentDir, projectDir, trusted);
+		if (refusal) issues.push(`${projectDir}: project agents skipped — ${refusal}`);
+		else for (const agent of loadDir(projectDir, "project", issues)) byName.set(agent.name, agent);
+	}
+	return { agents: [...byName.values()], user, projectDir, issues };
 }
 
-/** Write the block to agent/subagents.json (pretty, trailing newline, git-friendly). */
-export function saveSubagents(agentDir: string, settings: SubagentsSettings): void {
-	const out: Record<string, unknown> = {};
-	if (settings.defaults.model || settings.defaults.reasoning) {
-		const defaults: Record<string, unknown> = {};
-		if (settings.defaults.model) defaults.model = settings.defaults.model;
-		if (settings.defaults.reasoning) defaults.reasoning = settings.defaults.reasoning;
-		out.defaults = defaults;
-	}
-	out.agents = settings.agents.map(cleanAgent);
-	writeFileSync(storePath(agentDir), `${JSON.stringify(out, null, 2)}\n`);
+/**
+ * A YAML scalar for one frontmatter value: plain when it cannot be misread,
+ * JSON-quoted otherwise. A JSON string is a valid YAML double-quoted scalar, so
+ * a description holding ": ", "#" or a leading quote still round-trips, and a
+ * value that plain YAML would turn into a boolean, null or number stays a
+ * string.
+ */
+function scalar(value: string): string {
+	const plain = /^[A-Za-z0-9][\w .,()/+-]*$/.test(value) && !/^(true|false|null|yes|no|on|off|y|n)$/i.test(value) && Number.isNaN(Number(value));
+	return plain ? value : JSON.stringify(value);
+}
+
+/** A definition as the Markdown file /subagents writes. */
+export function serializeSubagent(def: SubagentDef): string {
+	const lines = ["---", `name: ${scalar(def.name)}`, `description: ${scalar(def.purpose)}`];
+	if (def.model) lines.push(`model: ${scalar(def.model)}`);
+	if (def.reasoning) lines.push(`reasoning: ${scalar(def.reasoning)}`);
+	if (def.tools && def.tools.length > 0) lines.push(`tools: ${scalar(def.tools.join(", "))}`);
+	lines.push("---");
+	return `${lines.join("\n")}\n${def.prompt ? `\n${def.prompt}\n` : ""}`;
+}
+
+/** Where `/subagents add` puts a new user agent. The name becomes the file name, so it must be kebab-case. */
+export function userAgentPath(agentDir: string, name: string): string {
+	if (!NAME_PATTERN.test(name)) throw new Error(`"${name}" cannot be a file name — use lowercase letters, digits and hyphens`);
+	return join(userAgentsDir(agentDir), `${name}.md`);
+}
+
+export function writeSubagent(filePath: string, def: SubagentDef): void {
+	mkdirSync(dirname(filePath), { recursive: true });
+	writeFileSync(filePath, serializeSubagent(def));
+}
+
+export function deleteSubagent(filePath: string): void {
+	rmSync(filePath, { force: true });
 }
 
 /**
  * The model/reasoning a subagent will actually run with. `carried` is the
- * `:level` the model reference resolved with (models.ts) — known only after
- * resolution, which is why callers apply it in a second pass. It sits between
- * the two configured levels: the per-agent pin stays strongest because it
- * names this exact subagent, and the blanket default must not silently eat the
- * model-specific level, or the suffix no-ops for anyone with defaults.reasoning
- * set.
+ * `:level` the model reference resolved with (models.ts), known only after
+ * resolution, which is why callers apply it in a second pass. The per-agent
+ * pin stays strongest because it names this exact subagent.
  */
-export function effective(agent: SubagentDef, defaults: SubagentDefaults, carried?: string): { model?: string; reasoning?: string } {
-	return {
-		model: agent.model ?? defaults.model,
-		reasoning: agent.reasoning ?? carried ?? defaults.reasoning,
-	};
+export function effective(agent: SubagentDef, carried?: string): { model?: string; reasoning?: string } {
+	return { model: agent.model, reasoning: agent.reasoning ?? carried };
 }
 
-export function findAgent(settings: SubagentsSettings, name: string): SubagentDef | undefined {
-	return settings.agents.find((agent) => agent.name === name);
+export function findAgent<T extends SubagentDef>(agents: readonly T[], name: string): T | undefined {
+	return agents.find((agent) => agent.name === name);
 }

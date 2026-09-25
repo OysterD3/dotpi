@@ -17,10 +17,11 @@
  *   2. `provider/id` split               exact provider + exact id
  *   3. bare `id`                         exact, but rejected if ambiguous
  *   4. partial                           substring of id or name; prefer an alias
+ *   5. unlisted `provider/id`            a custom model of that id, when the
+ *                                        provider is in the list (only in
+ *                                        resolveSuffixedReference; see
+ *                                        customModel)
  */
-
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
@@ -128,21 +129,22 @@ export function resolveModelReference<M extends ModelLike>(reference: string, mo
 }
 
 /**
- * Resolve a reference that may carry a role's `:level` suffix.
+ * Resolve a configured model reference, which may carry a `:level` suffix
+ * (pi's own --model syntax, "provider/id:high").
  *
  * FULL first, split only on a clean miss — the order is load-bearing, because
  * ids with colons are real (OpenRouter ships `deepseek/deepseek-chat:free`)
  * and splitting first would mangle them. An ambiguous full reference FOUND
  * models as-is, so its error answers the question the user configured; the
  * bare retry could quietly resolve to a model the full reference never named.
- * Every extension that resolves suffixed references keeps this rule; diverging
- * here would make the same role value resolve in one extension and error in
- * another.
+ * Every extension that resolves configured references keeps this rule;
+ * diverging here would make the same configured value resolve in one
+ * extension and error in another.
  *
  * The level itself is discarded. Thinking here is pinned per agent type and
  * per run (resolveThinking), all of it configuration written deliberately, and
- * a profile's suffix must not override it; the suffix is stripped only so the
- * model resolves.
+ * a suffix on a model reference must not override it; the suffix is stripped
+ * only so the model resolves.
  */
 export function resolveSuffixedReference<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
 	const full = resolveModelReference(reference, models);
@@ -150,51 +152,63 @@ export function resolveSuffixedReference<M extends ModelLike>(reference: string,
 	const trimmed = reference.trim();
 	if (exactMatch(trimmed, models) === "ambiguous" || partialMatch(trimmed, models) === "ambiguous") return full;
 	const split = splitThinking(reference);
-	if (split.thinking === undefined) return full;
-	const bare = resolveModelReference(split.reference, models);
+	if (split.thinking !== undefined) {
+		const bare = resolveModelReference(split.reference, models);
+		// A bare ambiguity found models, and naming them is the actionable
+		// error, so it is returned as it is and never falls back.
+		if (bare.ok || exactMatch(split.reference, models) === "ambiguous" || partialMatch(split.reference, models) === "ambiguous") return bare;
+	}
+	// Both tries missed cleanly. With no valid level, split.reference is the
+	// whole reference, so an unknown suffix such as ":free" stays in the id.
+	const custom = customModel(split.reference, models);
+	if (custom === "ambiguous") return { ok: false, error: `model "${reference}" matches several models of that provider — use a more specific id` };
+	if (custom) return { ok: true, model: custom };
 	// A double miss reports the reference as configured — that is the string
-	// in settings.json, so the one worth diagnosing. A bare ambiguity is the
-	// exception: it found models, and naming them is the actionable error.
-	if (!bare.ok && exactMatch(split.reference, models) !== "ambiguous" && partialMatch(split.reference, models) !== "ambiguous") return full;
-	return bare;
+	// in settings.json, so the one worth diagnosing.
+	return full;
 }
 
 /**
- * Map a model reference through the active provider profile in settings.json.
+ * A model for a full "provider/id" that the list does not contain.
  *
- * A COPY. The `models` block is a data contract shared by string, not a module —
- * extensions here install independently and may not import across boundaries —
- * so this fifteen-line reader is duplicated into every extension that resolves a
- * model. See agent/extensions/provider/roles.ts for the original and the shape.
+ * pi's own --model does this (buildFallbackModel in
+ * dist/core/model-resolver.js): a provider can ship a new id before pi's
+ * model list knows it, and `pi --model provider/new-id` still runs it. A
+ * configured reference must work the same way, or a name that works on the
+ * command line fails here. The model is a copy of the first model of that
+ * provider in the list, so the api, base URL and limits come from a model
+ * the provider really serves; only the id and the name change.
  *
- * Roles are checked before any matching, so a role always beats a model whose id
- * merely contains the same text. Every failure returns the reference unchanged:
- * no block, a malformed one, an unreadable file, or an undefined role all mean
- * "this was a literal model reference", which is what it meant before roles.
+ * The provider is the text before the FIRST "/", compared case-insensitively;
+ * the copy keeps the list's own spelling. A reference with no "/", an empty
+ * provider or id, or a provider that no model in the list has, gets nothing
+ * here — a typo in a short name must still fail with the list of names.
  */
-export function resolveRole(reference: string, agentDir: string): string {
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw.models as { active?: unknown; providers?: unknown } | undefined;
-		if (!block || typeof block !== "object") return reference;
-		const active = typeof block.active === "string" ? block.active : undefined;
-		const providers = block.providers as Record<string, Record<string, unknown>> | undefined;
-		if (!active || !providers || typeof providers !== "object") return reference;
-		const profile = providers[active];
-		if (!profile || typeof profile !== "object") return reference;
-		const mapped = profile[reference];
-		return typeof mapped === "string" && mapped.trim().length > 0 ? mapped.trim() : reference;
-	} catch {
-		return reference;
-	}
+function customModel<M extends ModelLike>(reference: string, models: readonly M[]): M | "ambiguous" | undefined {
+	const trimmed = reference.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash === -1) return undefined;
+	const provider = trimmed.slice(0, slash).trim().toLowerCase();
+	const id = trimmed.slice(slash + 1).trim();
+	if (!provider || !id) return undefined;
+	const own = models.filter((m) => m.provider.toLowerCase() === provider);
+	if (own.length === 0) return undefined;
+	// pi matches the id among that provider's models before it makes one up
+	// (parseModelPattern, then buildFallbackModel), so "openai-codex/luna" is
+	// the listed luna model, not a new id "luna". An id that two of them
+	// contain is ambiguous, as it is anywhere else.
+	const listed = exactMatch(id, own) ?? partialMatch(id, own);
+	if (listed) return listed;
+	return { ...own[0], id, name: id };
 }
 
 /**
  * Split an optional trailing `:level` off a model reference.
  *
- * A COPY, for the same reason as resolveRole above — the suffix is part of the
- * role-value contract, shared by string, not by module. See
- * agent/extensions/provider/roles.ts for the original.
+ * A COPY. The suffix is pi's own --model syntax, a contract shared by string,
+ * not by module — extensions here install independently and may not import
+ * across boundaries — so every extension that resolves a configured model
+ * reference keeps its own.
  */
 export function splitThinking(reference: string): { reference: string; thinking?: string } {
 	const colon = reference.lastIndexOf(":");

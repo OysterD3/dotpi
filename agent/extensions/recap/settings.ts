@@ -11,10 +11,10 @@
  * the file (verified against the real SettingsManager: it merges modified fields
  * over the parsed current file, so foreign keys survive).
  *
- * Only two things here could matter for trust. The model reference names an
- * already-registered pi model; a project cannot register a provider or supply a
- * key through this block, so a hostile repo can at worst point your recap at a
- * model you already have. Still, project settings are honoured only when the
+ * Only two things here could matter for trust. The model reference names a
+ * model pi lists, or a full provider/id under a provider pi already knows; a
+ * project cannot register a provider or supply a key through this block, so a
+ * hostile repo can at worst point your recap at a provider you already use. Still, project settings are honoured only when the
  * project is trusted, matching the other extensions, so a clone cannot silently
  * redirect where your transcript is sent.
  */

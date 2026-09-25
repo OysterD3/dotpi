@@ -11,21 +11,18 @@
  *   2. `provider/id` split               exact provider + exact id
  *   3. bare `id`                         exact, but rejected if ambiguous
  *   4. partial                           substring of id or name; prefer an alias
+ *   5. full name, not in the list        a custom model, if the provider is known
  *
  * Ambiguity is an error rather than a silent pick, because "recap ran on a model
  * I didn't expect" is worse than "recap told me the reference was ambiguous".
  *
- * A reference may end in `:level` — pi's `--model` syntax, which a role value
- * can now carry. The FULL reference is matched first and the suffix split off
- * only when that finds nothing, because ids with colons are real (OpenRouter
+ * A reference may end in `:level` — pi's `--model` syntax, which a configured
+ * reference can carry. The FULL reference is matched first and the suffix split
+ * off only when that finds nothing, because ids with colons are real (OpenRouter
  * ships `deepseek/deepseek-chat:free`). Recap ignores the level itself: its own
  * thinking setting is task-pinned in generate.ts, so the suffix exists here only
  * to be stripped so the model resolves.
  */
-
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { CONFIG } from "./config.ts";
 
 type ModelLike = { readonly id: string; readonly name?: string; readonly provider: string };
 
@@ -97,14 +94,46 @@ function matchReference<M extends ModelLike>(reference: string, models: readonly
 }
 
 /**
- * Resolve `reference` against `models`. Exact matching first, then partial.
+ * A full `provider/id` name that no listed model has, built as a custom model —
+ * pi's `buildFallbackModel`, so a full name works here as it does for
+ * `pi --model`. A new model can be used before pi's list knows it.
+ *
+ * The provider must be one the list knows: the custom model copies the first
+ * listed model of that provider (its API, base URL, and limits) and changes
+ * only the id and the name. An unknown provider gives no model to copy, and a
+ * bare id names no provider, so both stay a miss. The split is at the FIRST
+ * slash, because ids can contain slashes (`openrouter/zai-org/glm-5`).
+ */
+function customModel<M extends ModelLike>(reference: string, models: readonly M[]): M | "ambiguous" | undefined {
+	const trimmed = reference.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash === -1) return undefined;
+	const provider = trimmed.slice(0, slash).trim().toLowerCase();
+	const id = trimmed.slice(slash + 1).trim();
+	if (!provider || !id) return undefined;
+	const own = models.filter((m) => m.provider.toLowerCase() === provider);
+	if (own.length === 0) return undefined;
+	// pi matches the id among that provider's models before it makes one up
+	// (parseModelPattern, then buildFallbackModel), so "openai-codex/luna" is
+	// the listed luna model, not a new id "luna". An id that two of them
+	// contain is ambiguous, as it is anywhere else.
+	const listed = exactMatch(id, own) ?? partialMatch(id, own);
+	if (listed) return listed;
+	return { ...own[0], id, name: id };
+}
+
+/**
+ * Resolve `reference` against `models`. Exact matching first, then partial,
+ * then the full-name fallback.
  * `models` should be the registry's list; pass `getAll()` so an explicitly named
  * model resolves even when its provider has no key yet — the auth check that
  * follows will produce the clearer error.
  *
  * The split-on-miss retry runs only when the whole reference matched nothing:
  * an ambiguous full reference DID find models, so treating its tail as a
- * thinking level would resolve it to a model the reference never named.
+ * thinking level would resolve it to a model the reference never named. For
+ * the same reason the fallback runs only when both tries found nothing. It gets
+ * the reference without its level, so the level never becomes part of the id.
  */
 export function resolveModel<M extends ModelLike>(reference: string, models: readonly M[]): Resolution<M> {
 	const full = matchReference(reference, models);
@@ -116,7 +145,12 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
 		if (stripped !== undefined) return stripped;
 	}
 
-	// Both misses name the reference as configured — the suffix may be the typo.
+	// `bare` is the whole reference when no valid level was split off.
+	const custom = customModel(bare, models);
+	if (custom === "ambiguous") return { ok: false, error: `recap.model "${reference}" matches several models of that provider — use a more specific id` };
+	if (custom) return { ok: true, model: custom };
+
+	// Every miss names the reference as configured — the suffix may be the typo.
 	return { ok: false, error: `recap.model "${reference}" matched no available model` };
 }
 
@@ -125,65 +159,26 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
  *
  * An explicit `recap.model` must resolve or the recap fails: the user named
  * it, and a silent stand-in would send their transcript somewhere they did
- * not choose. With nothing configured, the `cheap` role is tried — but only
- * when a role map actually defines it; an unmapped "cheap" is a role name,
- * not a reference worth partial-matching against model ids. In every other
- * case the session model stands in: the default must not be able to break a
- * setup that configured nothing.
+ * not choose. With nothing configured, the session model is used: the default
+ * configured nothing, so it must not be able to break anything.
  */
 export function selectModel<M extends ModelLike>(
 	configured: string | undefined,
 	sessionModel: M | undefined,
 	models: readonly M[],
-	agentDir: string,
 ): Resolution<M> {
-	if (configured) return resolveModel(resolveRole(configured, agentDir), models);
-
-	const mapped = resolveRole(CONFIG.defaultModelRole, agentDir);
-	if (mapped !== CONFIG.defaultModelRole) {
-		const resolved = resolveModel(mapped, models);
-		if (resolved.ok) return resolved;
-	}
+	if (configured) return resolveModel(configured, models);
 	return sessionModel ? { ok: true, model: sessionModel } : { ok: false, error: "no model selected" };
-}
-
-/**
- * Map a model reference through the active provider profile in settings.json.
- *
- * A COPY. The `models` block is a data contract shared by string, not a module —
- * extensions here install independently and may not import across boundaries —
- * so this fifteen-line reader is duplicated into every extension that resolves a
- * model. See agent/extensions/provider/roles.ts for the original and the shape.
- *
- * Roles are checked before any matching, so a role always beats a model whose id
- * merely contains the same text. Every failure returns the reference unchanged:
- * no block, a malformed one, an unreadable file, or an undefined role all mean
- * "this was a literal model reference", which is what it meant before roles.
- */
-export function resolveRole(reference: string, agentDir: string): string {
-	try {
-		const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")) as Record<string, unknown>;
-		const block = raw.models as { active?: unknown; providers?: unknown } | undefined;
-		if (!block || typeof block !== "object") return reference;
-		const active = typeof block.active === "string" ? block.active : undefined;
-		const providers = block.providers as Record<string, Record<string, unknown>> | undefined;
-		if (!active || !providers || typeof providers !== "object") return reference;
-		const profile = providers[active];
-		if (!profile || typeof profile !== "object") return reference;
-		const mapped = profile[reference];
-		return typeof mapped === "string" && mapped.trim().length > 0 ? mapped.trim() : reference;
-	} catch {
-		return reference;
-	}
 }
 
 /**
  * Split an optional trailing `:level` off a model reference.
  *
- * A COPY, part of the same shared-by-string contract as `resolveRole` above; see
- * agent/extensions/provider/roles.ts for the original. Only pi's seven thinking
- * levels split — any other suffix is part of the id, because ids with colons are
- * real. Match the FULL reference first; split only when that misses.
+ * A COPY of pi's own `--model` suffix rule; every extension that resolves a
+ * model carries one, because extensions here install independently and may not
+ * import across boundaries. Only pi's seven thinking levels split — any other
+ * suffix is part of the id, because ids with colons are real. Match the FULL
+ * reference first; split only when that misses.
  */
 export function splitThinking(reference: string): { reference: string; thinking?: string } {
 	const colon = reference.lastIndexOf(":");

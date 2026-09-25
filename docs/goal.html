@@ -675,7 +675,9 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
       goal is set — not on the first stop attempt. Left to evaluation time, a typo would turn every stop into a
       failed check: the goal would never block, never cap and never clear, and the only signal would arrive once
       per stop, long after the file was edited. Credentials still cannot be checked without an async call, so an
-      auth failure remains an evaluation-time error.
+      auth failure remains an evaluation-time error. So does a typo in the id part of a full
+      <code>provider/id</code> under a provider pi knows: like <code>pi --model</code>, the resolver takes that id
+      as a model pi does not list yet, and only the provider can say it does not exist.
     </p>
   </div>
 </section>
@@ -737,7 +739,7 @@ figure.iann figcaption.ann{min-height:66px;font-size:13.4px}
   <table class="kv">
     <thead><tr><th>key</th><th>default</th><th>notes</th></tr></thead>
     <tbody>
-      <tr><td class="k">model</td><td class="d">unset</td><td class="x">Names an already-registered model, so a project cannot register a provider or supply a key through this block. Warned about at load if unresolvable.</td></tr>
+      <tr><td class="k">model</td><td class="d">unset</td><td class="x">Names a model pi lists, or a full <code>provider/id</code> under a provider pi already knows; either way a project cannot register a provider or supply a key through this block. Warned about at load if unresolvable.</td></tr>
       <tr><td class="k">maxIterations</td><td class="d">20</td><td class="x">Whole number ≥ 0, validated as an integer on purpose: flooring 0.5 would turn the tightest cap anyone could ask for into "no cap at all".</td></tr>
       <tr><td class="k">autoCapture</td><td class="d">false</td><td class="x">The one setting that changes behaviour and spend with no explicit command, which is why it is opt-in and why an untrusted project cannot switch it on.</td></tr>
     </tbody>

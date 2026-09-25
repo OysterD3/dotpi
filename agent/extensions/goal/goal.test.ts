@@ -1,11 +1,12 @@
 /**
  * Unit coverage for the /goal pure logic: verdict parsing, the too-long
  * detector, evaluator model selection (including the `:level` thinking-suffix
- * retry and the splitThinking copy), transcript budgeting, goal state and its
- * persistence round-trip, the settings loader, and the render helpers whose
- * wording is load-bearing. Also covers the autoCapture and compaction/resume
- * reassertion additions: extraction-response parsing, the capture trigger
- * gate, the pending-reassertion flag's transitions, and both features' wiring.
+ * retry, the full-name fallback and the splitThinking copy), transcript
+ * budgeting, goal state and its persistence round-trip, the settings loader,
+ * and the render helpers whose wording is load-bearing. Also covers the
+ * autoCapture and compaction/resume reassertion additions: extraction-response
+ * parsing, the capture trigger gate, the pending-reassertion flag's
+ * transitions, and both features' wiring.
  *
  * Run it after editing this extension:
  *     pnpm dlx jiti agent/extensions/goal/goal.test.ts
@@ -133,7 +134,7 @@ check("no model at all is an error", pickWithoutSession(undefined), "ERR: no mod
 // somewhere the user did not choose.
 check("a bad reference does not fall back", pick("gpt-9").includes("gpt-5.6-sol"), false);
 
-console.log("\n--- a role can carry a :level thinking suffix ---");
+console.log("\n--- a reference can carry a :level thinking suffix ---");
 // The full reference is matched first and split only on a clean miss: ids with
 // colons are real (OpenRouter ships `deepseek/deepseek-chat:free`), so
 // splitting first would mangle them. The level itself goes nowhere — the
@@ -162,6 +163,61 @@ check("a miss both ways names the reference as configured", resolveModel("gpt-9:
 		model: M("acme", "brainstorm:max"),
 	});
 }
+
+console.log("\n--- a full name resolves even when pi's list does not have it ---");
+// `pi --model` accepts a `provider/id` that its list does not have, if the list
+// has that provider: pi's buildFallbackModel copies the provider's first listed
+// model and gives it the new id. goal.model does the same, so a model newer
+// than this pi release can still judge. The first anthropic model here has a
+// context window that no other model has, so a custom model built from the
+// wrong base shows it. Only a clean miss falls back: an ambiguous reference
+// DID find models, and a name without a provider has no base to copy.
+{
+	const base = { ...M("anthropic", "claude-haiku-4-5"), contextWindow: 123_456 };
+	// Two OpenRouter ids that start with a known provider's name make a full
+	// name that is ambiguous as a whole; MyProxy is a provider spelled with capitals.
+	const proxy = M("MyProxy", "old-model");
+	const listed = [base, ...MODELS.slice(1), M("openrouter", "openai-codex/gpt-x-max"), M("openrouter", "openai-codex/gpt-x-mini"), proxy];
+	const custom = (id: string) => ({ ...base, id, name: id });
+	const cases: Array<[string, string, unknown]> = [
+		["a registered full name is the listed model", "anthropic/claude-sonnet-5", { ok: true, model: M("anthropic", "claude-sonnet-5", "Sonnet 5") }],
+		["an unregistered full name on a known provider is a custom model", "anthropic/claude-opus-9", { ok: true, model: custom("claude-opus-9") }],
+		["a :level is split off the custom id and dropped", "anthropic/claude-opus-9:high", { ok: true, model: custom("claude-opus-9") }],
+		["the provider matches in any case and keeps the list's spelling", "Anthropic/claude-opus-9", { ok: true, model: custom("claude-opus-9") }],
+		[
+			"only the first / splits provider from id",
+			"openrouter/deepseek/deepseek-chat",
+			{ ok: true, model: { ...M("openrouter", "claude-haiku-4-5"), id: "deepseek/deepseek-chat", name: "deepseek/deepseek-chat" } },
+		],
+		["an unknown provider is an error", "nope/x", { ok: false, error: 'goal.model "nope/x" matched no available model' }],
+		["an unknown provider with a level names the reference as configured", "nope/x:high", { ok: false, error: 'goal.model "nope/x:high" matched no available model' }],
+		["a provider with no id is an error", "anthropic/", { ok: false, error: 'goal.model "anthropic/" matched no available model' }],
+		["an unregistered bare id with no provider is an error", "gpt-9", { ok: false, error: 'goal.model "gpt-9" matched no available model' }],
+		[
+			"an ambiguous reference stays an error",
+			"claude-haiku-4-5",
+			{ ok: false, error: 'goal.model "claude-haiku-4-5" matches more than one model — qualify it as provider/id' },
+		],
+		[
+			"an ambiguous full name with a known provider in front stays an error",
+			"openai-codex/gpt-x",
+			{ ok: false, error: 'goal.model "openai-codex/gpt-x" matches several models — use a more specific id' },
+		],
+		// pi matches the id among the provider's own models before it makes one up.
+		["a partial name inside a known provider is that provider's listed model", "anthropic/sonnet", { ok: true, model: M("anthropic", "claude-sonnet-5", "Sonnet 5") }],
+		["there too, the undated alias wins over its dated twin", "anthropic/haiku", { ok: true, model: base }],
+		[
+			"a partial name two of the provider's models share is an error",
+			"anthropic/claude",
+			{ ok: false, error: 'goal.model "anthropic/claude" matches several models of that provider — use a more specific id' },
+		],
+		["a provider the list spells with capitals still matches", "myproxy/new-model", { ok: true, model: { ...proxy, id: "new-model", name: "new-model" } }],
+	];
+	for (const [label, reference, want] of cases) check(label, resolveModel(reference, listed), want);
+}
+// And through selectModel, the seam judge.ts calls: the evaluator gets the
+// custom model, not the session model and not an error.
+check("selectModel hands the custom model to the evaluator", pick("anthropic/claude-opus-9"), "anthropic/claude-opus-9");
 
 console.log("\n--- splitThinking, the copy ---");
 check("a trailing level splits", splitThinking("anthropic/claude-opus-5:high"), {

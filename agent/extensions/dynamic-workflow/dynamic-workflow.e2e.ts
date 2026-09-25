@@ -1687,6 +1687,23 @@ console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
 	// The failure must arrive before anything is spawned, not after N deaths.
 	check("without spawning anything", unauthed.includes("produced nothing"), true);
 
+	// The same for a full name the registry does not list: the provider is
+	// known, so the name is a custom model of it — and that provider still has
+	// no credentials, which is the error worth reading.
+	const unlisted = await tool
+		.execute(
+			"t11b",
+			{
+				script: `export const meta = { name: 'k2', description: 'k2' }\nreturn await agent('x', { model: 'kimi-coding/kimi-unlisted' })`,
+				wait: true,
+			},
+			undefined,
+			undefined,
+			noKey.ctx,
+		)
+		.then(() => "no-throw", (error: Error) => error.message);
+	check("an unlisted full name of an unauthenticated provider fails the same way", unlisted.includes("resolves to kimi-coding/kimi-unlisted, but there are no credentials for kimi-coding"), true);
+
 	// An authenticated model still resolves normally through the same path.
 	const fine = await tool
 		.execute(
@@ -2008,24 +2025,19 @@ console.log("\n--- a script can return cleanly while every agent died ---");
 	}
 }
 
-console.log("\n--- workflow agents inherit from subagents.json, then the session ---");
+console.log("\n--- workflow agents inherit from their agent file, then the run default ---");
 {
-	// agents.ts has always parsed subagents.json's { defaults: { model,
-	// reasoning } }, and tool.ts only ever read `types` — so a configured
-	// default was silently ignored and every agent fell through to whichever
-	// model the human happened to be talking to. Worse for reasoning: with no
-	// --thinking the child pi reads its OWN defaultThinkingLevel, so a session
-	// set to "max" ran every subagent at max.
-	mkdirSync(AGENT, { recursive: true });
+	// Without a run default every agent falls through to whichever model the
+	// human happened to be talking to. Worse for reasoning: with no --thinking
+	// the child pi reads its OWN defaultThinkingLevel, so a session set to "max"
+	// ran every subagent at max. dynamicWorkflow.model/thinking are that
+	// default; an agentType's own file comes before it.
+	const AGENTS = join(AGENT, "agents");
+	mkdirSync(AGENTS, { recursive: true });
 	mkdirSync(CWD, { recursive: true });
 	const FAST = { provider: "openai-codex", id: "gpt-5.6-luna", name: "Luna", contextWindow: 1000, maxTokens: 100 };
-	writeFileSync(
-		join(AGENT, "subagents.json"),
-		JSON.stringify({
-			defaults: { model: "gpt-5.6-luna", reasoning: "low" },
-			agents: [{ name: "explorer", purpose: "look", tools: ["read"] }, { name: "pinned", model: "gpt-5.4-mini", purpose: "x" }],
-		}),
-	);
+	writeFileSync(join(AGENTS, "explorer.md"), "---\nname: explorer\ndescription: look\ntools: read\n---\n");
+	writeFileSync(join(AGENTS, "pinned.md"), "---\nname: pinned\ndescription: x\nmodel: gpt-5.4-mini\n---\n");
 
 	const argLog = join(ROOT, "inherit-args.txt");
 	const argPi = join(ROOT, "arg-pi.mjs");
@@ -2045,7 +2057,7 @@ console.log("\n--- workflow agents inherit from subagents.json, then the session
 
 	try {
 		const tool = tools.get("workflow")!;
-		writeSettings({});
+		writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ dynamicWorkflow: { model: "gpt-5.6-luna", thinking: "low" } }));
 		const { ctx } = makeCtx({ model: MODEL, registryModels: [MODEL, FAST] });
 		events.get("session_start")!({}, ctx);
 		const script = [
@@ -2053,23 +2065,32 @@ console.log("\n--- workflow agents inherit from subagents.json, then the session
 			"await agent('a', { agentType: 'explorer' })",
 			"await agent('b', { agentType: 'pinned' })",
 			"await agent('c', { model: 'gpt-5.4-mini', thinking: 'high' })",
+			"await agent('d', { model: 'openai-codex/gpt-9-unlisted' })",
 			"return 'done'",
 		].join("\n");
 		await tool.execute("t-inherit", { script, wait: true }, undefined, undefined, ctx);
 		const rows = readFileSync(argLog, "utf8").trim().split("\n");
 
-		// A type with no model of its own now takes the configured default
-		// instead of silently becoming whatever the human is using.
-		check("an unpinned agentType takes the subagents.json default", rows[0], "openai-codex/gpt-5.6-luna low");
+		// A type with no model of its own takes the run default instead of
+		// silently becoming whatever the human is using.
+		check("an unpinned agentType takes the run default", rows[0], "openai-codex/gpt-5.6-luna low");
 		// A type that pins its own model still wins over the default...
 		check("a pinned agentType still wins", rows[1]?.split(" ")[0], "openai-codex/gpt-5.4-mini");
 		// ...but inherits the default reasoning it did not set.
 		check("while inheriting the default reasoning", rows[1]?.split(" ")[1], "low");
 		// And an explicit agent() option beats everything.
 		check("agent() options beat both", rows[2], "openai-codex/gpt-5.4-mini high");
+		// A full name that the registry does not list still spawns, as it does
+		// with `pi --model`: its provider is known, so the id goes through as
+		// written and the child pi builds the model from it.
+		check("an unlisted full name of a known provider spawns as written", rows[3], "openai-codex/gpt-9-unlisted low");
 	} finally {
 		process.argv[1] = realArgv1;
-		writeFileSync(join(AGENT, "subagents.json"), JSON.stringify({ defaults: {}, agents: [] }));
+		rmSync(AGENTS, { recursive: true, force: true });
+		// The extension keeps what session_start loaded, so the run default has
+		// to be cleared there too, or it follows every later section.
+		writeSettings({});
+		events.get("session_start")!({}, makeCtx({ model: MODEL }).ctx);
 	}
 }
 

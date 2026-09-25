@@ -9,12 +9,13 @@
  * installed, or pi's own package dir):
  *     jiti agent/extensions/dynamic-workflow/dynamic-workflow.test.ts
  */
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { findKeyword, hasUltracodeKeyword } from "./keyword.ts";
-import { parseAgentTypes } from "./agents.ts";
+import { loadAgentTypes, parseAgentTypeFile } from "./agents.ts";
 import { conformsTo, extractJson, parseMeta, runWorkflowScript, validateScript, type AgentOptions } from "./engine.ts";
 import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
@@ -551,12 +552,12 @@ console.log("\n--- models: reference resolution ---");
 	check("a long list is capped", capped.ok ? "" : capped.error.includes("and 4 more"), true);
 }
 
-console.log("\n--- models: a role value may carry a :level suffix ---");
+console.log("\n--- models: a reference may carry a :level suffix ---");
 {
-	// The suffix is pi's --model syntax ("provider/id:high"), written into a
-	// provider profile so a role can carry a thinking level. This extension
-	// pins thinking per agent type and per run, so the level is only ever
-	// stripped — but the model under it still has to resolve.
+	// The suffix is pi's --model syntax ("provider/id:high"), so a configured
+	// model reference can carry a thinking level. This extension pins thinking
+	// per agent type and per run, so the level is only ever stripped — but the
+	// model under it still has to resolve.
 	const MODELS = [
 		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5" },
 		{ provider: "anthropic", id: "claude-sonnet-5-20250929", name: "Sonnet 5 (dated)" },
@@ -612,7 +613,62 @@ console.log("\n--- models: a role value may carry a :level suffix ---");
 	check("and is not rescued by the split", kept.ok ? "" : kept.error.includes("m:high"), true);
 }
 
-console.log("\n--- models: splitThinking (the provider copy) ---");
+console.log("\n--- models: a full name the list does not contain ---");
+{
+	// pi --model runs "provider/id" even when its model list does not know the
+	// id (buildFallbackModel): it copies a listed model of that provider and
+	// puts the id in. A configured reference must work the same way, or a name
+	// that works on the command line fails a workflow agent.
+	const MODELS = [
+		{ provider: "anthropic", id: "claude-sonnet-5", name: "Sonnet 5", api: "anthropic-messages", contextWindow: 1_000_000 },
+		{ provider: "anthropic", id: "claude-haiku-4-5", name: "Haiku 4.5", api: "anthropic-messages", contextWindow: 200_000 },
+		{ provider: "openai", id: "gpt-5", name: "GPT-5", api: "openai-responses", contextWindow: 400_000 },
+		// OpenRouter ids carry a slash of their own, so "openai/gpt" is a
+		// partial name of two models here, not an unlisted openai model.
+		{ provider: "openrouter", id: "openai/gpt-4o", name: "GPT-4o", api: "openai-completions", contextWindow: 128_000 },
+		{ provider: "openrouter", id: "openai/gpt-4o-mini", name: "GPT-4o mini", api: "openai-completions", contextWindow: 128_000 },
+	];
+	const [SONNET, HAIKU, , OPENROUTER] = MODELS;
+	const resolve = (reference: string) => {
+		const outcome = resolveSuffixedReference(reference, MODELS);
+		return outcome.ok ? outcome.model : `error:${outcome.error.includes("matches") ? "ambiguous" : "none"}`;
+	};
+	// Expected custom models are built the way the resolver builds them, so the
+	// key order that check() compares is the same.
+	const custom = (base: (typeof MODELS)[number], id: string) => ({ ...base, id, name: id });
+
+	const cases: Array<[string, string, unknown]> = [
+		["a listed full name is the listed model", "anthropic/claude-haiku-4-5", HAIKU],
+		["an unlisted full name of a known provider is a custom model", "anthropic/claude-opus-9", custom(SONNET, "claude-opus-9")],
+		["with a :level the id loses the level (this resolver discards it)", "anthropic/claude-opus-9:high", custom(SONNET, "claude-opus-9")],
+		["the provider matches in any case, spelled as the list spells it", "ANTHROPIC/claude-opus-9", custom(SONNET, "claude-opus-9")],
+		["the provider is the text before the FIRST slash", "openrouter/zai-org/glm-9:high", custom(OPENROUTER, "zai-org/glm-9")],
+		["an unknown suffix stays in the id", "openrouter/some/model:free", custom(OPENROUTER, "some/model:free")],
+		["an unknown provider is an error", "nobody/some-model", "error:none"],
+		["an unlisted bare id has no provider, so it is an error", "claude-opus-9", "error:none"],
+		["an empty id is no full name", "anthropic/", "error:none"],
+		["an empty provider is no full name", "/claude-opus-9", "error:none"],
+		["an ambiguous reference stays an error", "claude", "error:ambiguous"],
+		["even when its first segment is a known provider", "openai/gpt", "error:ambiguous"],
+		["and when the ambiguity is only in the bare retry", "openai/gpt:high", "error:ambiguous"],
+		// pi matches the id among the provider's own models before it makes one up.
+		["a partial name inside a known provider is that provider's listed model", "anthropic/haiku", HAIKU],
+		["a partial name two of the provider's models share is an error", "anthropic/claude", "error:ambiguous"],
+	];
+	for (const [label, reference, want] of cases) check(label, resolve(reference), want);
+	const proxy = { provider: "MyProxy", id: "old-model", name: "Old Model" };
+	const proxied = resolveSuffixedReference("myproxy/new-model", [proxy]);
+	check("a provider the list spells with capitals still matches", proxied.ok ? proxied.model : proxied.error, { ...proxy, id: "new-model", name: "new-model" });
+
+	// The miss still names the reference as it was configured, suffix and all.
+	const miss = resolveSuffixedReference("nobody/some-model:high", MODELS);
+	check("an unknown provider's error names the reference as configured", miss.ok ? "" : miss.error.includes('model "nobody/some-model:high" matched no available model'), true);
+	// Only the top-level resolver falls back. resolveModelReference also feeds
+	// the routing vocabulary, where a made-up id must never count as a model.
+	check("resolveModelReference has no fallback", resolveModelReference("anthropic/claude-opus-9", MODELS).ok, false);
+}
+
+console.log("\n--- models: splitThinking (this extension's copy) ---");
 {
 	check("a trailing level splits", splitThinking("anthropic/claude-opus-5:high"), { reference: "anthropic/claude-opus-5", thinking: "high" });
 	check("any of the seven does", splitThinking("a/b:xhigh"), { reference: "a/b", thinking: "xhigh" });
@@ -1435,23 +1491,59 @@ console.log("\n--- engine: settled outcomes ---");
 
 // ------------------------------------------------------------- new: agent types
 
-console.log("\n--- agents: the subagent registry ---");
+console.log("\n--- agents: the subagent files ---");
 {
-	const registry = parseAgentTypes({
-		defaults: { model: "gpt-5", reasoning: "high" },
-		agents: [
-			{ name: "explorer", purpose: "look", tools: ["read", "grep"], reasoning: "low", model: "haiku" },
-			{ name: "bad-level", purpose: "x", reasoning: "turbo" },
-			{ name: "", purpose: "nameless" },
-			"not an object",
+	// The same file format subagents/registry.ts reads; this copy must agree
+	// with it, so the table covers the same shapes.
+	const cases: Array<[string, string, unknown]> = [
+		[
+			"a full file",
+			"---\nname: explorer\ndescription: look\nmodel: haiku\nreasoning: Low\ntools: read, grep\n---\n\nLook, never touch.\n",
+			{ name: "explorer", model: "haiku", thinking: "low", tools: ["read", "grep"], prompt: "Look, never touch.", purpose: "look" },
 		],
-	});
-	check("valid agents are kept", [...registry.types.keys()], ["explorer", "bad-level"]);
-	check("tools are carried", registry.types.get("explorer")?.tools, ["read", "grep"]);
-	check("reasoning maps to a thinking level", registry.types.get("explorer")?.thinking, "low");
-	check("an invalid level is dropped, not fatal", registry.types.get("bad-level")?.thinking, undefined);
-	check("defaults are parsed", registry.defaults, { model: "gpt-5", thinking: "high" });
-	check("junk parses to an empty registry", parseAgentTypes(null).types.size, 0);
+		["a YAML list of tools", "---\nname: a\ndescription: b\ntools: [read, bash]\n---\n", { name: "a", tools: ["read", "bash"], purpose: "b" }],
+		["an invalid level is dropped, not fatal", "---\nname: a\ndescription: b\nreasoning: turbo\n---\n", { name: "a", purpose: "b" }],
+		["a leading BOM", "\uFEFF---\nname: a\ndescription: b\n---\n", { name: "a", purpose: "b" }],
+		["no name is no agent", "---\ndescription: b\n---\n", undefined],
+		["no description is no agent", "---\nname: a\n---\n", undefined],
+		// Absent tools means all tools, so a present-but-empty one must not read as absent.
+		["an empty tools list is no agent", "---\nname: a\ndescription: b\ntools: []\n---\n", undefined],
+		["a null tools key is no agent", "---\nname: a\ndescription: b\ntools:\n---\n", undefined],
+		["broken YAML is no agent", "---\nname: [a\n---\n", undefined],
+		["no frontmatter is no agent", "# notes\n", undefined],
+	];
+	for (const [label, content, want] of cases) check(label, parseAgentTypeFile(content), want);
+
+	const root = mkdtempSync(join(tmpdir(), "dw-agents-"));
+	try {
+		const agentDir = join(root, "agent");
+		const repo = join(root, "repo");
+		const write = (dir: string, file: string, text: string) => {
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, file), text);
+		};
+		write(join(agentDir, "agents"), "explorer.md", "---\nname: explorer\ndescription: user explorer\n---\n");
+		write(join(agentDir, "agents"), "reviewer.md", "---\nname: reviewer\ndescription: user reviewer\n---\n");
+		write(join(repo, ".pi", "agents"), "reviewer.md", "---\nname: reviewer\ndescription: project reviewer\ntools: read\n---\n");
+		mkdirSync(join(repo, "src"), { recursive: true });
+
+		const untrusted = loadAgentTypes(agentDir, join(repo, "src"), false);
+		check("untrusted: user agents only", [...untrusted.types.keys()], ["explorer", "reviewer"]);
+		check("untrusted: the user reviewer", untrusted.types.get("reviewer")?.purpose, "user reviewer");
+		// pi calls a session trusted without asking when .pi/ holds only agents/,
+		// so the folder holding .pi/agents needs a decision the user saved.
+		const store = new ProjectTrustStore(agentDir);
+		check("a trusted session with nothing saved: user agents only", loadAgentTypes(agentDir, join(repo, "src"), true).types.get("reviewer")?.purpose, "user reviewer");
+		store.set(join(repo, "src"), true);
+		check("trust saved for a subfolder does not reach the repo above", loadAgentTypes(agentDir, join(repo, "src"), true).types.get("reviewer")?.purpose, "user reviewer");
+		store.set(join(repo, "src"), null);
+		store.set(repo, true);
+		const trusted = loadAgentTypes(agentDir, join(repo, "src"), true);
+		check("trusted: the project agent replaces the user one", [trusted.types.get("reviewer")?.purpose, trusted.types.get("reviewer")?.tools], ["project reviewer", ["read"]]);
+		check("no directory is an empty registry", loadAgentTypes(join(root, "none"), root, true).types.size, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 }
 
 // ---------------------------------------------------------------- new: plumbing
@@ -2036,19 +2128,20 @@ console.log("\n--- panel: /workflows lists this session's runs ---");
 
 console.log("\n--- tool: the reasoning-level chain ---");
 {
-	const defaults = { thinking: "low" } as never;
+	const defaults = "low";
 	const type = { thinking: "medium" } as never;
 	check("the call wins", resolveThinking({ thinking: "high" } as never, type, defaults), "high");
 	check("then the agent type", resolveThinking({} as never, type, defaults), "medium");
-	check("then the registry default", resolveThinking({} as never, undefined, defaults), "low");
-	check("nothing anywhere -> omit --thinking", resolveThinking({} as never, undefined, {} as never), undefined);
+	check("then the run default", resolveThinking({} as never, undefined, defaults), "low");
+	check("nothing anywhere -> omit --thinking", resolveThinking({} as never, undefined, undefined), undefined);
+	check("a mis-cased run default is normalised too", resolveThinking({} as never, undefined, "High"), "high");
 
 	// The bug. Testing `typeof thinking === "string"` short-circuited the chain,
 	// so one capital letter failed THINKING_LEVELS, returned undefined, and threw
 	// away BOTH the agent type's level and the registry default. --thinking was
 	// then omitted and the child fell back to its own settings.json
-	// defaultThinkingLevel — the max-reasoning blowup reading defaults.thinking
-	// was added to prevent, restored invisibly by a generated script's casing.
+	// defaultThinkingLevel — the max-reasoning blowup the run default was added
+	// to prevent, restored invisibly by a generated script's casing.
 	check("a mis-cased level is normalised, not dropped", resolveThinking({ thinking: "High" } as never, type, defaults), "high");
 	check("so is stray whitespace", resolveThinking({ thinking: " high " } as never, type, defaults), "high");
 	check("an unusable level falls through to the type", resolveThinking({ thinking: "maximum" } as never, type, defaults), "medium");
@@ -3770,6 +3863,11 @@ console.log("--- settings: dynamicWorkflow.* wins, ultracode.* still read ---");
 		check("and from the current one", loadSettings(dir).alwaysOn, true);
 		write({ dynamicWorkflow: { alwaysOn: "yes" } });
 		check("a non-boolean falls back rather than reading as truthy", loadSettings(dir).alwaysOn, false);
+
+		write({ dynamicWorkflow: { model: "fast", thinking: "high" } });
+		check("thinking is read beside model", [loadSettings(dir).model, loadSettings(dir).thinking], ["fast", "high"]);
+		write({ dynamicWorkflow: { thinking: 3 } });
+		check("a non-string thinking is ignored", loadSettings(dir).thinking, undefined);
 
 		write({});
 		check("neither block falls back to defaults", loadSettings(dir), { ...DEFAULT_SETTINGS, model: undefined });

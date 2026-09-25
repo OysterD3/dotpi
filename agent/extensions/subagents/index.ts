@@ -1,34 +1,30 @@
 /**
- * subagents — configurable named subagents.
+ * subagents — named subagents, one Markdown file each, plus one-time agents.
  *
  * You define a set of subagents, each with a model, a reasoning (thinking)
  * level, a purpose, and optionally a tool allowlist and a role prompt. The main
  * agent delegates a scoped task to one by name through the `task` tool, which
  * runs it as a headless pi subprocess (spawn.ts)
- * with those settings and returns its report. `/subagents` shows the table —
+ * with those settings and returns its report. Naming none runs a one-time
+ * agent on the model, level and tools the call itself gives (tool.ts), so
+ * `task` is always offered, files or not. `/subagents` shows the table —
  * Subagent | Model | Reasoning | Purpose.
  *
- * Configuration lives inside pi: `/subagents add | edit | remove` walks through
- * pi's dialogs (manage.ts) and writes agent/subagents.json (registry.ts) — you
- * never hand-edit JSON. That file takes precedence over a settings.json
- * `subagents` block, which is kept only as a read fallback for manual/legacy
- * config; the first interactive edit migrates such a block into the store.
- *
- * The `task` tool is offered only when at least one subagent is configured
- * (active-tool sync), so an empty config adds
- * nothing to the prompt.
- *
- * Store file (agent/subagents.json), shape { defaults?, agents }:
- *   defaults  { model?, reasoning? } applied to agents that omit them
- *   agents    [ { name, purpose, model?, reasoning?, tools?, prompt? } ]
+ * Each subagent is a file, `<name>.md` with YAML frontmatter (registry.ts has
+ * the format): agent/agents/ for yours, and a trusted project's `.pi/agents/`
+ * for its own, which win on a shared name. Write them by hand, or let
+ * `/subagents add | edit | remove` walk through pi's dialogs (manage.ts) and
+ * write them for you. The dialogs touch user agents only: a project's agents
+ * belong to its repository and are edited there.
  */
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG, type SubagentsSettings, TOOL_NAME } from "./config.ts";
+import { existsSync } from "node:fs";
+import { CONFIG, type SubagentDef, TOOL_NAME } from "./config.ts";
 import { buildCatalog, draftSubagent } from "./draft.ts";
 import { pickName, runWizard, summary, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
-import { resolveRole, resolveSuffixedReference } from "./models.ts";
-import { effective, findAgent, loadSubagents, type ParseResult, saveSubagents, storePath } from "./registry.ts";
+import { resolveSuffixedReference } from "./models.ts";
+import { deleteSubagent, effective, findAgent, type LoadResult, loadSubagents, userAgentPath, userAgentsDir, writeSubagent } from "./registry.ts";
 import { registerTaskTool } from "./tool.ts";
 
 /**
@@ -39,57 +35,59 @@ const SPEND_CHANNEL = "usage:spend";
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
-	let loaded: ParseResult = loadSubagents(agentDir);
-	let settings: SubagentsSettings = loaded.settings;
+	// Empty until session_start: project agents need the cwd and the trust
+	// decision, and only a ctx carries those.
+	let loaded: LoadResult = { agents: [], user: [], issues: [] };
 
-	const registerTool = () => registerTaskTool(pi, { settings: () => settings });
+	const load = (ctx: ExtensionContext): LoadResult => loadSubagents(agentDir, ctx.cwd, ctx.isProjectTrusted?.() ?? false);
+
+	const registerTool = () => registerTaskTool(pi, { agents: loaded.agents, load: (ctx) => load(ctx).agents });
 	registerTool();
 
 	const syncActive = (ctx: ExtensionContext): void => {
-		const configured = settings.agents.length > 0;
+		// Always offered: with no agent files, a one-time agent still works.
 		const active = pi.getActiveTools();
-		const has = active.includes(TOOL_NAME);
-		if (configured && !has) pi.setActiveTools([...new Set([...active, TOOL_NAME])]);
-		else if (!configured && has) pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
+		if (!active.includes(TOOL_NAME)) pi.setActiveTools([...active, TOOL_NAME]);
 		// No status chip: clear any a prior version left on the bar.
 		if (ctx.hasUI) ctx.ui.setStatus("subagents", undefined);
 	};
 
 	/** Reload from disk, refresh the tool's listing, and re-sync activation. */
 	const reload = (ctx: ExtensionContext): void => {
-		loaded = loadSubagents(agentDir);
-		settings = loaded.settings;
+		loaded = load(ctx);
 		registerTool();
 		syncActive(ctx);
 	};
 
 	const buildRows = (ctx: ExtensionContext): PanelRow[] => {
 		const models = ctx.modelRegistry.getAll();
-		return settings.agents.map((agent) => {
-			const eff = effective(agent, settings.defaults);
+		return loaded.agents.map((agent) => {
 			let model: string;
 			// The Reasoning column shows what a spawn would use, so a carried
 			// `:level` folds in with the same precedence as tool.ts; on a failed
-			// resolution no level is knowable and the configured pair stands.
-			let reasoning = eff.reasoning;
-			if (eff.model) {
-				// The panel shows the resolved model's own id, so a role's `:level`
-				// suffix never reaches the table; the raw reference appears only when
-				// resolution failed and naming what the user configured is the point.
-				const resolved = resolveSuffixedReference(resolveRole(eff.model, getAgentDir()), models);
-				model = resolved.ok ? resolved.model.id : `⚠ ${eff.model}`;
-				if (resolved.ok) reasoning = effective(agent, settings.defaults, resolved.thinking).reasoning;
+			// resolution no level is knowable and the configured one stands.
+			let reasoning = agent.reasoning;
+			if (agent.model) {
+				// The panel shows the resolved model's own id, so a reference's
+				// `:level` suffix never reaches the table; the raw reference appears
+				// only when resolution failed and naming what the user configured is
+				// the point.
+				const resolved = resolveSuffixedReference(agent.model, models);
+				model = resolved.ok ? resolved.model.id : `⚠ ${agent.model}`;
+				if (resolved.ok) reasoning = effective(agent, resolved.thinking).reasoning;
 			} else {
 				model = "(session default)";
 			}
-			return { name: agent.name, model, reasoning: formatReasoning(reasoning), purpose: agent.purpose };
+			const name = agent.source === "project" ? `${agent.name} (project)` : agent.name;
+			return { name, model, reasoning: formatReasoning(reasoning), purpose: agent.purpose };
 		});
 	};
 
 	const showTable = (ctx: ExtensionContext): void => {
 		reload(ctx);
 		const lines = tableLines(buildRows(ctx));
-		lines.push("", "Configure: /subagents add · edit · remove");
+		const project = loaded.projectDir ? ` · project: ${loaded.projectDir}` : "";
+		lines.push("", `Files: ${userAgentsDir(agentDir)}${project}`, "Configure: /subagents add · edit · remove");
 		if (loaded.issues.length > 0) {
 			lines.push("", "Issues:");
 			for (const issue of loaded.issues) lines.push(`  • ${issue}`);
@@ -97,13 +95,27 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify(lines.join("\n"), "info");
 	};
 
-	/** Persist a new agent set to the store, then reload and show it. */
-	const persist = (ctx: ExtensionContext, next: SubagentsSettings, done: string): void => {
-		const migrating = loaded.source === "settings";
-		saveSubagents(agentDir, next);
+	/** Write one agent file, then reload and show the table. */
+	const save = (ctx: ExtensionContext, filePath: string, def: SubagentDef, done: string): void => {
+		writeSubagent(filePath, def);
 		reload(ctx);
-		ctx.ui.notify(`${done}. Saved to ${storePath(agentDir)}${migrating ? " (migrated from settings.json)" : ""}.`, "info");
+		ctx.ui.notify(`${done}. Saved to ${filePath}.`, "info");
 		showTable(ctx);
+	};
+
+	/**
+	 * The user agent `arg` names for edit/remove, or undefined after saying why
+	 * not. A project agent is refused by name rather than as "no such agent":
+	 * it exists, it just lives in a repository these dialogs do not write to.
+	 */
+	const pickUserAgent = async (ctx: ExtensionContext, verb: string, arg: string | undefined) => {
+		const project = arg ? loaded.agents.find((agent) => agent.name === arg && agent.source === "project") : undefined;
+		if (project && !findAgent(loaded.user, arg!)) {
+			ctx.ui.notify(`"${arg}" is a project agent. To ${verb} it, change ${project.filePath} in its repository.`, "info");
+			return undefined;
+		}
+		const name = await pickName(ctx as unknown as WizardCtx, loaded.user.map((agent) => agent.name), verb, arg);
+		return name ? findAgent(loaded.user, name) : undefined;
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -123,8 +135,8 @@ export default function (pi: ExtensionAPI) {
 	 */
 	const draftFrom = async (ctx: ExtensionContext, description: string, taken: string[]) => {
 		ctx.ui.notify(`Drafting a subagent from "${description}"…`, "info");
-		const catalog = buildCatalog(agentDir, ctx.modelRegistry.getAll(), taken);
-		const outcome = await draftSubagent(ctx as never, description, catalog, agentDir, CONFIG.draftTimeoutMs, (spend) =>
+		const catalog = buildCatalog(ctx.modelRegistry.getAll(), taken);
+		const outcome = await draftSubagent(ctx as never, description, catalog, CONFIG.draftTimeoutMs, (spend) =>
 			pi.events.emit(SPEND_CHANNEL, { source: "subagents", usage: spend, calls: 1 }),
 		);
 		if (!outcome.ok) {
@@ -145,7 +157,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("subagents", {
 		description: "Show or configure subagents (/subagents add <describe it> | list | edit | remove)",
 		getArgumentCompletions: (prefix: string) => {
-			const names = settings.agents.map((agent) => agent.name);
+			const names = loaded.user.map((agent) => agent.name);
 			const options = [
 				"list",
 				"add",
@@ -173,7 +185,9 @@ export default function (pi: ExtensionAPI) {
 
 			if (sub === "add") {
 				reload(ctx);
-				const taken = new Set(settings.agents.map((agent) => agent.name));
+				// Project names too: a user agent under one of them would be
+				// shadowed in that repository the moment it was saved.
+				const taken = new Set([...loaded.agents, ...loaded.user].map((agent) => agent.name));
 
 				// A description turns the seven-dialog wizard into one confirm. With
 				// no description there is nothing to draft from, so the wizard runs.
@@ -181,27 +195,33 @@ export default function (pi: ExtensionAPI) {
 				if (arg && !def) return;
 				if (!def) def = await runWizard(wctx, undefined, taken);
 				if (!def) return void ctx.ui.notify("Cancelled.", "info");
-				persist(ctx, { ...settings, agents: [...settings.agents, def] }, `Added "${def.name}"`);
+				const filePath = userAgentPath(agentDir, def.name);
+				// A file that failed to parse is not in `taken`, and is still not ours to overwrite.
+				if (existsSync(filePath)) return void ctx.ui.notify(`${filePath} already exists. Fix or remove that file first.`, "error");
+				save(ctx, filePath, def, `Added "${def.name}"`);
 				return;
 			}
 
 			if (sub === "edit") {
 				reload(ctx);
-				const name = await pickName(wctx, settings.agents.map((agent) => agent.name), "edit", arg);
-				if (!name) return;
-				const def = await runWizard(wctx, findAgent(settings, name), new Set());
+				const current = await pickUserAgent(ctx, "edit", arg);
+				if (!current) return;
+				const def = await runWizard(wctx, current, new Set());
 				if (!def) return void ctx.ui.notify("Cancelled.", "info");
-				persist(ctx, { ...settings, agents: settings.agents.map((agent) => (agent.name === name ? def : agent)) }, `Updated "${name}"`);
+				save(ctx, current.filePath, def, `Updated "${current.name}"`);
 				return;
 			}
 
 			if (sub === "remove") {
 				reload(ctx);
-				const name = await pickName(wctx, settings.agents.map((agent) => agent.name), "remove", arg);
-				if (!name) return;
-				const ok = await ctx.ui.confirm(`Remove "${name}"?`, "This deletes the subagent definition.");
+				const current = await pickUserAgent(ctx, "remove", arg);
+				if (!current) return;
+				const ok = await ctx.ui.confirm(`Remove "${current.name}"?`, `This deletes ${current.filePath}.`);
 				if (!ok) return void ctx.ui.notify("Cancelled.", "info");
-				persist(ctx, { ...settings, agents: settings.agents.filter((agent) => agent.name !== name) }, `Removed "${name}"`);
+				deleteSubagent(current.filePath);
+				reload(ctx);
+				ctx.ui.notify(`Removed "${current.name}".`, "info");
+				showTable(ctx);
 				return;
 			}
 

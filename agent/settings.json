@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.85.1",
+  "lastChangelogVersion": "0.87.1",
   "theme": "one-dark-pro",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6-astra",
@@ -53,14 +53,16 @@
     "destructiveOverridesAllow": true,
     "askWithoutUi": "deny",
     "auto": {
-      "model": "cheap"
+      "model": "openai-codex/gpt-6-luna:high"
     }
   },
   "compaction": {
     "enabled": true
   },
   "dynamicWorkflow": {
-    "alwaysOn": true
+    "alwaysOn": true,
+    "model": "openai-codex/gpt-6-sol",
+    "thinking": "high"
   },
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#506df9a",
@@ -71,17 +73,6 @@
     "npm:pi-mcp-adapter",
     "npm:pi-cache-optimizer"
   ],
-  "models": {
-    "active": "openai",
-    "providers": {
-      "openai": {
-        "session": "openai-codex/gpt-6-astra:xhigh",
-        "frontier": "openai-codex/gpt-6-astra:xhigh",
-        "fast": "openai-codex/gpt-6-sol:low",
-        "cheap": "openai-codex/gpt-6-luna:high"
-      }
-    }
-  },
   "showCacheMissNotices": true,
   "hideThinkingBlock": true,
   "retry": {

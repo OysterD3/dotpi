@@ -9,7 +9,7 @@
  *     so it is on screen when you get back. A timer is armed when the agent
  *     settles and fires once the absence has lasted `idleThresholdMs`; your next
  *     message then goes straight through. It is ON by default (config.ts says
- *     why); the cost is one cheap-model call per absence. Turn it off with
+ *     why); the cost is one model call per absence. Turn it off with
  *     `recap.autoOnReturn: false`.
  *
  * It used to be generated on the way in — held in front of your next message so
@@ -25,10 +25,10 @@
  * reading the diff produces a recap nobody asked for, where before it produced
  * one only if you left AND came back.
  *
- * The recap model needs no configuration: unconfigured, the `cheap` role is
- * used when a role map defines it, else the active session model; an explicit
- * `recap.model` overrides. A recap is display-only — information for the
- * person returning, stored as a custom entry that never enters LLM context.
+ * The recap model needs no configuration: unconfigured, the active session
+ * model is used; an explicit `recap.model` overrides. A recap is display-only
+ * — information for the person returning, stored as a custom entry that never
+ * enters LLM context.
  *
  *   prompts.ts     the recap prompt
  *   generate.ts    the tool-less LLM call and its outcomes

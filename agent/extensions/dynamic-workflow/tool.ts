@@ -38,9 +38,8 @@ import { StringDecoder } from "node:string_decoder";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { loadAgentTypes, type AgentTypeDef, type AgentTypeRegistry } from "./agents.ts";
+import { loadAgentTypes, type AgentTypeDef } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
 import { CONFIG, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
 import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
@@ -52,7 +51,7 @@ import {
 	type ShellOptions,
 } from "./engine.ts";
 import { ReplayIndex, shellKey, type JournalInput, type ShellResult } from "./journal.ts";
-import { resolveRole, resolveSuffixedReference } from "./models.ts";
+import { resolveSuffixedReference } from "./models.ts";
 import {
 	allAgentsFailed,
 	newProgress,
@@ -454,6 +453,8 @@ interface RunEnv {
 	cwd: string;
 	approved: boolean;
 	defaultModel?: string;
+	/** dynamicWorkflow.thinking: the level for an agent nothing else gives one. */
+	defaultThinking?: string;
 	provider?: string;
 	modelId?: string;
 	branch: BranchEntry[];
@@ -485,6 +486,7 @@ function snapshotEnv(ctx: ExtensionContext, settings: UltracodeSettings): RunEnv
 		cwd: ctx.cwd,
 		approved: ctx.isProjectTrusted(),
 		defaultModel,
+		defaultThinking: settings.thinking,
 		provider: ctx.model?.provider,
 		modelId: ctx.model?.id,
 		branch,
@@ -507,7 +509,7 @@ function startRun(
 	const { registry, agentDir } = options;
 	const settings = options.settings();
 	const env = snapshotEnv(ctx, settings);
-	const agentTypes = loadAgentTypes(agentDir);
+	const agentTypes = loadAgentTypes(agentDir, env.cwd, env.approved);
 
 	const runId = newRunId();
 	const progress = newProgress(runId, name);
@@ -702,7 +704,6 @@ function startRun(
 				// The resolved role, not its name: model, thinking, tools and prompt
 				// all change the answer.
 				agentDef: type ? { model: type.model, thinking: type.thinking, tools: type.tools, prompt: type.prompt } : undefined,
-				defaults: agentOptions.agentType ? agentTypes.defaults : undefined,
 				contextDigest,
 			};
 		},
@@ -826,8 +827,8 @@ function startRun(
 			if (agentOptions.model !== undefined && typeof agentOptions.model !== "string") {
 				throw new Error(`agent() model must be a string reference, got ${typeof agentOptions.model}`);
 			}
-			const model = resolveAgentModel(agentOptions, type, agentTypes.defaults, env, ctx);
-			const thinking = resolveThinking(agentOptions, type, agentTypes.defaults);
+			const model = resolveAgentModel(agentOptions, type, env, ctx);
+			const thinking = resolveThinking(agentOptions, type, env.defaultThinking);
 			const tools = Array.isArray(agentOptions.tools) ? agentOptions.tools : type?.tools;
 
 			// A shared session is addressed by name, so every agent in the chain
@@ -1170,57 +1171,46 @@ function addedUsage(current: SpawnUsage | undefined, part: SpawnUsage): SpawnUsa
 /**
  * What a workflow agent inherits, most specific first:
  *
- *   agent(…, { model })  →  the agentType's own model  →  subagents.json
- *   `defaults.model`  →  the run default (dynamicWorkflow.model, else the SESSION's
- *   model)
+ *   agent(…, { model })  →  the agentType's own model  →  the run default
+ *   (dynamicWorkflow.model, else the SESSION's model)
  *
- * The `defaults` link was missing: agents.ts has always parsed
- * `subagents.json`'s `{ defaults: { model, reasoning } }`, and tool.ts only ever
- * read `types`. So a configured default was silently ignored, and every agent
- * without an explicit model fell straight through to the session model. That is
- * a reasonable last resort but a poor second choice — the whole point of
+ * The run default is what keeps subagents off the session model. That is a
+ * reasonable last resort but a poor second choice — the whole point of
  * declaring a default is that subagents should not all run on the model you
- * happen to be talking to.
+ * happen to be talking to. (It used to be a `defaults` block in
+ * subagents.json; the agent definitions moved to Markdown files, and a
+ * run-wide default is this extension's setting, not an agent's.)
  */
-function resolveAgentModel(
-	agentOptions: AgentOptions,
-	type: AgentTypeDef | undefined,
-	defaults: AgentTypeRegistry["defaults"],
-	env: RunEnv,
-	ctx: ExtensionContext,
-): string | undefined {
-	const reference = agentOptions.model ?? type?.model ?? defaults.model;
+function resolveAgentModel(agentOptions: AgentOptions, type: AgentTypeDef | undefined, env: RunEnv, ctx: ExtensionContext): string | undefined {
+	const reference = agentOptions.model ?? type?.model;
 	return reference ? resolveReference(reference, ctx) : env.defaultModel;
 }
 
 /**
- * The same chain for the reasoning level, and the same missing link.
+ * The same chain for the reasoning level: agent(…, { thinking }) → the
+ * agentType's own level → dynamicWorkflow.thinking.
  *
  * When nothing supplies a level, `--thinking` is omitted and the child pi falls
  * back to its OWN `defaultThinkingLevel` from settings.json — so a session
  * configured for "max" was quietly running every subagent at max reasoning,
  * which is a third to two thirds of the output tokens in the measured runs.
- * Honouring `defaults.reasoning` is what makes that configurable at all.
+ * The last link is what makes that configurable at all.
  */
-export function resolveThinking(
-	agentOptions: AgentOptions,
-	type: AgentTypeDef | undefined,
-	defaults: AgentTypeRegistry["defaults"],
-): string | undefined {
+export function resolveThinking(agentOptions: AgentOptions, type: AgentTypeDef | undefined, fallback: string | undefined): string | undefined {
 	// Normalised, and each source tried in turn rather than the first one
 	// present winning outright. Testing `typeof agentOptions.thinking ===
 	// "string"` short-circuited the whole chain, so a script that wrote "High"
 	// or "xHigh" — one capital letter — failed THINKING_LEVELS, returned
-	// undefined, and dropped both the agent type's level and the registry
-	// default. `--thinking` was then omitted and the child fell back to its own
+	// undefined, and dropped both the agent type's level and the run default.
+	// `--thinking` was then omitted and the child fell back to its own
 	// settings.json defaultThinkingLevel, which is the max-reasoning cost blowup
-	// that reading defaults.thinking was added to prevent.
+	// that the run default was added to prevent.
 	const normalise = (value: unknown): string | undefined => {
 		if (typeof value !== "string") return undefined;
 		const level = value.trim().toLowerCase();
 		return THINKING_LEVELS.has(level) ? level : undefined;
 	};
-	return normalise(agentOptions.thinking) ?? normalise(type?.thinking) ?? normalise(defaults.thinking);
+	return normalise(agentOptions.thinking) ?? normalise(type?.thinking) ?? normalise(fallback);
 }
 
 /**
@@ -1247,20 +1237,24 @@ export function usableModels(ctx: ExtensionContext): ReturnType<ExtensionContext
 }
 
 function resolveReference(reference: string, ctx: ExtensionContext): string {
-	// A role value may carry a `:level` suffix; the suffix-aware resolver strips
-	// it only after the full reference misses, and only the matched model's own
-	// provider/id leaves this function — a suffix must never reach --model, the
-	// panel, or the journal, which all expect a plain provider/id.
-	const mapped = resolveRole(reference, getAgentDir());
+	// A model reference may carry a `:level` suffix (pi's --model syntax); the
+	// suffix-aware resolver strips it only after the full reference misses, and
+	// only the matched model's own provider/id leaves this function — a suffix
+	// must never reach --model, the panel, or the journal, which all expect a
+	// plain provider/id. A full provider/id that the list does not contain comes
+	// back as a custom model of that id, so it reaches --model as written, the
+	// same way `pi --model` takes it — but only for a provider that has a usable
+	// model here.
 	const usable = usableModels(ctx);
-	const resolved = resolveSuffixedReference(mapped, usable);
+	const resolved = resolveSuffixedReference(reference, usable);
 	if (resolved.ok) return `${resolved.model.provider}/${resolved.model.id}`;
 
 	// Resolvable only among models we cannot run: say THAT, at resolution time,
-	// instead of letting every agent spawn and die on a missing key.
+	// instead of letting every agent spawn and die on a missing key. This covers
+	// an unlisted id too: its provider is known, but has no credentials.
 	const all = ctx.modelRegistry.getAll();
 	if (all.length !== usable.length) {
-		const anywhere = resolveSuffixedReference(mapped, all);
+		const anywhere = resolveSuffixedReference(reference, all);
 		if (anywhere.ok) {
 			throw new Error(
 				`model "${reference}" resolves to ${anywhere.model.provider}/${anywhere.model.id}, but there are no credentials for ${anywhere.model.provider} — run /login for it, or name a model from a provider you are signed in to`,
