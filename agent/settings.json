@@ -77,32 +77,8 @@
       "openai": {
         "session": "openai-codex/gpt-6-astra:xhigh",
         "frontier": "openai-codex/gpt-6-astra:xhigh",
-        "fast": "openai-codex/gpt-5.6-terra:medium",
-        "cheap": "openai-codex/gpt-5.6-luna:high"
-      },
-      "anthropic": {
-        "session": "anthropic/claude-opus-5",
-        "frontier": "anthropic/claude-opus-5",
-        "fast": "anthropic/claude-sonnet-5",
-        "cheap": "anthropic/claude-haiku-4-5"
-      },
-      "qoder": {
-        "session": "qoder/ultimate",
-        "frontier": "qoder/ultimate",
-        "fast": "qoder/lite",
-        "cheap": "qoder/lite"
-      },
-      "deepseek": {
-        "session": "deepseek/deepseek-v4-flash",
-        "frontier": "deepseek/deepseek-v4-flash",
-        "fast": "deepseek/deepseek-v4-flash",
-        "cheap": "deepseek/deepseek-v4-flash"
-      },
-      "mixed": {
-        "session": "openai-codex/gpt-5.6-sol:max",
-        "frontier": "openai-codex/gpt-5.6-sol:max",
-        "fast": "opencode-go/deepseek-v4-flash:max",
-        "cheap": "opencode-go/deepseek-v4-flash:max"
+        "fast": "openai-codex/gpt-6-sol:low",
+        "cheap": "openai-codex/gpt-6-luna:high"
       }
     }
   },
