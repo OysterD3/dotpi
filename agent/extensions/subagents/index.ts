@@ -12,26 +12,31 @@
  *
  * Each subagent is a file, `<name>.md` with YAML frontmatter (registry.ts has
  * the format): agent/agents/ for yours, and a trusted project's `.pi/agents/`
- * for its own, which win on a shared name. Write them by hand, or let
- * `/subagents add | edit | remove` walk through pi's dialogs (manage.ts) and
- * write them for you. The dialogs touch user agents only: a project's agents
- * belong to its repository and are edited there.
+ * for its own, which win on a shared name. Write them by hand, or create one
+ * in chat: the subagent-creator skill (skills/subagent-creator/SKILL.md, next
+ * to this file, and handed to pi through resources_discover so it travels
+ * with the extension) asks for every value the request leaves out, shows the
+ * file, and writes it on a yes.
+ * `/subagents add [what you want]` starts that same skill, so there is one
+ * way to create a subagent. `/subagents edit | remove` walk through pi's
+ * dialogs (manage.ts) for user agents only: a project's agents belong to its
+ * repository and are edited there.
  */
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { existsSync } from "node:fs";
-import { CONFIG, type SubagentDef, TOOL_NAME } from "./config.ts";
-import { buildCatalog, draftSubagent } from "./draft.ts";
-import { pickName, runWizard, summary, type WizardCtx } from "./manage.ts";
+import { type SubagentDef, TOOL_NAME } from "./config.ts";
+import { pickName, runWizard, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
 import { resolveSuffixedReference } from "./models.ts";
-import { deleteSubagent, effective, findAgent, type LoadResult, loadSubagents, userAgentPath, userAgentsDir, writeSubagent } from "./registry.ts";
+import { deleteSubagent, effective, findAgent, type LoadResult, loadSubagents, userAgentsDir, writeSubagent } from "./registry.ts";
 import { registerTaskTool } from "./tool.ts";
 
-/**
- * pi.events channel for announcing model spend — the shared string contract, so
- * the draft call shows up in /usage instead of being spend nothing can see.
- */
-const SPEND_CHANNEL = "usage:spend";
+/** The skill that creates a subagent, as pi lists it among its slash commands. */
+const CREATOR_SKILL = "skill:subagent-creator";
+
+/** Where that skill's file is: it ships inside this extension. */
+export const CREATOR_SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), "skills", "subagent-creator", "SKILL.md");
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
@@ -125,37 +130,12 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	/**
-	 * Draft from a description, then one confirm.
-	 *
-	 * Declining does not throw the draft away: the wizard opens with every
-	 * field pre-seeded, so a draft that got one thing wrong costs an edit
-	 * rather than a retype. Returns undefined when the user backed out or the
-	 * draft failed — the caller has already been told why.
-	 */
-	const draftFrom = async (ctx: ExtensionContext, description: string, taken: string[]) => {
-		ctx.ui.notify(`Drafting a subagent from "${description}"…`, "info");
-		const catalog = buildCatalog(ctx.modelRegistry.getAll(), taken);
-		const outcome = await draftSubagent(ctx as never, description, catalog, CONFIG.draftTimeoutMs, (spend) =>
-			pi.events.emit(SPEND_CHANNEL, { source: "subagents", usage: spend, calls: 1 }),
-		);
-		if (!outcome.ok) {
-			ctx.ui.notify(`Could not draft that: ${outcome.error}. Run /subagents add with no description for the wizard.`, "warning");
-			return undefined;
-		}
-		const detail = [summary(outcome.def), outcome.why ? `\n${outcome.why}` : "", ...outcome.notes.map((note) => `\n⚠ ${note}`)]
-			.filter(Boolean)
-			.join("");
-		if (await ctx.ui.confirm(`Save "${outcome.def.name}"?`, detail)) return outcome.def;
-		if (await ctx.ui.confirm("Adjust it instead?", "Opens the wizard with this draft pre-filled.")) {
-			return await runWizard(ctx as unknown as WizardCtx, outcome.def, new Set());
-		}
-		ctx.ui.notify("Cancelled.", "info");
-		return undefined;
-	};
+	// The creator skill ships with this extension, not in agent/skills/ (those
+	// are links into a folder shared with other agents, and not in this repo).
+	pi.on("resources_discover", () => ({ skillPaths: [CREATOR_SKILL_PATH] }));
 
 	pi.registerCommand("subagents", {
-		description: "Show or configure subagents (/subagents add <describe it> | list | edit | remove)",
+		description: "Show or configure subagents (/subagents add [what you want] | list | edit | remove)",
 		getArgumentCompletions: (prefix: string) => {
 			const names = loaded.user.map((agent) => agent.name);
 			const options = [
@@ -176,37 +156,34 @@ export default function (pi: ExtensionAPI) {
 
 			if (sub === "" || sub === "list") return void showTable(ctx);
 
-			// Interactive flows need the TUI dialogs.
+			// Creating is a conversation: the skill asks for what the request
+			// leaves out instead of guessing it, so add hands the words to it.
+			// A command reaches the agent as a user message; expandPromptTemplates
+			// makes pi expand "/skill:…" as if it were typed (scheduler/index.ts
+			// has the probe that confirmed the option reaches prompt()).
+			if (sub === "add") {
+				const skill = pi.getCommands?.().some((command) => command.name === CREATOR_SKILL);
+				if (skill === false) {
+					ctx.ui.notify(`The subagent-creator skill is not loaded (${CREATOR_SKILL_PATH}). Write agent/agents/<name>.md by hand, or check /skills.`, "error");
+					return;
+				}
+				const send = pi.sendUserMessage as (text: string, options: { deliverAs: "followUp"; expandPromptTemplates: true }) => void;
+				send(`/${CREATOR_SKILL}${arg ? ` ${arg}` : ""}`, { deliverAs: "followUp", expandPromptTemplates: true });
+				return;
+			}
+
+			// Edit and remove need the TUI dialogs.
 			if (!ctx.hasUI) {
 				ctx.ui.notify("Configuring subagents needs the interactive TUI.", "error");
 				return;
 			}
 			const wctx = ctx as unknown as WizardCtx;
 
-			if (sub === "add") {
-				reload(ctx);
-				// Project names too: a user agent under one of them would be
-				// shadowed in that repository the moment it was saved.
-				const taken = new Set([...loaded.agents, ...loaded.user].map((agent) => agent.name));
-
-				// A description turns the seven-dialog wizard into one confirm. With
-				// no description there is nothing to draft from, so the wizard runs.
-				let def = arg ? await draftFrom(ctx, arg, [...taken]) : undefined;
-				if (arg && !def) return;
-				if (!def) def = await runWizard(wctx, undefined, taken);
-				if (!def) return void ctx.ui.notify("Cancelled.", "info");
-				const filePath = userAgentPath(agentDir, def.name);
-				// A file that failed to parse is not in `taken`, and is still not ours to overwrite.
-				if (existsSync(filePath)) return void ctx.ui.notify(`${filePath} already exists. Fix or remove that file first.`, "error");
-				save(ctx, filePath, def, `Added "${def.name}"`);
-				return;
-			}
-
 			if (sub === "edit") {
 				reload(ctx);
 				const current = await pickUserAgent(ctx, "edit", arg);
 				if (!current) return;
-				const def = await runWizard(wctx, current, new Set());
+				const def = await runWizard(wctx, current);
 				if (!def) return void ctx.ui.notify("Cancelled.", "info");
 				save(ctx, current.filePath, def, `Updated "${current.name}"`);
 				return;

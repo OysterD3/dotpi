@@ -38,7 +38,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR_NAME, parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { AGENTS_DIR, type LoadedSubagent, NAME_PATTERN, type SubagentDef, THINKING_LEVELS } from "./config.ts";
+import { AGENTS_DIR, type LoadedSubagent, type SubagentDef, THINKING_LEVELS } from "./config.ts";
 
 export interface LoadResult {
 	/** What `task` can run: user agents, with project agents replacing same-named ones. */
@@ -227,12 +227,6 @@ export function serializeSubagent(def: SubagentDef): string {
 	if (def.tools && def.tools.length > 0) lines.push(`tools: ${scalar(def.tools.join(", "))}`);
 	lines.push("---");
 	return `${lines.join("\n")}\n${def.prompt ? `\n${def.prompt}\n` : ""}`;
-}
-
-/** Where `/subagents add` puts a new user agent. The name becomes the file name, so it must be kebab-case. */
-export function userAgentPath(agentDir: string, name: string): string {
-	if (!NAME_PATTERN.test(name)) throw new Error(`"${name}" cannot be a file name — use lowercase letters, digits and hyphens`);
-	return join(userAgentsDir(agentDir), `${name}.md`);
 }
 
 export function writeSubagent(filePath: string, def: SubagentDef): void {

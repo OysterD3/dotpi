@@ -1,15 +1,16 @@
 /**
- * The interactive /subagents wizard — add, edit, and pick a subagent through
- * pi's dialogs (input / select / confirm / editor) so a subagent can be
- * configured inside pi instead of by writing its file. The flows return a plain
- * SubagentDef (or undefined when cancelled); index.ts writes it to
- * agent/agents/<name>.md.
+ * The interactive /subagents wizard — edit and pick a subagent through pi's
+ * dialogs (input / select / confirm / editor), so a subagent can be changed
+ * inside pi instead of by editing its file. Creating one is the
+ * subagent-creator skill's job (index.ts). The flow returns a plain
+ * SubagentDef (or undefined when cancelled); index.ts writes it back to the
+ * agent's file.
  *
  * Kept separate from index.ts and free of pi imports so the whole wizard can be
  * driven by a scripted fake `ctx` in tests.
  */
 
-import { NAME_PATTERN, type SubagentDef } from "./config.ts";
+import type { SubagentDef } from "./config.ts";
 
 /** The subset of ExtensionContext the wizard uses; loose so tests can fake it. */
 export interface WizardCtx {
@@ -78,52 +79,31 @@ export function summary(def: SubagentDef): string {
 }
 
 /**
- * Collect a subagent. When `existing` is given the fields are pre-seeded and the
- * name is fixed (rename = remove + add). `takenNames` blocks duplicate names on
- * add. Returns the definition, or undefined if the user backed out anywhere.
+ * Change a subagent. The fields are pre-seeded from `existing` and the name is
+ * fixed (a rename is a new file). Returns the definition, or undefined if the
+ * user backed out anywhere.
  */
-export async function runWizard(ctx: WizardCtx, existing: SubagentDef | undefined, takenNames: Set<string>): Promise<SubagentDef | undefined> {
+export async function runWizard(ctx: WizardCtx, existing: SubagentDef): Promise<SubagentDef | undefined> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("Configuring subagents needs the interactive TUI.", "error");
 		return undefined;
 	}
 
-	let name = existing?.name;
-	if (!name) {
-		const raw = await ctx.ui.input("Subagent name (e.g. code-reviewer)");
-		name = raw?.trim();
-		if (!name) return undefined;
-		// The name becomes the file name, so it is held to the one shape that is
-		// safe as one: no path separators, no spaces, no case clashes.
-		if (!NAME_PATTERN.test(name)) {
-			ctx.ui.notify(`"${name}" is not a usable name. Use lowercase letters, digits and hyphens, e.g. code-reviewer.`, "error");
-			return undefined;
-		}
-		if (takenNames.has(name)) {
-			ctx.ui.notify(`A subagent named "${name}" already exists.`, "error");
-			return undefined;
-		}
-	}
+	const purposeRaw = await ctx.ui.input("Purpose (one line — what it is for)", existing.purpose);
+	// An empty submit keeps the current value.
+	const purpose = purposeRaw?.trim() || existing.purpose;
 
-	const purposeRaw = await ctx.ui.input("Purpose (one line — what it is for)", existing?.purpose ?? "");
-	let purpose = purposeRaw?.trim();
-	if (!purpose && existing) purpose = existing.purpose; // empty submit keeps the current value
-	if (!purpose) {
-		ctx.ui.notify("A purpose is required.", "error");
-		return undefined;
-	}
-
-	const model = await askModel(ctx, existing?.model);
+	const model = await askModel(ctx, existing.model);
 	if (!model.ok) return undefined;
-	const reasoning = await askReasoning(ctx, existing?.reasoning);
+	const reasoning = await askReasoning(ctx, existing.reasoning);
 	if (!reasoning.ok) return undefined;
-	const tools = await askTools(ctx, existing?.tools);
+	const tools = await askTools(ctx, existing.tools);
 	if (!tools.ok) return undefined;
-	const prompt = await askPrompt(ctx, existing?.prompt);
+	const prompt = await askPrompt(ctx, existing.prompt);
 	if (!prompt.ok) return undefined;
 
 	const def: SubagentDef = {
-		name,
+		name: existing.name,
 		purpose,
 		model: model.value,
 		reasoning: reasoning.value,
@@ -131,7 +111,7 @@ export async function runWizard(ctx: WizardCtx, existing: SubagentDef | undefine
 		prompt: prompt.value,
 	};
 
-	const confirmed = await ctx.ui.confirm(`Save "${name}"?`, summary(def));
+	const confirmed = await ctx.ui.confirm(`Save "${existing.name}"?`, summary(def));
 	return confirmed ? def : undefined;
 }
 

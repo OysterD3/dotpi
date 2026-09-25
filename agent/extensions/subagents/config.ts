@@ -21,9 +21,6 @@ export const AGENTS_DIR = "agents";
 /** The dispatch tool name; pi has no built-in `task`, so the name is free. */
 export const TOOL_NAME = "task";
 
-/** A subagent name that is also a safe file name: kebab-case, the only kind `/subagents add` writes. */
-export const NAME_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-
 /** pi thinking levels, the values a subagent's `reasoning` may take. */
 export const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -32,16 +29,15 @@ export const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high
  *
  * Not `pi.getAllTools()`: a subagent spawns with `--no-extensions`, so every
  * extension tool in this session (workflow, memory, ask_user) is absent from
- * the process that would have to run it. Offering those to the drafter would
- * produce an allowlist that fails on the first spawn, days later.
+ * the process that would have to run it. A one-time agent asking for one of
+ * those would fail on its spawn; the subagent-creator skill lists the same
+ * seven for an agent file.
  */
 export const SPAWNABLE_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
 
 export const CONFIG = {
 	/** Wall-clock ceiling for one subagent, so a hung spawn cannot wedge a turn. */
 	subagentTimeoutMs: 15 * 60_000,
-	/** Wall-clock ceiling for the draft call behind `/subagents add <description>`. */
-	draftTimeoutMs: 45_000,
 } as const;
 
 /** A single configured subagent. */

@@ -26,7 +26,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { parseSubagentFile, serializeSubagent, effective, loadSubagents, userAgentsDir, userAgentPath, writeSubagent } = await import("./registry.ts");
+const { parseSubagentFile, serializeSubagent, effective, loadSubagents, userAgentsDir, writeSubagent } = await import("./registry.ts");
 const { formatReasoning, tableLines } = await import("./panel.ts");
 const { resolveModelReference, modelRef, resolveSuffixedReference, splitThinking } = await import("./models.ts");
 const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
@@ -34,6 +34,7 @@ const { buildArgs } = await import("./spawn.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
 const USER_DIR = userAgentsDir(AGENT);
+const agentFile = (name: string) => join(USER_DIR, `${name}.md`);
 const rmAgents = () => rmSync(USER_DIR, { recursive: true, force: true });
 const writeAgent = (dir: string, file: string, content: string) => {
 	mkdirSync(dir, { recursive: true });
@@ -180,18 +181,6 @@ console.log("\n--- registry: user and project agents ---");
 	store.set(REPO, null);
 	rmAgents();
 	rmSync(REPO, { recursive: true, force: true });
-}
-
-console.log("\n--- registry: the file a new agent gets ---");
-check("kebab-case names map to <name>.md", userAgentPath(AGENT, "code-reviewer"), join(USER_DIR, "code-reviewer.md"));
-for (const bad of ["../escape", "a/b", "Code Reviewer", "", "x.md"]) {
-	let threw = false;
-	try {
-		userAgentPath(AGENT, bad);
-	} catch {
-		threw = true;
-	}
-	checkTrue(`"${bad}" is refused as a file name`, threw);
 }
 
 // ----------------------------------------------------------------- panel
@@ -530,45 +519,6 @@ function scriptedCtx(script: { input?: (string | undefined)[]; select?: (string 
 }
 
 {
-	// A full add.
-	const { ctx } = scriptedCtx({
-		input: ["code-explorer", "Read-only discovery"],
-		select: ["openai-codex/gpt-5.6-luna", "high", "Read-only (read, grep, find, ls)"],
-		confirm: [false /* add prompt? */, true /* save? */],
-	});
-	const def = await runWizard(ctx as never, undefined, new Set());
-	check("wizard builds the subagent", def, {
-		name: "code-explorer",
-		purpose: "Read-only discovery",
-		model: "openai-codex/gpt-5.6-luna",
-		reasoning: "high",
-		tools: ["read", "grep", "find", "ls"],
-		prompt: undefined,
-	});
-}
-{
-	// Cancel at the name.
-	const { ctx } = scriptedCtx({ input: [undefined] });
-	check("empty name cancels", await runWizard(ctx as never, undefined, new Set()), undefined);
-}
-{
-	// The name becomes the file name, so anything but kebab-case is refused.
-	const { ctx, notices } = scriptedCtx({ input: ["../escape"] });
-	check("a name that is not a safe file name is refused", await runWizard(ctx as never, undefined, new Set()), undefined);
-	checkTrue("and explained", notices.some(([lvl, m]) => lvl === "error" && m.includes("lowercase letters")));
-}
-{
-	// Duplicate name is refused.
-	const { ctx, notices } = scriptedCtx({ input: ["dupe"] });
-	check("duplicate name refused", await runWizard(ctx as never, undefined, new Set(["dupe"])), undefined);
-	checkTrue("and explained", notices.some(([lvl, m]) => lvl === "error" && m.includes("already exists")));
-}
-{
-	// Cancel at the model select (after name + purpose).
-	const { ctx } = scriptedCtx({ input: ["x", "p"], select: [undefined] });
-	check("cancel at model aborts", await runWizard(ctx as never, undefined, new Set()), undefined);
-}
-{
 	// Edit: empty purpose keeps the old one; "All tools" clears the allowlist; prompt kept.
 	const existing = { name: "reviewer", purpose: "old purpose", model: "m", reasoning: "low", tools: ["read"], prompt: "keep me" };
 	const { ctx } = scriptedCtx({
@@ -576,7 +526,7 @@ function scriptedCtx(script: { input?: (string | undefined)[]; select?: (string 
 		select: ["(session default)", "(inherit)", "All tools"],
 		confirm: [false /* keep prompt */, true /* save */],
 	});
-	check("edit preserves name, keeps blank purpose, clears model/reasoning/tools, keeps prompt", await runWizard(ctx as never, existing, new Set()), {
+	check("edit preserves name, keeps blank purpose, clears model/reasoning/tools, keeps prompt", await runWizard(ctx as never, existing), {
 		name: "reviewer",
 		purpose: "old purpose",
 		model: undefined,
@@ -586,13 +536,35 @@ function scriptedCtx(script: { input?: (string | undefined)[]; select?: (string 
 	});
 }
 {
+	// A new purpose, model, level and tools replace the old ones.
+	const existing = { name: "explorer", purpose: "look" };
+	const { ctx } = scriptedCtx({
+		input: ["Read-only discovery"],
+		select: ["openai-codex/gpt-5.6-luna", "high", "Read-only (read, grep, find, ls)"],
+		confirm: [false, true],
+	});
+	check("edit takes the new values", await runWizard(ctx as never, existing), {
+		name: "explorer",
+		purpose: "Read-only discovery",
+		model: "openai-codex/gpt-5.6-luna",
+		reasoning: "high",
+		tools: ["read", "grep", "find", "ls"],
+		prompt: undefined,
+	});
+}
+{
+	// Cancel at the model select.
+	const { ctx } = scriptedCtx({ input: [""], select: [undefined] });
+	check("cancel at model aborts", await runWizard(ctx as never, { name: "x", purpose: "p" }), undefined);
+}
+{
 	// Custom tools path.
 	const { ctx } = scriptedCtx({
-		input: ["custom-agent", "does things", "read, bash , edit"],
+		input: ["", "read, bash , edit"],
 		select: ["(session default)", "medium", "Custom…"],
 		confirm: [false, true],
 	});
-	const def = await runWizard(ctx as never, undefined, new Set());
+	const def = await runWizard(ctx as never, { name: "custom-agent", purpose: "does things" });
 	check("custom tools are parsed", def?.tools, ["read", "bash", "edit"]);
 }
 
@@ -609,11 +581,14 @@ console.log("\n--- manage: pickName ---");
 // ------------------------------------------- wiring: /subagents add & remove
 
 console.log("\n--- wiring: interactive /subagents against a fake pi ---");
-function makePi() {
+function makePi(options: { skill?: boolean } = {}) {
 	const tools: any[] = [];
 	const commands = new Map<string, any>();
+	const sent: Array<{ text: string; options: unknown }> = [];
 	let active: string[] = ["read", "bash"];
 	const pi = {
+		sendUserMessage: (text: string, sendOptions: unknown) => void sent.push({ text, options: sendOptions }),
+		getCommands: () => (options.skill === false ? [] : [{ name: "skill:subagent-creator", source: "skill" }]),
 		on: (event: string, handler: Function) => commands.set(`on:${event}`, handler),
 		registerTool: (def: any) => {
 			const i = tools.findIndex((t) => t.name === def.name);
@@ -626,7 +601,7 @@ function makePi() {
 		setActiveTools: (names: string[]) => (active = names),
 		events: { emit: () => {} },
 	};
-	return { pi, tools, commands, getActive: () => active };
+	return { pi, tools, commands, sent, getActive: () => active };
 }
 
 const extension = (await import("./index.ts")).default;
@@ -664,38 +639,26 @@ const extension = (await import("./index.ts")).default;
 	h.commands.get("on:session_start")!({}, ctx);
 	checkTrue("task tool is active with no agent files", h.getActive().includes("task"));
 
-	await h.commands.get("subagents").handler("add", ctx);
-	const FILE = join(USER_DIR, "reviewer.md");
-	checkTrue("the agent file was created", existsSync(FILE));
-	check("and reads back as what the wizard built", parseSubagentFile(readFileSync(FILE, "utf8"), FILE).def, {
-		name: "reviewer",
-		purpose: "Review diffs: correctness first",
-		model: "openai-codex/gpt-5.6-sol",
-		reasoning: "low",
-		tools: ["read", "grep", "find", "ls"],
-	});
-	checkTrue("confirmation names the file and the agent", notices.some(([lvl, m]) => lvl === "info" && m.includes('Added "reviewer"') && m.includes("reviewer.md")));
-	checkTrue("the tool description now lists it", h.tools.find((t) => t.name === "task")?.description.includes("- reviewer: Review diffs"));
+	// Creating is the skill's job: add hands the request to it, as if typed.
+	await h.commands.get("subagents").handler("add a reviewer that only reads", ctx);
+	check("add starts the subagent-creator skill with the request", h.sent, [
+		{ text: "/skill:subagent-creator a reviewer that only reads", options: { deliverAs: "followUp", expandPromptTemplates: true } },
+	]);
+	await h.commands.get("subagents").handler("add", { ...ctx, hasUI: false });
+	check("a bare add starts it too, with or without a UI", h.sent[1]?.text, "/skill:subagent-creator");
+	checkTrue("add writes no file itself", !existsSync(USER_DIR));
+
+	// The skill writes the file; list, edit and remove work on it.
+	const FILE = agentFile("reviewer");
+	writeSubagent(FILE, { name: "reviewer", purpose: "Review diffs: correctness first", model: "openai-codex/gpt-5.6-sol", reasoning: "low", tools: ["read", "grep", "find", "ls"] });
+	await h.commands.get("subagents").handler("list", ctx);
+	checkTrue("the tool description lists it after a reload", h.tools.find((t) => t.name === "task")?.description.includes("- reviewer: Review diffs"));
 
 	// Edit it: keep the purpose, drop the model pin, open the tools.
 	const q3 = { input: [""], select: ["(session default)", "high", "All tools"], confirm: [false, true] };
 	const ctx3: any = { ...ctx, ui: { ...ctx.ui, input: async () => q3.input.shift(), select: async () => q3.select.shift(), confirm: async () => q3.confirm.shift() ?? false } };
 	await h.commands.get("subagents").handler("edit reviewer", ctx3);
 	check("edit rewrites the same file", parseSubagentFile(readFileSync(FILE, "utf8"), FILE).def, { name: "reviewer", purpose: "Review diffs: correctness first", reasoning: "high" });
-
-	// A second add of the same name is refused before any file is touched.
-	const qDup = { input: ["reviewer"] };
-	const ctxDup: any = { ...ctx, ui: { ...ctx.ui, input: async () => qDup.input.shift() } };
-	await h.commands.get("subagents").handler("add", ctxDup);
-	checkTrue("a taken name is refused", notices.some(([lvl, m]) => lvl === "error" && m.includes("already exists")));
-
-	// A file that does not parse is not a taken name, but it is still not ours to overwrite.
-	writeAgent(USER_DIR, "broken.md", "---\nname: [broken\n---\n");
-	const qBroken = { input: ["broken", "anything"], select: ["(session default)", "(inherit)", "All tools"], confirm: [false, true] };
-	const ctxBroken: any = { ...ctx, ui: { ...ctx.ui, input: async () => qBroken.input.shift(), select: async () => qBroken.select.shift(), confirm: async () => qBroken.confirm.shift() ?? false } };
-	await h.commands.get("subagents").handler("add", ctxBroken);
-	check("an unparsable file is left as it was", readFileSync(join(USER_DIR, "broken.md"), "utf8"), "---\nname: [broken\n---\n");
-	rmSync(join(USER_DIR, "broken.md"));
 
 	// Remove it.
 	const q2 = { confirm: [true] };
@@ -766,7 +729,7 @@ console.log("\n--- wiring: the panel shows what a spawn would use ---");
 	// bare id — a suffix leaking into either would misreport the spawn.
 	rmAgents();
 	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
-	writeSubagent(userAgentPath(AGENT, "veiled"), { name: "veiled", purpose: "suffix carrier", model: "openai-codex/gpt-5.6-luna:high" });
+	writeSubagent(agentFile("veiled"), { name: "veiled", purpose: "suffix carrier", model: "openai-codex/gpt-5.6-luna:high" });
 	const h = makePi();
 	extension(h.pi as never);
 	const notices: Array<[string, string]> = [];
@@ -785,126 +748,29 @@ console.log("\n--- wiring: the panel shows what a spawn would use ---");
 	rmAgents();
 }
 
-// ------------------------------------------------- drafting from a sentence
-
-console.log("\n--- parseDraft: the catalogue is the law ---");
+console.log("\n--- the creator skill ships with the extension ---");
 {
-	const { parseDraft, buildCatalog } = await import("./draft.ts");
-	const catalog = buildCatalog(MODELS, ["reviewer"]);
-	const draft = (body: string) => parseDraft(body, catalog, MODELS);
-	const json = (over: Record<string, unknown> = {}) =>
-		JSON.stringify({ name: "migrator", purpose: "Runs schema migrations", model: null, reasoning: null, tools: null, prompt: null, ...over });
-
-	checkTrue("a bare object parses", draft(json()).ok);
-	checkTrue("a fenced object parses", draft("```json\n" + json() + "\n```").ok);
-	checkTrue("prose around the object is tolerated", draft("Sure!\n" + json() + "\nHope that helps.").ok);
-	check("no JSON at all fails", draft("I could not do that").ok, false);
-	check("broken JSON fails", draft("{ name: }").ok, false);
-
-	check("a missing name fails", draft(json({ name: null })).ok, false);
-	check("a name that is not kebab-case fails", draft(json({ name: "Migrator Two" })).ok, false);
-	check("a taken name fails", draft(json({ name: "reviewer" })).ok, false);
-	check("a missing purpose fails", draft(json({ purpose: null })).ok, false);
-
-	{
-		const out = draft(json({ model: "not-a-real-model" })) as any;
-		checkTrue("an unknown model does not fail the draft", out.ok);
-		check("but it is dropped", out.def.model, undefined);
-		checkTrue("and said out loud", out.notes.some((n: string) => n.includes("not-a-real-model")));
-	}
-	{
-		const out = draft(json({ model: "gpt-5.6-sol" })) as any;
-		check("a model that resolves is kept", out.def.model, "gpt-5.6-sol");
-		// A person may write a full name pi does not list; a drafter that
-		// invents one has left the catalogue it was given.
-		const invented = draft(json({ model: "openai-codex/gpt-7-invented" })) as any;
-		check("a full name pi does not list is dropped from a draft", invented.def.model, undefined);
-		checkTrue("with a note", invented.notes.some((n: string) => n.includes("gpt-7-invented")));
-	}
-	{
-		const out = draft(json({ reasoning: "extreme" })) as any;
-		check("a bogus thinking level is dropped", out.def.reasoning, undefined);
-		checkTrue("with a note", out.notes.some((n: string) => n.includes("extreme")));
-		check("a real one is kept", (draft(json({ reasoning: "high" })) as any).def.reasoning, "high");
-	}
-	{
-		const out = draft(json({ tools: ["read", "grep", "browser", "workflow"] })) as any;
-		check("unknown tools are dropped", out.def.tools, ["read", "grep"]);
-		checkTrue("and named", out.notes.some((n: string) => n.includes("browser") && n.includes("workflow")));
-	}
-	{
-		// Leaving tools undefined would mean ALL tools to spawn.ts, so a draft
-		// that asked for a restricted set and named only unknown ones must not
-		// quietly become the unrestricted one.
-		const out = draft(json({ tools: ["workflow", "browser"] })) as any;
-		check("an all-unknown allowlist fails the draft", out.ok, false);
-		checkTrue("and names both what it asked for and what exists", out.error.includes("workflow") && out.error.includes("read"));
-		check("while naming no tools at all still means all of them", (draft(json({ tools: null })) as any).def.tools, undefined);
-	}
-	{
-		const out = draft(json({ prompt: "  Review only. Never edit.  " })) as any;
-		check("a role prompt is trimmed and kept", out.def.prompt, "Review only. Never edit.");
-	}
-}
-
-console.log("\n--- draftSubagent: the session model drafts ---");
-{
-	// No model is configured for the draft, so it runs on the session model.
-	// A registry that refuses every model stops the draft before any network
-	// call, and still shows which model the draft asked to call.
-	const { buildCatalog, draftSubagent } = await import("./draft.ts");
-	const asked: string[] = [];
-	const registry = {
-		getAll: () => MODELS,
-		getApiKeyAndHeaders: async (model: any) => (asked.push(modelRef(model)), { ok: false as const, error: "not signed in" }),
-	};
-	const outcome = await draftSubagent({ model: MODELS[2], modelRegistry: registry }, "a read-only reviewer", buildCatalog(MODELS, []), 1000);
-	check("the draft asks for the session model", asked, ["anthropic/claude-opus-4-8"]);
-	check("and a model it cannot call fails the draft", outcome, { ok: false, error: "not signed in" });
-	check("with no session model there is nothing to draft with", await draftSubagent({ modelRegistry: registry }, "x", buildCatalog(MODELS, []), 1000), { ok: false, error: "no model available to draft with" });
-}
-
-console.log("\n--- wiring: /subagents add <description> ---");
-{
-	rmAgents();
-	writeFileSync(join(AGENT, "settings.json"), JSON.stringify({}));
 	const h = makePi();
 	extension(h.pi as never);
+	const discovered = h.commands.get("on:resources_discover")!({});
+	const path = discovered.skillPaths[0];
+	const { parseFrontmatter } = await import("@earendil-works/pi-coding-agent");
+	const skill = parseFrontmatter<Record<string, string>>(readFileSync(path, "utf8"));
+	check("resources_discover hands pi the skill file, named subagent-creator", skill.frontmatter.name, "subagent-creator");
+	checkTrue("it lives inside the extension, so git carries it", path.includes(join("subagents", "skills", "subagent-creator")));
+	checkTrue("and tells the model to ask, not guess", skill.body.includes("never guesses") || skill.frontmatter.description.includes("never guesses"));
+}
 
+console.log("\n--- wiring: /subagents add without the skill ---");
+{
+	const h = makePi({ skill: false });
+	extension(h.pi as never);
 	const notices: Array<[string, string]> = [];
-	let wizardRan = false;
-	const ctx: any = {
-		hasUI: true,
-		cwd: ROOT,
-		isProjectTrusted: () => false,
-		// No model anywhere, so the draft fails at the first seam rather than
-		// reaching a real provider from a test.
-		model: undefined,
-		modelRegistry: { getAll: () => [] },
-		ui: {
-			input: async () => {
-				wizardRan = true;
-				return undefined;
-			},
-			select: async () => undefined,
-			confirm: async () => false,
-			editor: async () => undefined,
-			notify: (m: string, l: string) => notices.push([l, m]),
-			setStatus: () => {},
-		},
-	};
+	const ctx: any = { hasUI: true, cwd: ROOT, isProjectTrusted: () => false, modelRegistry: { getAll: () => MODELS }, ui: { notify: (m: string, l: string) => notices.push([l, m]), setStatus: () => {} } };
 	h.commands.get("on:session_start")!({}, ctx);
-
-	await h.commands.get("subagents")!.handler("add a read-only reviewer on the frontier model", ctx);
-	checkTrue("the draft is announced before the wait", notices.some(([, m]) => m.includes("Drafting")));
-	checkTrue("a failed draft says why", notices.some(([l, m]) => l === "warning" && m.includes("Could not draft")));
-	checkTrue("and does not silently fall into the wizard", !wizardRan);
-	check("nothing was stored", existsSync(USER_DIR), false);
-
-	// No description is still the wizard.
-	await h.commands.get("subagents")!.handler("add", ctx);
-	checkTrue("a bare add runs the wizard", wizardRan);
-	rmAgents();
+	await h.commands.get("subagents").handler("add a reviewer", ctx);
+	checkTrue("a missing skill is said out loud", notices.some(([level, message]) => level === "error" && message.includes("subagent-creator skill is not loaded")));
+	check("and nothing is sent", h.sent, []);
 }
 
 rmSync(ROOT, { recursive: true, force: true });

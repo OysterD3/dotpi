@@ -86,8 +86,8 @@ const ONE_TIME_ROLE = "You are a one-time subagent. Do only what the task asks, 
  * The definition a one-time agent runs under, from the call's own fields.
  * Anything unusable throws: a tool name dropped here would leave the rest, or
  * nothing, and "nothing" means pi's default tools (bash, edit and write among
- * them) to spawn.ts, which is the one outcome worse than refusing (draft.ts has
- * the same rule).
+ * them) to spawn.ts, which is the one outcome worse than refusing (registry.ts
+ * skips an agent file with an empty tools line for the same reason).
  */
 export function oneTimeAgent(params: { model?: unknown; reasoning?: unknown; tools?: unknown }): SubagentDef {
 	let reasoning: string | undefined;

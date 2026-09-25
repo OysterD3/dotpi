@@ -2612,28 +2612,27 @@ refused rather than dropped, for the same reason as above. Those three fields ar
 *named* agent: its file is the promise, and a read-only reviewer must not come back able to edit
 because the caller asked.
 
-**Describe one, don't fill in seven dialogs.** `/subagents add a read-only reviewer on the frontier
-model that only greps and reads` hands the sentence to the session model, which drafts the whole
-definition — name, purpose, model, reasoning, tools, role prompt — and you get one confirm. The
-drafter is given the actual catalogue (the models that resolve, the seven thinking levels, the tools
-a headless spawn accepts) and its answer is checked against that catalogue again, because a model
-asked for JSON will invent a model id that is not signed in. Name and purpose are required — without
-them there is no draft; an unusable model, level or tool is dropped to the inherited default and
-said out loud in the confirm, since a subagent with nothing pinned still works. Decline the confirm
-and the wizard opens pre-filled rather than throwing the draft away.
+**Create one by asking for it.** "Make me a subagent that writes tests", in chat, or `/subagents add
+[what you want]`, which starts the same thing: the `subagent-creator` skill. It ships inside this
+extension (`skills/subagent-creator/SKILL.md`, handed to pi through `resources_discover`), not in
+`agent/skills/`, whose entries are links into a folder shared with other agents. It takes every value the request already gives, then asks — in one
+`ask_user` call — for the ones it left out: the job when that is unclear, the model (offering real
+ones from `pi --list-models` and the session model), the tools (read-only, read-and-run, or full),
+the reasoning level, and user or project scope when you are in a repository. Each question comes
+with a recommended answer and why; you can also type your own. It never fills a gap with a guess:
+with no one to ask (a headless run) it stops and says what is missing. Then it proposes a name and a
+role prompt, shows the whole file, and writes it only when you confirm. One way to create a
+subagent, so there is no second path to drift out of step with the file format.
 
-**The wizard is still there.** `/subagents add` with no description, plus `edit` and `remove`, walk
-through pi's dialogs — name, model (picked from your registry), reasoning, purpose, tools (all /
-read-only / custom), and an optional role prompt. Both paths write `agent/agents/<name>.md`, so the
-name has to be kebab-case to be a file name. They touch your agents only: a project agent is edited in
-its repository, and `/subagents edit` says where the file is instead. The five above ship as files in
-`agent/agents/`.
+**Changing one is a dialog.** `/subagents edit` and `remove` walk through pi's dialogs — purpose, model
+(picked from your registry), reasoning, tools (all / read-only / custom), and the role prompt — and
+write the file back. They touch your agents only: a project agent is edited in its repository, and
+`/subagents edit` says where the file is instead. The five above ship as files in `agent/agents/`.
 
 | File | Role |
 | --- | --- |
-| `index.ts` | Load on session start (cwd + trust), tool registration, `/subagents add\|edit\|remove` |
-| `draft.ts` | One sentence → a validated definition: the catalogue, the prompt, and the check (pure parse) |
-| `manage.ts` | The interactive wizard over pi's dialogs (pure of pi imports; scriptable in tests) |
+| `index.ts` | Load on session start (cwd + trust), tool registration, `/subagents add` (starts the skill), `edit`, `remove` |
+| `manage.ts` | The edit dialogs over pi's UI (pure of pi imports; scriptable in tests) |
 | `tool.ts` | The `task` dispatch tool: a named or one-time agent, resolve the model, spawn, return the report + usage |
 | `registry.ts` | Find the agent files (user, trusted project), parse/validate and write them (parse and write pure) |
 | `panel.ts` | The Subagent / Model / Reasoning / Purpose table (pure) |
@@ -3200,9 +3199,9 @@ things — extensions, themes, the permissions policy template, subagents — tr
 - **Models** — the session model is pi's own `defaultProvider` / `defaultModel` /
   `defaultThinkingLevel` in `agent/settings.json` (or whatever `/model` picked since). A feature
   that makes model calls of its own takes a model reference in the same file — `goal.model`,
-  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model` — and a subagent takes one on the
-  `model:` line of `agent/agents/<name>.md`. Unset, the feature uses the session model;
-  session-ref's summary and the `/subagents add` drafter always do. Write the full `provider/id`. A
+  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model`, `scheduler.model` — and a subagent
+  takes one on the `model:` line of `agent/agents/<name>.md`. Unset, the feature uses the session
+  model; session-ref's summary always does. Write the full `provider/id`. A
   bare id or a distinctive part of one also works, by pi's `--model` rules (exact before partial, an
   undated alias before a dated id), and an ambiguous reference is an error, never a silent pick.
   **A full `provider/id` works even when pi's model list does not have the id**, the same way
