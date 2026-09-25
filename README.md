@@ -217,6 +217,80 @@ money unattended; set it to `0` to let a goal run until you interrupt it.
 | `model.ts` | Resolving `goal.model` the way pi resolves `--model` |
 | `config.ts` | Limits and timeouts |
 
+**`agent/extensions/scheduler/`** — run a prompt later in this session, once or on a repeat, from a
+sentence.
+
+```
+remind me in 20 minutes to check the deploy          # in chat: the model calls the schedule tool
+every weekday at 9 run /recap
+/schedule every 2 hours run the tests                # one model call reads it, you confirm
+/schedules                                           # list, with the next run of each
+/schedules cancel s2                                 # or: cancel all, or cancel with no id for a picker
+```
+
+When a schedule is due, its prompt goes into the session as a user message, as if you had typed it.
+A prompt that starts with `/` runs as that extension command, skill or prompt template; pi's
+built-in commands (`/compact`, `/new`, `/model`) cannot be scheduled, because pi runs them only from
+the editor, and the tool refuses them. Anything else arrives with one line saying it is a scheduled
+task and that you may be away — without that line the model answers a task it did not see arrive
+with a question nobody is there to read.
+
+**Due prompts go out only while the agent is idle, one at a time.** A turn in progress — yours or
+another scheduled one — is never interrupted, and a scheduled `/recap` waits for the turn to end
+instead of summarising half of it. A plain prompt counts as delivered only when its run starts; one
+pi refuses (during `/compact`, with no model, with an expired login) is tried again 15 seconds
+later, up to five times, and then you are told it was skipped.
+
+There are three rules, and no cron: **once** (`in 20m`, `at 15:20`, `tomorrow 9am`, `mon 09:00`,
+`YYYY-MM-DD HH:MM`), **every** an interval of at least a minute, and **daily** at a local clock
+time, on every day or on chosen weekdays. Daily times are local wall-clock times, so 09:00 stays
+09:00 across a daylight-saving change. pi's system prompt carries no date, so the `at` forms need
+none, and every tool result and error starts with today's date and the local time and reads the
+resolved time back — a wrong date shows up in the transcript at once. A date that does not exist
+(`2026-09-31`) is refused, not moved to the next real day.
+
+**A schedule belongs to its session, and runs only while pi has that session open.** The list is
+saved in the session file and restored from the newest copy in it when the session starts again —
+the newest in the file, not on the current branch, because a schedule is a promise about the real
+clock, not part of the conversation: restored from the branch, `/tree` back to before a one-time
+task ran and a `/reload` brought it back to run again. A run missed while pi was closed or the
+machine slept happens once when the session opens again, and says it was missed — once, not once
+per missed occurrence. `/new` starts with no schedules, and so does a fork or clone: it copies the
+old session's entries, and restoring them would run the same schedule in two sessions. Each run is
+saved before its prompt is sent, so a `/reload` or `/resume` at the wrong moment cannot run it
+twice, and the timer reads the wall clock at least once a minute, so a task is never more than a
+minute late after a sleep. Nothing fires in `pi -p`: a one-shot run prints the answer to its own
+prompt, not to a scheduled one that slipped in first.
+
+`/schedule <sentence>` makes one model call with the current local time and time zone, then asks you
+to confirm. The time is read again at the moment you confirm, so `in 20m` means 20 minutes from
+then. pi does not save a session to disk until its first reply, so a `/schedule` in a brand-new
+session warns that it is lost if you quit before then.
+
+```jsonc
+// ~/.pi/agent/settings.json
+{
+  "scheduler": {
+    "model": "openai-codex/gpt-6-luna"   // reads /schedule sentences; unset = the session model
+  }
+}
+```
+
+With the `permissions` extension in `auto` mode, the classifier may ask before each `schedule`
+call — the tool queues a prompt that runs later without you watching. Add `Schedule` to
+`permissions.allow` if you want it to go through without asking.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Session wiring, `/schedule` and `/schedules` |
+| `tool.ts` | The `schedule` tool: add, list, cancel, and the lines they print |
+| `timer.ts` | The running list, one timer, save-then-send firing |
+| `state.ts` | Times and rules: parsing, next and last due time, words, restore (pure) |
+| `parse.ts` | The `/schedule` model call and its answer check (pure check) |
+| `model.ts` | Resolving `scheduler.model` the way pi resolves `--model` |
+| `config.ts` | Types, limits and names |
+| `scheduler.test.ts` | Unit and wiring coverage, with a fake clock that can sleep |
+
 **`agent/extensions/review/`** — adds `/simplify` and `/code-review`: structured review of the
 current diff, at a depth you choose.
 
