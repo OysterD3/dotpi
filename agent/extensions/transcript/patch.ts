@@ -481,6 +481,19 @@ function markBlock(cls: { prototype: { render: Render } }, mark: string, color: 
 }
 
 /**
+ * The component a renderer drew, out of the wrapper pi puts round it.
+ *
+ * Since pi 0.87 every child of a tool's shell is a MouseRegion (a click
+ * expands the call) holding that component as `child`; before, the child was
+ * the component itself. Told apart by shape, not `instanceof`, because older
+ * pi-tui has no MouseRegion to test against.
+ */
+function unwrapRegion(component: Component | undefined): Component | undefined {
+	const region = component as { child?: Component; onMouse?: unknown } | undefined;
+	return region?.child !== undefined && typeof region.onMouse === "function" ? region.child : component;
+}
+
+/**
  * The call block's lines, at the width its content gets.
  *
  * For every tool but one that is the call component rendered as it is. pi's
@@ -599,7 +612,7 @@ function unboxTools(): void {
 			const [call, ...rest] = shell.children;
 			// The children are pi's own cached components, so rendering them is
 			// cheap; what has to be kept off the hot path is the framing below.
-			const callRaw = callBlock(self, call, width - visibleWidth(CONFIG.callMark));
+			const callRaw = callBlock(self, unwrapRegion(call), width - visibleWidth(CONFIG.callMark));
 			const resultRaw = rest.flatMap((child) => child.render(width - visibleWidth(CONFIG.resultMark)));
 
 			// One memo per component, so the split has to survive the compare —

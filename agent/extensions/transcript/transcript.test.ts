@@ -26,8 +26,19 @@ const AGENT = join(ROOT, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
 
-const { getAgentDir, initTheme, getMarkdownTheme, generateDiffString, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent } =
-	await import("@earendil-works/pi-coding-agent");
+const {
+	getAgentDir,
+	initTheme,
+	getMarkdownTheme,
+	generateDiffString,
+	AssistantMessageComponent,
+	UserMessageComponent,
+	ToolExecutionComponent,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createGrepToolDefinition,
+	createReadToolDefinition,
+} = await import("@earendil-works/pi-coding-agent");
 if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
@@ -135,8 +146,15 @@ check("the background bar survives", (userLines[0] ?? "").includes(`${ESC}[48;`)
 console.log("\n--- a tool call ---");
 
 const ui = { requestRender() {} };
+// Since pi 0.87, ToolExecutionComponent no longer looks up a built-in tool's
+// renderers by name: interactive mode passes the tool's definition in. The
+// built-in calls here pass the same definitions, as pi does.
+const builtIn = (name: string) =>
+	({ bash: createBashToolDefinition, edit: createEditToolDefinition, grep: createGrepToolDefinition, read: createReadToolDefinition })[
+		name
+	]?.(ROOT) as never;
 function toolCall(name: string, args: unknown, output: string) {
-	const component = new ToolExecutionComponent(name, `id-${name}`, args, {}, undefined, ui as never, ROOT);
+	const component = new ToolExecutionComponent(name, `id-${name}`, args, {}, builtIn(name), ui as never, ROOT);
 	component.setArgsComplete();
 	component.markExecutionStarted();
 	component.updateResult({ content: [{ type: "text", text: output }], details: {}, isError: false }, false);
@@ -174,7 +192,7 @@ console.log("\n--- the dot is the only thing left that says how a call went ---"
 // has to carry it. Naming the colour rather than painting it keeps the check
 // on the decision instead of on a theme's hex values.
 setPaint((color, text) => `<${color}>${text}`);
-const failed = new ToolExecutionComponent("bash", "id-failed", { command: "pnpm lint" }, {}, undefined, ui as never, ROOT);
+const failed = new ToolExecutionComponent("bash", "id-failed", { command: "pnpm lint" }, {}, builtIn("bash"), ui as never, ROOT);
 failed.setArgsComplete();
 failed.markExecutionStarted();
 
@@ -409,7 +427,7 @@ check("nothing to say is nothing", summarise([]), "");
 	const chat = new Container();
 	chat.addChild(toolCall("read", { file_path: "a.ts" }, "aaa"));
 	chat.addChild(toolCall("read", { file_path: "b.ts" }, "bbb"));
-	const running = new ToolExecutionComponent("bash", "id-running", { command: "pnpm test" }, {}, undefined, ui as never, ROOT);
+	const running = new ToolExecutionComponent("bash", "id-running", { command: "pnpm test" }, {}, builtIn("bash"), ui as never, ROOT);
 	running.setArgsComplete();
 	running.markExecutionStarted();
 	chat.addChild(running);
@@ -591,7 +609,7 @@ console.log("\n--- pi's own edit: one line once it has landed ---");
 	const file = "edit-me.ts";
 	writeFileSync(join(ROOT, file), before);
 	const edits = [{ oldText: "const b = 2;", newText: "const b = 3;" }];
-	const edit = new ToolExecutionComponent("edit", "id-edit", { path: file, edits }, {}, undefined, ui as never, ROOT);
+	const edit = new ToolExecutionComponent("edit", "id-edit", { path: file, edits }, {}, builtIn("edit"), ui as never, ROOT);
 	edit.setArgsComplete();
 	edit.markExecutionStarted();
 	// pi computes the preview off the event loop, from the file on disk.
@@ -628,7 +646,7 @@ console.log("\n--- pi's own edit: one line once it has landed ---");
 	check("and its line is gone into the summary", folded.includes("+1 -1"), false);
 
 	// A failure keeps its reason: pi puts it in the call's body, not the result.
-	const failed = new ToolExecutionComponent("edit", "id-edit-fail", { path: file, edits: [{ oldText: "nope", newText: "x" }] }, {}, undefined, ui as never, ROOT);
+	const failed = new ToolExecutionComponent("edit", "id-edit-fail", { path: file, edits: [{ oldText: "nope", newText: "x" }] }, {}, builtIn("edit"), ui as never, ROOT);
 	failed.setArgsComplete();
 	failed.markExecutionStarted();
 	await new Promise((resolve) => setTimeout(resolve, 100));

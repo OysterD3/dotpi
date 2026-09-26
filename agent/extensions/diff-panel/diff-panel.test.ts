@@ -25,7 +25,9 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 initTheme("dark");
-const { theme } = await import("@earendil-works/pi-coding-agent/modes/interactive/theme/theme");
+// pi 0.87 exports only its entry points, not the theme module. initTheme puts
+// the theme on globalThis under this key, which pi shares across loaders.
+const theme = (globalThis as Record<symbol, unknown>)[Symbol.for("@earendil-works/pi-coding-agent:theme")] as never;
 const { visibleWidth } = await import("@earendil-works/pi-tui");
 
 const { countDiff, describe, gutterWidth, parseStatus } = await import("./model.ts");

@@ -32,6 +32,11 @@ import { goalElapsed, GoalState, restoreGoal, tokensSpent, type GoalEntryData } 
 import { buildSections, buildTranscript, fitSections } from "./transcript.ts";
 import { reassertInstruction, systemReminder, TRUNCATION_NOTICE } from "./prompts.ts";
 
+// The wiring below loads the extension, which reads goal.model from the agent
+// dir's settings.json. Pointed at the real ~/.pi/agent, a goal.model there
+// sent the test's fake ctx into a model lookup it has no registry for.
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "goal-agent-"));
+
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
 	const ok = JSON.stringify(got) === JSON.stringify(want);
