@@ -36,7 +36,8 @@ file overwrites, and no API-key fallback.
 
 **`agent/extensions/statusline/`** — custom footer. Line 1: model / cwd / branch / diff stat /
 version. Line 2: context bar and token totals. Line 3: subscription limit meters, when the
-provider reports any. Below those, one line per active workflow run and one per running
+provider reports any. Line 4: Qoder credits (balance left, this session's spend) while a Qoder
+model is selected. Below those, one line per active workflow run and one per running
 background shell, while any is in flight — ultracode and background-shell announce them on
 `pi.events` channels and the footer appends them, so background fleets and dev servers stay
 visible without opening a control panel. Nothing renders when nothing is running.

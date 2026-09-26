@@ -4,13 +4,15 @@
  * Line 1:  <model>  │  <cwd>  │  <branch>  │  +added,-removed  │  v<pi-version>
  * Line 2:  Context: [████····] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
  * Line 3:  Weekly: [████····] <pct>% (resets <time>)   [further windows, if any]
+ * Line 4:  Credits: [████····] <left> left (resets <date>)   Session: <spent>   (Qoder models only)
  * Last:    one line per active workflow run, while any is in flight
  *
- *   config.ts  tunables, colors, bar glyphs
- *   git.ts     working-tree diff counts
- *   usage.ts   subscription limit windows (Codex provider)
- *   render.ts  colors, number formatting, meters (pure)
- *   index.ts   footer wiring and layout
+ *   config.ts   tunables, colors, bar glyphs
+ *   git.ts      working-tree diff counts
+ *   usage.ts    subscription limit windows (Codex provider)
+ *   credits.ts  Qoder credit balance and session spend
+ *   render.ts   colors, number formatting, meters (pure)
+ *   index.ts    footer wiring and layout
  *
  * Data sources:
  *   - model / cwd / usage tokens : ctx.model, ctx.cwd, ctx.sessionManager.getEntries()
@@ -18,6 +20,7 @@
  *   - git branch                 : footerData.getGitBranch()
  *   - git diff (+/-)             : ./git.ts
  *   - subscription limits        : ./usage.ts
+ *   - Qoder credits              : ./credits.ts
  *
  * Line 3 appears only when the provider actually reports limit windows. Each window is
  * labelled by its own reported duration, not by slot order — a Codex account reports
@@ -41,8 +44,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 import { ASK_CHANNEL, CONFIG, SHELL_CHANNEL, SHELL_PANEL_CHANNEL, WORKFLOW_CHANNEL, WORKFLOW_PANEL_CHANNEL } from "./config.ts";
+import { type CreditsReader, createCreditsReader, isQoderProvider, sessionCredits } from "./credits.ts";
 import { makeGitDiffCounter } from "./git.ts";
 import {
+	creditsLine,
 	formatCwd,
 	formatTokens,
 	limitSegment,
@@ -65,6 +70,12 @@ function piVersion(): string {
 export default function (pi: ExtensionAPI) {
 	const version = piVersion();
 
+	// A finished run, a compaction or a branch summary is when the Qoder balance moves.
+	let credits: CreditsReader | null = null;
+	pi.on("agent_end", () => credits?.markStale());
+	pi.on("session_compact", () => credits?.markStale());
+	pi.on("session_tree", () => credits?.markStale());
+
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 
@@ -73,6 +84,8 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
 			const usage = CONFIG.showLimits ? createUsageReader(ctx, () => tui.requestRender()) : null;
+			const creditsReader = CONFIG.showLimits ? createCreditsReader(ctx, () => tui.requestRender()) : null;
+			credits = creditsReader;
 
 			// ultracode re-announces on every panel tick while runs are live and
 			// once more when the last one settles, so this both fills and clears
@@ -127,6 +140,8 @@ export default function (pi: ExtensionAPI) {
 					unsubShells();
 					unsubShellPanel();
 					usage?.dispose();
+					creditsReader?.dispose();
+					if (credits === creditsReader) credits = null;
 				},
 				invalidate() {},
 				render(width: number): string[] {
@@ -137,7 +152,8 @@ export default function (pi: ExtensionAPI) {
 					let output = 0;
 					let cacheRead = 0;
 					let cacheWrite = 0;
-					for (const entry of ctx.sessionManager.getEntries()) {
+					const entries = ctx.sessionManager.getEntries();
+					for (const entry of entries) {
 						if (entry.type === "message" && entry.message.role === "assistant") {
 							const u = (entry.message as AssistantMessage).usage;
 							input += u.input;
@@ -213,6 +229,12 @@ export default function (pi: ExtensionAPI) {
 					if (limits && limits.windows.length > 0) {
 						const segments = limits.windows.map((limit) => limitSegment(theme, limit));
 						lines.push(truncateToWidth(segments.join("   "), width));
+					}
+
+					// --- Qoder credits, while a Qoder model is selected ---
+					if (creditsReader && isQoderProvider(ctx.model?.provider)) {
+						const line = creditsLine(theme, creditsReader.get(ctx.model?.provider), sessionCredits(entries));
+						if (line) lines.push(truncateToWidth(line, width));
 					}
 
 					// --- last: active workflow runs, while any is in flight ---

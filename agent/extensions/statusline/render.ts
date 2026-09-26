@@ -7,6 +7,7 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { BAR_FILL, BAR_TRACK, CONFIG, type ColorSpec } from "./config.ts";
+import type { QoderBalance } from "./credits.ts";
 import type { LimitWindow } from "./usage.ts";
 
 /** Paint `text` with a CONFIG.colors entry, honoring either a theme role or a hex value. */
@@ -80,6 +81,11 @@ export function formatReset(epochSeconds: number | undefined): string {
 		return `${minutes}m left`;
 	}
 
+	// Past a week a weekday names the wrong week; say the date ("resets Nov 3").
+	if (reset.getTime() - Date.now() > 7 * 24 * 60 * 60 * 1000) {
+		return `resets ${reset.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+	}
+
 	const time = `${reset.getHours().toString().padStart(2, "0")}:${reset
 		.getMinutes()
 		.toString()
@@ -119,4 +125,37 @@ export function limitSegment(theme: Theme, window: LimitWindow): string {
 		` ${paint(theme, meterColor(pct), `${pct}%`)}` +
 		(reset ? ` ${paint(theme, CONFIG.colors.reset, `(${reset})`)}` : "")
 	);
+}
+
+/** "1,250" / "12.4": whole credits once they are big enough that tenths are noise. */
+export function formatCredits(credits: number): string {
+	return credits.toLocaleString("en-US", { maximumFractionDigits: Math.abs(credits) >= 100 ? 0 : 1 });
+}
+
+/**
+ * "Credits: [████████····] 1,250 left (resets Nov 3)   Session: 12.4"
+ *
+ * Either half can be missing: the balance while its first fetch is in flight (or
+ * failing), the session part until a Qoder response has reported credits.
+ */
+export function creditsLine(
+	theme: Theme,
+	balance: QoderBalance | null,
+	session: number | undefined,
+): string | undefined {
+	const parts: string[] = [];
+	if (balance) {
+		const pct = Math.round(balance.usedPercent);
+		const reset = formatReset(balance.resetsAt);
+		parts.push(
+			meter(theme, pct) +
+				` ${paint(theme, meterColor(pct), `${formatCredits(balance.available)} left`)}` +
+				(reset ? ` ${paint(theme, CONFIG.colors.reset, `(${reset})`)}` : ""),
+		);
+	}
+	if (session !== undefined) {
+		parts.push(paint(theme, CONFIG.colors.label, "Session: ") + formatCredits(session));
+	}
+	if (parts.length === 0) return undefined;
+	return paint(theme, CONFIG.colors.label, "Credits: ") + parts.join("   ");
 }
