@@ -533,8 +533,8 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   </svg>
   </div>
   <figcaption>
-    <span class="le"><strong>Why the bus matters.</strong> The statusline shows live workflow runs because dynamic-workflow announces them — not because the footer knows what that extension is. Turn a producer off and the consumer just goes quiet. That is what makes 23 extensions independently installable. The dashed arrow back into pi core is an extension <em>replacing</em> a built-in: this config replaces <code>bash</code>, the footer, and (via a pinned package) <code>find</code> and <code>grep</code>.</span>
-    <span class="lz"><strong>总线为什么重要。</strong>状态栏能显示正在跑的工作流，是因为 dynamic-workflow 主动广播，而不是因为页脚认识它。关掉某个生产者，消费者只是安静下来。这正是 23 个扩展能各自独立安装的原因。指回 pi core 的虚线箭头表示扩展<em>替换</em>了内置实现：本配置替换了 <code>bash</code>、页脚，以及（通过一个锁定的包）<code>find</code> 和 <code>grep</code>。</span>
+    <span class="le"><strong>Why the bus matters.</strong> The statusline shows live workflow runs because dynamic-workflow announces them — not because the footer knows what that extension is. Turn a producer off and the consumer just goes quiet. That is what makes 23 extensions independently installable. The dashed arrow back into pi core is an extension <em>replacing</em> a built-in: this config replaces <code>bash</code> and the footer.</span>
+    <span class="lz"><strong>总线为什么重要。</strong>状态栏能显示正在跑的工作流，是因为 dynamic-workflow 主动广播，而不是因为页脚认识它。关掉某个生产者，消费者只是安静下来。这正是 23 个扩展能各自独立安装的原因。指回 pi core 的虚线箭头表示扩展<em>替换</em>了内置实现：本配置替换了 <code>bash</code> 和页脚。</span>
   </figcaption>
   </figure>
 </section>
@@ -1214,7 +1214,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
   <b>"memory"</b>:         { <span class="k">"enabled"</span>: <span class="n">true</span>, <span class="k">"includeFacts"</span>: <span class="n">true</span>, <span class="k">"maxChars"</span>: <span class="n">24000</span> },
   <b>"dynamicWorkflow"</b>: { <span class="k">"keywordTrigger"</span>: <span class="n">true</span>, <span class="k">"model"</span>: <span class="s">"openai-codex/gpt-5.6-sol"</span> },
 
-  <span class="k">"packages"</span>: [<span class="s">"npm:@ff-labs/pi-fff@0.10.1"</span>]   <span class="c">// pin exactly; the pins ARE the lockfile</span>
+  <span class="k">"packages"</span>: [<span class="s">"git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055"</span>]   <span class="c">// pin exactly; the pins ARE the lockfile</span>
 }</pre>
 
   <h3><span class="le">Every key, with its default</span><span class="lz">全部配置项与默认值</span></h3>
@@ -1277,7 +1277,7 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
     <tbody>
 
     <tr><th><span class="le">Extensibility</span><span class="lz">可扩展性</span></th>
-      <td data-c="pi + config" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">~40 hooks, TypeScript extensions that can <em>replace</em> a built-in tool — this config replaces <code>bash</code>, the footer, <code>find</code> and <code>grep</code>.</span><span class="lz">约 40 个 hook，TypeScript 扩展可<em>替换</em>内置工具——本配置替换了 <code>bash</code>、页脚、<code>find</code> 和 <code>grep</code>。</span></span></td>
+      <td data-c="pi + config" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">~40 hooks, TypeScript extensions that can <em>replace</em> a built-in tool — this config replaces <code>bash</code> and the footer.</span><span class="lz">约 40 个 hook，TypeScript 扩展可<em>替换</em>内置工具——本配置替换了 <code>bash</code> 和页脚。</span></span></td>
       <td data-c="Claude Code" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">~30 lifecycle events; handlers can be shell commands, HTTP endpoints, LLM prompts or subagents. Plugins from a directory, SHA-pinned zip, or marketplace.</span><span class="lz">约 30 个生命周期事件；处理器可为 shell 命令、HTTP 端点、LLM 提示词或子 agent。插件来自目录、SHA 锁定 zip 或市场。</span></span></td>
       <td data-c="Codex CLI" class="qc" tabindex="0" role="button"><span class="v native">native</span><span class="d"><span class="le">11 hook events in <code>hooks.json</code> with hash-based trust and an admin <code>allow_managed_hooks_only</code> switch, plus <code>codex plugin add</code>.</span><span class="lz"><code>hooks.json</code> 中 11 个 hook 事件，基于哈希的信任机制和管理员开关 <code>allow_managed_hooks_only</code>，外加 <code>codex plugin add</code>。</span></span></td></tr>
 
@@ -1427,13 +1427,12 @@ figure.iann .np:hover rect.hit,figure.iann .np[data-on] rect.hit{fill:rgba(var(-
     <div class="card">
       <h3 style="margin-top:0"><span class="le">Pinned packages</span><span class="lz">锁定的第三方包</span></h3>
       <ul class="tight">
-        <li><code>@ff-labs/pi-fff</code> — <span class="le">replaces <code>find</code> and <code>grep</code> with a Rust indexed searcher; also backs <code>@</code> autocomplete.</span><span class="lz">用 Rust 索引搜索替换 <code>find</code> 与 <code>grep</code>；同时支撑 <code>@</code> 自动补全。</span></li>
         <li><code>pi-openai-server-compaction</code> — <span class="le">Codex-style server-side compaction instead of a text summary.</span><span class="lz">Codex 式的服务端压缩，替代文本摘要。</span></li>
         <li><code>pi-web-access</code> — <span class="le">web search, URL fetch, repo clone, PDF and video extraction.</span><span class="lz">网页搜索、URL 抓取、仓库克隆、PDF 与视频提取。</span></li>
         <li><code>pi-provider-qoder</code>, <code>codex-fast-mode</code></li>
       </ul>
-      <p class="cap"><span class="le">All five pinned to an exact version or commit: the lockfile lives in gitignored <code>agent/npm/</code>, so the pins <em>are</em> the record. Two extensions claiming one tool name are decided by load order — and the <strong>first</strong> registration wins, with installed packages loading last.</span>
-      <span class="lz">五个全部锁定到精确版本或 commit：lockfile 在被 gitignore 的 <code>agent/npm/</code> 里，所以这些锁定<em>本身</em>就是记录。两个扩展抢同一个工具名由加载顺序决定——胜出的是<strong>第一个</strong>注册者，而已安装的包最后加载。</span></p>
+      <p class="cap"><span class="le">All four pinned to an exact version or commit: the lockfile lives in gitignored <code>agent/npm/</code>, so the pins <em>are</em> the record. Two extensions claiming one tool name are decided by load order — and the <strong>first</strong> registration wins, with installed packages loading last.</span>
+      <span class="lz">四个全部锁定到精确版本或 commit：lockfile 在被 gitignore 的 <code>agent/npm/</code> 里，所以这些锁定<em>本身</em>就是记录。两个扩展抢同一个工具名由加载顺序决定——胜出的是<strong>第一个</strong>注册者，而已安装的包最后加载。</span></p>
     </div>
   </div>
 </section>

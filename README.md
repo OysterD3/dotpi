@@ -3052,24 +3052,6 @@ Third-party packages are listed in `settings.packages`. `pi install` vendors the
 | `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
 | `pi-cache-optimizer` | Cache diagnostics and provider-specific request optimizations. Codex skips prompt rewrites; cache hits are not guaranteed. Run `/cache-optimizer stats` or `/cache-optimizer doctor` after `/reload`. | `agent/pi-cache-optimizer-config.json` and local statistics (gitignored); the custom footer hides its status chip. |
 | `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
-| `@ff-labs/pi-fff` | **Replaces the built-in `find` and `grep`** with FFF, a Rust-native indexed searcher: fuzzy matching, frecency ranking, git-aware, no `fd`/`rg` subprocess per call. Also backs `@` file autocomplete. | `PI_FFF_MODE` env var / `--fff-mode` flag |
-
-**The `compact-tools` extension was removed for this.** It re-registered `read`, `bash`, `grep`,
-`find` and `ls` to give each a one-line collapsed row, and pi-fff in `override` mode re-registers
-`find` and `grep` for real. Two extensions claiming the same tool name is decided by load order, and
-it resolves the opposite way to the obvious guess: `getAllRegisteredTools` keeps the **first**
-registration for a name (`if (!toolsByName.has(name))`), and installed packages load **last**, after
-`agent/extensions/`. So **compact-tools would have won, and pi-fff's `find`/`grep` would have been
-the thing silently ignored** — the collision would have quietly defeated the package that was
-installed for exactly those two tools. Deleting the local extension is what actually hands the names
-to FFF, not merely a tidy-up. The cost is that `read`, `bash` and `ls` go back to pi's default
-multi-line collapsed rendering.
-
-**`override` mode is set via `PI_FFF_MODE=override` in `~/.zshrc`**, not here. pi has no settings
-key for extension flags — the mode comes from `--fff-mode`, the env var, or `/fff-mode override`,
-and the last of those only persists for one session (it is stored as a session entry). With the
-`env` extension gone there is no `.env` to put it in either, so the shell profile is the only
-durable place left.
 
 **Use exact versions or commits for reproducible installs.** The lockfile lives in `agent/npm/`,
 which is gitignored, so floating packages can resolve to a different build on another machine.

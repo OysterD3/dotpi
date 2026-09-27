@@ -4,6 +4,7 @@
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "xhigh",
+  "defaultTools": ["read", "bash", "edit", "write", "grep", "find"],
   "externalEditor": "nvim",
   "quietStartup": true,
   "steeringMode": "all",
@@ -69,7 +70,6 @@
     "npm:pi-web-access",
     "npm:pi-openai-fast-mode",
     "git:github.com/algal/pi-openai-server-compaction@c6d593087709e9481223dc6c6c2269b371b5e055",
-    "npm:@ff-labs/pi-fff@0.10.1",
     "npm:pi-mcp-adapter",
     "npm:pi-cache-optimizer"
   ],
