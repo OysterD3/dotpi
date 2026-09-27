@@ -1722,11 +1722,14 @@ console.log("\n--- tool: where a script comes from ---");
 	check(
 		"resuming a run with no stored script is an error",
 		(() => {
+			const empty = mkdtempSync(join(tmpdir(), "wf-empty-"));
 			try {
-				resolveScript({ resumeFromRunId: "wf-missing" }, mkdtempSync(join(tmpdir(), "wf-empty-")));
+				resolveScript({ resumeFromRunId: "wf-missing" }, empty);
 				return "no-throw";
 			} catch (error) {
 				return (error as Error).message.includes("stored script is missing") ? "threw" : "wrong-error";
+			} finally {
+				rmSync(empty, { recursive: true, force: true });
 			}
 		})(),
 		"threw",
@@ -2486,6 +2489,7 @@ console.log("\n--- store: the outcome file outlives the process ---");
 	// message that says a run finished without saying anything about it.
 	writeOutcome(dir, "wf-2", "");
 	check("an empty outcome reads as nothing to say", readOutcome(dir, "wf-2"), undefined);
+	rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("\n--- notice: runs owed from earlier sessions ---");

@@ -9,7 +9,7 @@
  * that cannot be read.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUTO, CONFIG, CYCLE, nextMode, type Mode } from "./config.ts";
@@ -373,6 +373,7 @@ eq(
 console.log("layering — what an untrusted project may do to auto mode");
 
 const root = mkdtempSync(join(tmpdir(), "pi-perms-"));
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const agentDir = join(root, "agent");
 const project = join(root, "project");
 mkdirSync(agentDir, { recursive: true });

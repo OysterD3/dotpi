@@ -17,6 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = mkdtempSync(join(tmpdir(), "ultracode-e2e-"));
+// Also removed mid-run, on purpose (see "panel survives a dead session"); the
+// blocks after that write into it again, so it is removed once more on exit.
+process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 const AGENT = join(ROOT, "agent");
 const CWD = join(ROOT, "project");
 mkdirSync(AGENT, { recursive: true });

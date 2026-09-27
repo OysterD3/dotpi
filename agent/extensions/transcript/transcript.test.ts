@@ -17,11 +17,12 @@
  * dependencies of this repo):
  *     node node_modules/jiti/lib/jiti-cli.mjs agent/extensions/transcript/transcript.test.ts
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = mkdtempSync(join(tmpdir(), "transcript-test-"));
+process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 const AGENT = join(ROOT, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;

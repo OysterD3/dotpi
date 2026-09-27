@@ -35,7 +35,9 @@ import { reassertInstruction, systemReminder, TRUNCATION_NOTICE } from "./prompt
 // The wiring below loads the extension, which reads goal.model from the agent
 // dir's settings.json. Pointed at the real ~/.pi/agent, a goal.model there
 // sent the test's fake ctx into a model lookup it has no registry for.
-process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "goal-agent-"));
+const AGENT_DIR = mkdtempSync(join(tmpdir(), "goal-agent-"));
+process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
+process.on("exit", () => rmSync(AGENT_DIR, { recursive: true, force: true }));
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {

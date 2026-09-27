@@ -121,6 +121,7 @@ console.log("\n--- loadBranchEntries follows the branch pi would resume ---");
 	const migrated = buildSections(loadBranchEntries(v1) as never);
 	check("an old-format file keeps its whole conversation", migrated.length, 2);
 	checkTrue("in order", migrated[0].includes("first line") && migrated[1].includes("second line"));
+	rmSync(dir, { recursive: true, force: true });
 }
 
 // ------------------------------------------------------------- transcript budget
@@ -461,6 +462,7 @@ console.log("\n--- # to submit, against a scripted fake pi ---");
 	checkTrue("and the reason it failed is reported", notices.some((n) => n.includes("no api key here")));
 	check("a failed summary injects nothing", sent.length, 1);
 	check("and leaves the prompt as typed", summary, { action: "continue" });
+	rmSync(dir, { recursive: true, force: true });
 }
 
 // ------------------------------------------------- what the review found

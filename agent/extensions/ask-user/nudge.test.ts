@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = mkdtempSync(join(tmpdir(), "ask-nudge-test-"));
+process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 const AGENT = join(ROOT, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
@@ -345,6 +346,7 @@ console.log("\n--- settings.ts: contractModels ---");
 	check("a non-object askUser block is ignored, not fatal", loadSettings(dir, project, false).settings.contractModels, [
 		...CONFIG.contractModels,
 	]);
+	rmSync(dir, { recursive: true, force: true });
 }
 
 // -------------------------------------------------------------------- wiring
