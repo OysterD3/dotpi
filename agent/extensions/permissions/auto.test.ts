@@ -57,7 +57,7 @@ const behavior = (policy: CompiledPolicy, tool: string, input: Record<string, un
 // ---------------------------------------------------------------------------
 console.log("image generation — file writes and an external request");
 
-eq("askMutating prompts for image generation", behavior(policyFor({ defaultMode: "askMutating" }), "generate_image", { prompt: "a circle", path: "image.png" }), "ask");
+eq("acceptChanges prompts for image generation", behavior(policyFor({ defaultMode: "acceptChanges" }), "generate_image", { prompt: "a circle", path: "image.png" }), "ask");
 for (const path of ["private/image.png", "@private/image.png", "public/../private/image.png"]) {
 	eq(`image path deny rules apply to ${path}`, behavior(policyFor({ deny: ["Generate_image(private/**)"] }), "generate_image", { path }), "deny");
 }
@@ -237,7 +237,7 @@ eq(
 );
 
 // The one place auto mode must not save money: an allowlisted command that is
-// also destructive still asks, exactly as it does under askDestructive.
+// also destructive still goes to the table's verdict, as in every mode but allowAll.
 eq(
 	"allow does not launder a destructive command",
 	behavior(policyFor({ defaultMode: "auto", allow: ["Bash(git *)"] }), "bash", { command: "git push --force" }),
@@ -381,18 +381,54 @@ mkdirSync(join(project, ".pi"), { recursive: true });
 const writeUser = (value: unknown) => writeFileSync(join(agentDir, "settings.json"), JSON.stringify(value));
 const writeProject = (value: unknown) => writeFileSync(join(project, ".pi", "settings.json"), JSON.stringify(value));
 
+eq("with no settings file the mode is auto", loadSettings(agentDir, project, true).settings.defaultMode, "auto");
+
+// The removed mode names are not mapped onto the new ones. A file that still
+// names one gets the default and a warning that says what the names are now.
+for (const old of ["askDestructive", "askMutating", "denyAll"]) {
+	writeUser({ permissions: { defaultMode: old } });
+	const loaded = loadSettings(agentDir, project, true);
+	eq(`the old mode ${old} falls back to the default`, loaded.settings.defaultMode, "auto");
+	check(
+		`and the warning for ${old} lists the four modes`,
+		loaded.warnings.some((line) => line.includes(`unknown defaultMode "${old}"`) && line.includes("allowAll, auto, acceptChanges, askAll")),
+		loaded.warnings.join(" | "),
+	);
+}
+
 writeUser({ permissions: { defaultMode: "auto", auto: { model: "mine/small", onError: "ask" } } });
 
-writeProject({ permissions: { defaultMode: "askMutating" } });
+// An old name in an untrusted project is unknown, not a loosening: denyAll was
+// the strictest mode there was, and "cannot loosen" would say the opposite.
+writeProject({ permissions: { defaultMode: "denyAll" } });
+{
+	const loaded = loadSettings(agentDir, project, false);
+	eq("an untrusted project's old denyAll leaves the mode alone", loaded.settings.defaultMode, "auto");
+	check(
+		"and is reported as unknown, with the four modes",
+		loaded.warnings.some((line) => line.includes(`unknown defaultMode "denyAll"`) && line.includes("allowAll, auto, acceptChanges, askAll")) &&
+			!loaded.warnings.some((line) => line.includes("cannot loosen")),
+		loaded.warnings.join(" | "),
+	);
+}
+
+writeProject({ permissions: { defaultMode: "acceptChanges" } });
 eq(
-	"an untrusted project cannot trade auto for askMutating",
+	"an untrusted project cannot trade auto for acceptChanges",
 	loadSettings(agentDir, project, false).settings.defaultMode,
 	"auto",
 );
 eq(
 	"a trusted project still can",
 	loadSettings(agentDir, project, true).settings.defaultMode,
-	"askMutating",
+	"acceptChanges",
+);
+
+writeProject({ permissions: { defaultMode: "allowAll" } });
+eq(
+	"an untrusted project cannot loosen auto to allowAll",
+	loadSettings(agentDir, project, false).settings.defaultMode,
+	"auto",
 );
 
 writeProject({ permissions: { defaultMode: "askAll" } });
@@ -406,17 +442,25 @@ eq(
 // spends money on every unrecognised tool call and sends that repo's command
 // text to a provider — and since the auto block is trusted-only, it cannot even
 // name a cheap model, so the bill lands on the session's frontier model.
-writeUser({ permissions: { defaultMode: "askDestructive" } });
+// allowAll is the one mode below auto on the ladder, so it is the one where the
+// index comparison would say yes and only that rule says no.
+writeUser({ permissions: { defaultMode: "allowAll" } });
 writeProject({ permissions: { defaultMode: "auto" } });
 eq(
 	"an untrusted project cannot switch the session into auto",
 	loadSettings(agentDir, project, false).settings.defaultMode,
-	"askDestructive",
+	"allowAll",
 );
 eq(
 	"a trusted one still can",
 	loadSettings(agentDir, project, true).settings.defaultMode,
 	"auto",
+);
+writeProject({ permissions: { defaultMode: "acceptChanges" } });
+eq(
+	"an untrusted project may tighten allowAll to acceptChanges",
+	loadSettings(agentDir, project, false).settings.defaultMode,
+	"acceptChanges",
 );
 writeUser({ permissions: { defaultMode: "auto", auto: { model: "mine/small", onError: "ask" } } });
 
@@ -633,7 +677,7 @@ console.log("the destructive table is not switched off by tightening the mode");
 // The hole this pins: findings are checked ahead of `allow` rules, so a mode
 // that skipped the table let an allow rule short-circuit a destructive command.
 // Every mode that prompts at all must run it, or "being more careful" loosens.
-for (const mode of ["askDestructive", "auto", "askMutating", "askAll", "denyAll"] as Mode[]) {
+for (const mode of ["auto", "acceptChanges", "askAll"] as Mode[]) {
 	const permissive = policyFor({ defaultMode: mode, allow: ["Bash(git *)", "Bash(rm *)"] });
 	// The invariant is that `allow` never launders the finding — NOT which of the
 	// two non-allow outcomes follows. auto sends it to the model (decide.ts), the
@@ -714,39 +758,32 @@ console.log("the Shift+Tab cycle");
 // The real function the shortcut calls, not a reimplementation of it.
 const step = nextMode;
 
-eq("askDestructive → auto", step("askDestructive"), "auto");
-eq("auto → askMutating", step("auto"), "askMutating");
-eq("askMutating → askAll", step("askMutating"), "askAll");
-eq("askAll wraps to askDestructive", step("askAll"), "askDestructive");
+eq("auto → acceptChanges", step("auto"), "acceptChanges");
+eq("acceptChanges → askAll", step("acceptChanges"), "askAll");
+eq("askAll wraps to auto", step("askAll"), "auto");
 
-// The two extremes are not reachable by tabbing, in either direction.
+// The loose end is not reachable by tabbing.
 check("allowAll is not in the cycle", !CYCLE.includes("allowAll"));
-check("denyAll is not in the cycle", !CYCLE.includes("denyAll"));
 
 // allowAll enters at the front, which is a tightening.
-eq("allowAll enters the cycle at the front", step("allowAll"), "askDestructive");
-
-// denyAll does NOT. The same step from there is the biggest loosening in the
-// ladder, and it was one mistyped keystroke away — with no prompt to notice it,
-// since denyAll refuses without ever asking. Leaving it needs /permissions mode.
-eq("denyAll refuses to cycle", step("denyAll"), undefined);
+eq("allowAll enters the cycle at the front", step("allowAll"), "auto");
 
 // Cycling must visit every entry and return, or a mode becomes unreachable.
 const visited = new Set<Mode>();
-let cursor: Mode | undefined = "askDestructive";
-for (let i = 0; i < CYCLE.length && cursor; i++) {
+let cursor: Mode = "auto";
+for (let i = 0; i < CYCLE.length; i++) {
 	visited.add(cursor);
 	cursor = step(cursor);
 }
 eq("the cycle visits every mode in it", visited.size, CYCLE.length);
-eq("and returns to where it started", cursor, "askDestructive");
+eq("and returns to where it started", cursor, "auto");
 
 // The override is a shallow copy of the compiled policy with one field changed.
 // If that copy shared `settings`, tabbing would edit the loaded policy in place
 // and /permissions reload would not undo it.
-const base = policyFor({ defaultMode: "askDestructive", allow: ["Bash(npm test *)"] });
+const base = policyFor({ defaultMode: "acceptChanges", allow: ["Bash(npm test *)"] });
 const overridden = { ...base, settings: { ...base.settings, defaultMode: "auto" as Mode } };
-eq("the override does not touch the loaded policy", base.settings.defaultMode, "askDestructive");
+eq("the override does not touch the loaded policy", base.settings.defaultMode, "acceptChanges");
 eq("but does change the active one", overridden.settings.defaultMode, "auto");
 eq("and rules survive the copy", behavior(overridden, "bash", { command: "npm test" }), "allow");
 

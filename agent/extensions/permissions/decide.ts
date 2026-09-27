@@ -50,16 +50,21 @@
  * Step 4 has two members that are not in any settings file: a hook's verdict
  * (above), and a path tool writing inside the session scratchpad. The second
  * sits at the allow step precisely so it inherits that step's bounds — deny
- * rules and the destructive table have both already run — and it is excluded
- * from `denyAll`. See scratch.ts.
+ * rules and the destructive table have both already run. See scratch.ts.
+ *
+ * `acceptChanges` allows a `write` or `edit` inside the workspace at step 5,
+ * the mode's default, so every rule above still wins over it. Like the
+ * scratchpad, that allow is text only and index.ts confirms it against the
+ * filesystem (see workspace.ts).
  */
 
 import { findDestructive, findHardInContent, type Finding } from "./destructive.ts";
 import { firstMatch, type Rule } from "./rules.ts";
 import { targetsScratchpad } from "./scratch.ts";
 import type { PermissionSettings } from "./settings.ts";
-import { MUTATING_TOOLS, PATH_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
+import { PATH_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
 import { isTrivial } from "./trivial.ts";
+import { editsWorkspace } from "./workspace.ts";
 
 /**
  * `classify` is not a verdict — it is "the deterministic policy has nothing to
@@ -87,6 +92,13 @@ export type Decision = {
 	 * failure the day someone reworded it.
 	 */
 	scratch?: true;
+	/**
+	 * Set when `acceptChanges` allowed an edit because its path is inside the
+	 * workspace. The same kind of marker as `scratch`, for the same reason: the
+	 * caller confirms it against the filesystem (escapesWorkspace in
+	 * workspace.ts).
+	 */
+	workspace?: true;
 };
 
 export type CompiledPolicy = {
@@ -107,6 +119,13 @@ export type Call = {
 	 * its absence makes: nothing else here consults it.
 	 */
 	scratchDir?: string;
+	/**
+	 * The workspace directories (cwd first; see workspace.ts). Only
+	 * `acceptChanges` reads it. Absent or empty, no edit is inside it.
+	 */
+	workspace?: readonly string[];
+	/** pi's agent dir, for the config files there that `acceptChanges` protects. */
+	agentDir?: string;
 	/**
 	 * A PreToolUse hook's verdict on this one call, from the hooks extension.
 	 * Weighed exactly as a matching rule of the same kind: `ask` where ask rules
@@ -139,17 +158,13 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	// The table runs in every mode except `allowAll`, which is the one mode where
 	// the user asked not to be prompted at all.
 	//
-	// It used to run only for `askDestructive` and `auto`, and that was a hole
+	// It used to run only for the table-only mode and `auto`, and that was a hole
 	// rather than an optimisation. Findings are checked ahead of `allow` rules
-	// (see the header); skipping them in `askMutating`/`askAll` meant an allow
-	// rule short-circuited first, so `Bash(git *)` silently re-permitted
-	// `git push --force` in the two modes a user reaches by trying to be MORE
+	// (see the header); skipping them in the stricter modes meant an allow rule
+	// short-circuited first, so `Bash(git *)` silently re-permitted
+	// `git push --force` in the modes a user reaches by trying to be MORE
 	// careful. Both Shift+Tab and an untrusted project could walk a session into
 	// that state, which made "tightening" a way to loosen.
-	//
-	// `denyAll` runs it too, for the same reason: its allow rules are the only
-	// thing that can let anything through, and a destructive command should not
-	// be one of them without a prompt.
 	// The table runs in EVERY mode, including allowAll, because of the hard
 	// findings below: a refusal that a mode switch turns off is not one. The
 	// soft findings are still filtered out for allowAll immediately after, which
@@ -210,25 +225,22 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		return { behavior: "ask", reason: describe(findings), findings };
 	}
 
-	// The scratchpad, at the allow step and under the allow step's bounds. Not in
-	// `denyAll`: there, an explicit allow rule is the only thing that lets
-	// anything run, and an implicit one written in no settings file should not
-	// join that list. Everywhere else the directory was created by this session
-	// for this session, outside the project, and the model was told in its system
-	// prompt to put scratch files there — so a prompt here is one the user would
-	// approve every time, which is the kind that teaches them to stop reading.
+	// The scratchpad, at the allow step and under the allow step's bounds. The
+	// directory was created by this session for this session, outside the
+	// project, and the model was told in its system prompt to put scratch files
+	// there — so a prompt here is one the user would approve every time, which is
+	// the kind that teaches them to stop reading.
 	//
 	// Below the findings re-check rather than above it, though the two cannot
 	// interact — findings exist only for bash, which is not a path tool. Ordering
 	// it this way means "it is bounded by everything an allow rule is bounded by"
 	// can be read off the file instead of proved.
-	if (mode !== "denyAll" && targetsScratchpad(call)) {
+	if (targetsScratchpad(call)) {
 		return { behavior: "allow", reason: "inside this session's scratchpad", scratch: true };
 	}
 
 	switch (mode) {
 		case "allowAll":
-		case "askDestructive":
 			return { behavior: "allow", reason: "no rule matched" };
 		case "auto":
 			// Kept inline rather than imported from auto.ts, which would drag the AI
@@ -246,14 +258,19 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 				if (command !== undefined && isTrivial(command)) return { behavior: "allow", reason: "trivially safe command" };
 			}
 			return { behavior: "classify", reason: "no rule matched — asking the classifier" };
-		case "askMutating":
-			return MUTATING_TOOLS.has(tool)
-				? { behavior: "ask", reason: `${tool} can modify files` }
-				: { behavior: "allow", reason: "read-only tool" };
+		case "acceptChanges":
+			// Claude Code's acceptEdits: reads and workspace edits run, and
+			// everything else — bash included — is put to the user. A soft
+			// destructive finding already asked above, so bash gets here only
+			// when the table found nothing.
+			if (READ_ONLY_TOOLS.has(tool)) return { behavior: "allow", reason: "read-only tool" };
+			if (editsWorkspace(call)) return { behavior: "allow", reason: "an edit inside the workspace", workspace: true };
+			if (tool === "write" || tool === "edit") {
+				return { behavior: "ask", reason: `acceptChanges mode: this ${tool} is outside the workspace or on a protected path` };
+			}
+			return { behavior: "ask", reason: `acceptChanges mode: ${tool} is not a file edit` };
 		case "askAll":
 			return { behavior: "ask", reason: "askAll mode" };
-		case "denyAll":
-			return { behavior: "deny", reason: "denyAll mode: no allow rule matched" };
 	}
 }
 

@@ -383,7 +383,7 @@ shape can be pasted straight in:
 {
   "theme": "one-dark-pro",
   "permissions": {
-    "defaultMode": "askDestructive",
+    "defaultMode": "auto",
     "deny":  ["Read(**/.env)"],
     "ask":   ["Bash(git push *)"],
     "allow": ["Bash(git status)", "Bash(pnpm test *)"]
@@ -433,18 +433,21 @@ unsupervised in your project — and `Task` is the same bargain by the same mech
 spawn the same way. `deny` rules still outrank everything in the PARENT session, which is
 where you and the agent share a shell.
 
-**The default mode is `askDestructive`** — exactly the "only ask me about destructive things" case.
-Everything runs silently except commands that destroy work, publish, escalate privilege, or pipe
-the network into a shell. Modes, from most to least permissive:
+**The default mode is `auto`.** A table flags commands that destroy work, publish, escalate
+privilege, or pipe the network into a shell, and a small model decides on those and on everything
+else the rules do not settle — see [`auto` mode](#auto-mode--letting-a-model-decide) below. Modes,
+from most to least permissive:
 
 | Mode | Behaviour |
 | --- | --- |
 | `allowAll` | Never prompt. Rules still apply. |
-| `askDestructive` | Prompt only for destructive commands. **Default.** |
-| `auto` | `askDestructive`, plus a model's verdict on everything the table cleared. |
-| `askMutating` | Prompt for anything that writes: bash, write, edit, generate_image. |
+| `auto` | A model decides on the commands the destructive table flags and on everything the rules do not settle. **Default.** |
+| `acceptChanges` | Reads, and edits inside the workspace, run. Prompt for bash, other tools, and edits outside the workspace or to protected paths. |
 | `askAll` | Prompt for every tool call. |
-| `denyAll` | Refuse everything not explicitly allowed. |
+
+A name not in this list — an old `askDestructive`, `askMutating` or `denyAll` in a settings file —
+is ignored with a warning that names the four, and the mode is what it would be without that line:
+`auto`, unless another settings file sets one.
 
 What counts as destructive is a readable table in `destructive.ts` — 62 patterns, no model call in
 front of every command, so it is fast, offline, free, and auditable. `/permissions patterns` lists
@@ -500,16 +503,16 @@ edit to `settings.json`, not something that accumulates from clicking. **No gran
 a command without running it, `/permissions grants` lists what you have approved this session,
 `/permissions forget` revokes it all, and `/permissions reload` re-reads the files.
 
-**Shift+Tab cycles the mode** for the session — `askDestructive → auto → askMutating → askAll` —
+**Shift+Tab cycles the mode** for the session — `auto → acceptChanges → askAll` —
 and `/permissions mode [<mode>]` does the same thing by name. The change is *not* written back to
 `settings.json`: a keystroke is how you say "for the next ten minutes", and a durable policy change
 should be a deliberate edit to a file you can read later, not a residue of tabbing. A new session
 starts from what the files say.
 
-`allowAll` and `denyAll` are deliberately left out of the cycle. Neither end of the ladder should be
-one mistyped keystroke away — tabbing into "never prompt" by accident is precisely the accident this
-extension exists to prevent — but both remain available in `settings.json` and via
-`/permissions mode allowAll`, where choosing them is deliberate.
+`allowAll` is deliberately left out of the cycle, and Shift+Tab from it enters at `auto`. The loose
+end of the ladder should not be one mistyped keystroke away — tabbing into "never prompt" by accident
+is precisely the accident this extension exists to prevent — but it remains available in
+`settings.json` and via `/permissions mode allowAll`, where choosing it is deliberate.
 
 One setup step, because **pi already binds Shift+Tab** to `app.thinking.cycle`, and a reserved
 binding beats an extension's, so the shortcut does nothing until you move it:
@@ -518,6 +521,69 @@ binding beats an extension's, so the shortcut does nothing until you move it:
 // agent/keybindings.json — in this repo, thinking-level cycling moved to Shift+Ctrl+T
 { "app.thinking.cycle": "shift+ctrl+t" }
 ```
+
+### `acceptChanges` mode — edits run, everything else asks
+
+`acceptChanges` is Claude Code's acceptEdits. The read-only built-ins — `read`, `grep`, `find`,
+`ls` — run with no prompt, and so do `write` and `edit` when the path is inside the **workspace**:
+the working directory, `permissions.additionalDirectories`, anything `/add-dir` added this session,
+and the session scratchpad — the same list `auto` mode's classifier is shown. Everything else
+prompts: every `bash` command, `generate_image`, every extension and MCP tool, and a `write` or
+`edit` that lands outside the workspace or on a protected path.
+
+Rules still come first, as in every mode. An `allow` rule, a session grant or a hook's `allow` still
+lets a matching call run, so `Bash(git status *)` does not prompt here either; a `deny` or `ask` rule
+still stops an edit inside the workspace; and a hard finding in written content is still refused.
+
+**Protected paths prompt even inside the workspace**, because an edit to one of them is not only an
+edit — it is a command that runs later, with no prompt. A project's `.pi/hooks.json` is a shell
+command pi runs at the next session start, and its `.pi/settings.json` can loosen this very policy;
+`.git/config` can set `core.fsmonitor` or `core.hooksPath` for the next ordinary `git` command; a
+shell rc file runs in the next shell. The list is Claude Code's own protected-path list for
+acceptEdits, plus `.pi`:
+
+- **Directories**: `.pi`, `.claude`, `.git`, `.config/git`, `.vscode`, `.idea`, `.husky`, `.cargo`,
+  `.devcontainer`, `.yarn`, `.mvn` — matched as a run of path segments anywhere below a workspace
+  directory, so a nested repo's `.git/` counts too.
+- **Files**, matched on the last segment wherever they sit: git config (`.gitconfig`,
+  `.gitmodules`), shell startup files (`.bashrc`, `.zshrc`, `.profile`, `.envrc` and the rest of the
+  bash and zsh set), package-manager config and loaders (`.npmrc`, `.yarnrc`, `.yarnrc.yml`,
+  `.pnp.cjs`, `.pnpmfile.cjs`, `bunfig.toml`), build-tool pins (`.bazelrc`, `.bazelversion`,
+  `.bazeliskrc`, the Gradle and Maven wrapper properties), git-hook managers
+  (`.pre-commit-config.yaml`, `lefthook.yml`), and `.devcontainer.json`, `.ripgreprc`,
+  `pyrightconfig.json`, `.mcp.json`, `.claude.json`.
+- **pi's own config in the agent dir** (`~/.pi/agent`), matched by full path wherever the
+  workspace is: `settings.json`, `hooks.json`, `models.json`, `auth.json`, `trust.json`, `mcp.json`
+  — the permission rules and packages, hooks, provider endpoints, logins, project trust and MCP
+  servers. Segments are matched *below* the workspace directory, so when the workspace **is**
+  `~/.pi`, no path in it is named `.pi`, and these would otherwise be ordinary files.
+
+Names compare without case, as the macOS and Windows file systems do, and after the compatibility
+folds APFS also makes (`ſ` is `s`, `ﬁ` is `fi`); `PROTECTED` in `config.ts` is the full list. The
+rest of the agent dir is ordinary work when you are in `~/.pi`: **extension code there does not
+prompt**, though pi loads it at the next start. Add `ask` rules with the absolute path, such as
+`Edit(/Users/you/.pi/agent/extensions/**)` and the same for `Write`, if you want it to.
+
+**Symlinks are resolved before the answer stands.** Whether a path is inside the workspace is first
+answered on text, and a symlink in the project pointing at `~/.ssh`, or a `docs/` linked into
+`.git/hooks`, reads as inside to a text comparison. So, as with the scratchpad below, `index.ts`
+resolves the target and every workspace directory through their links — the deepest existing
+ancestor, so writing *through* a planted link is caught too — and asks again; if the real path is
+outside the workspace or on a protected path, the call prompts. A dangling link prompts too (a
+write follows it and creates the target, wherever that is), and so does a file with more than one
+hard link, whose other names nothing here can find. The path is also read the way pi's
+own tools read it: a leading `@` is dropped, `~` is the home directory, and a `file://` URL is a
+path, so `~/.zshrc` is your shell profile, not a file called `~/.zshrc` inside the project.
+
+Two differences from Claude Code's acceptEdits are deliberate:
+
+- **Every `bash` command prompts.** Claude Code also lets `mkdir`, `touch`, `rm`, `rmdir`, `mv`,
+  `cp` and `sed` through when their paths are inside the workspace. Here they prompt like any other
+  command, for the reason the scratchpad does not cover `bash`: a command is not judged by the paths
+  it mentions. An `allow` rule lets a specific one through.
+- **Reads outside the workspace do not prompt.** Claude Code asks before reading outside its working
+  directories; here the read-only built-ins run anywhere. `deny` rules are the answer for what must
+  never be read — `Read(**/.env)`, `Read(**/.ssh/**)`.
 
 ### `auto` mode — letting a model decide
 
@@ -543,14 +609,18 @@ prompt.
 **Where the classifier sits is the entire safety argument**, because a model can be argued with —
 that is what prompt injection *is*. So it is placed where being wrong is survivable. Precedence
 becomes **deny → destructive → ask → allow → classifier**: it is consulted *only* on calls the
-deterministic policy already decided to allow, and its only power is to turn that allow into an ask.
+deterministic policy already decided to allow, and its only power is to turn that allow into an ask
+— with one deliberate exception, the floor below.
 There is no verdict it can return that runs something the rules would have stopped, and none that
 blocks outright either — a nondeterministic judge should not get to refuse your work with no way to
 overrule it.
 
-That gives a floor worth stating plainly. **Fully compromised, auto mode degrades to
-`askDestructive`** — the default this repo has been running all along. Working, it is that plus a
-second opinion.
+That gives a floor worth stating plainly. **Fully compromised, auto mode keeps every deny rule, ask
+rule and hard finding.** What it can do is clear a command the destructive table flagged: in auto
+mode the table detects and the model decides, because a pattern list reads flags, not situations —
+`git reset --hard` in a scratch worktree and on a tree full of uncommitted work are the same string.
+A classifier that cannot be reached puts a flagged command to you instead of letting it run.
+Working, it is the rules plus a second opinion.
 
 One exception, because an earlier version of this paragraph claimed there was none: **with no UI the
 classifier can fail a run.** `askWithoutUi` decides what an "ask" becomes headless and defaults to
@@ -596,11 +666,10 @@ else — fetching content into a temp file and then executing it is exactly as u
 `scratchpad:dir`; this extension keeps the last path it saw and treats a `read`/`write`/`edit`
 landing inside it as if an `allow` rule had matched — no classifier call, no bill, no prompt. It
 sits at the allow step precisely so it inherits that step's bounds: `deny` rules and the destructive
-table have both already run, so `Read(**/.env)` still blocks a `.env` in there, and `denyAll` is
-excluded outright because an implicit rule written in no settings file should not be the thing that
-lets something run in the mode whose whole point is that nothing does. `bash` is deliberately *not*
-covered — a command is not judged by the paths it mentions, and `curl … > $S/x.sh && sh $S/x.sh`
-writes only inside the scratchpad — so bash keeps going to the classifier.
+table have both already run, so `Read(**/.env)` still blocks a `.env` in there. `bash` is
+deliberately *not* covered — a command is not judged by the paths it mentions, and
+`curl … > $S/x.sh && sh $S/x.sh` writes only inside the scratchpad — so bash keeps going to the
+classifier.
 
 Three things bound it, and each is there because the first version without it was wrong.
 **The announced directory is validated, not trusted** (`usableScratchDir`): absolute, at least two
@@ -616,8 +685,8 @@ existing ancestor, so writing *through* a planted symlink is caught too; it live
 rather than `decide.ts` so the precedence engine stays pure. **`/permissions forget` revokes it**,
 because a whole directory that never prompts is the largest standing approval in the session, and a
 command that says "you will be asked again" must not leave it in place. The scratchpad is listed in
-plain `/permissions` too, not just `/permissions auto` — it suppresses prompts in `askMutating` and
-`askAll`, the modes people pick *because* they want to be asked, so that had to be visible.
+plain `/permissions` too, not just `/permissions auto` — it suppresses prompts in `askAll`, the mode
+people pick *because* they want to be asked, so that had to be visible.
 
 **Where a thing lives stopped being a finding on its own.** Two of the classifier's rules were
 written as location tests, and both were wrong in the same way — they answered "is this path in the
@@ -812,11 +881,15 @@ drops cached verdicts along with grants — a remembered "safe" is an approval i
 matters.
 
 One layering subtlety: the mode ladder is not a total order, and `auto` is where that shows. It is
-not a subset of `askMutating`, which prompts for every write but says nothing at all about custom
-tools. So an untrusted project may not "tighten" `auto` into `askMutating` — only `askAll` and
-`denyAll` count as an upgrade from it. The whole `auto` block is trusted-only for the same reason:
-every field in it can loosen something, and a repo quietly pointing your classifier at another model
-should be visible, not merely ineffective.
+not a subset of `acceptChanges`, which prompts for every bash command and custom tool but lets every
+edit inside the workspace through unjudged — edits `auto` does judge. So an untrusted project may
+not "tighten" `auto` into `acceptChanges` — only `askAll` counts as an upgrade from it. The whole
+`auto` block is trusted-only for the same reason: every field in it can loosen something, and a repo
+quietly pointing your classifier at another model should be visible, not merely ineffective. Nor
+may an untrusted project switch a session *into* `auto` from any other mode, though the ladder calls
+that a tightening: every unrecognised tool call would then send that repo's commands, paths and tool
+arguments to a model — and the project could not even name a cheap one for it, since its `auto`
+block is ignored.
 
 **This is a guardrail, not a sandbox.** It gates tool calls before they run; it cannot contain code
 that is already executing, and `bash` remains able to do anything the pattern table does not name —
@@ -832,9 +905,9 @@ nor, in auto mode, anything a model was talked out of naming.
 | `rules.ts` | Rule syntax: parsing and matching (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
-| `workspace.ts` | Resolving the directory set the classifier is told is in scope (pure) |
+| `workspace.ts` | Resolving the directory set the classifier is told is in scope, and `acceptChanges`' inside-the-workspace check (pure, but for its symlink half) |
 | `grants.ts` | Session-scoped approvals and what each one covers |
-| `config.ts` | Modes and their ordering |
+| `config.ts` | Modes and their ordering, and `acceptChanges`' protected paths |
 | `auto.ts` | Auto mode: the classifier's cache, books, and bounds |
 | `prompt.ts` | **What the classifier is shown — edit this to tune it** (pure) |
 | `classify.ts` | One classifier call |
@@ -843,6 +916,8 @@ nor, in auto mode, anything a model was talked out of naming.
 | `corpus.test.ts` | 188 safe / 138 dangerous commands the table must get right, plus the hard tier's four bypass routes |
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
 | `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
+| `workspace.test.ts` | `acceptChanges`: which calls run, the path spellings, protected paths, and the symlink check |
+| `modes.e2e.ts` | `acceptChanges` in a real session, with pi's real tools on a scratch tree |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
 **`agent/extensions/hooks/`** — Claude Code's hooks API: run a shell command, POST to a URL, or ask
@@ -880,7 +955,7 @@ the conventional name** (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob` for pi'
 **but `tool_input` is pi's own** — `path`, not `file_path`; `edits[]`, not `old_string`. pi's edit
 can carry several replacements, which have no single-string form, so translating the input would be
 lossy where translating the name is not. Extension and MCP tools keep their pi names (`task`,
-`mcp`). `permission_mode` is the permissions extension's mode name (`askDestructive`, `auto`, …).
+`mcp`). `permission_mode` is the permissions extension's mode name (`auto`, `acceptChanges`, …).
 
 | Event | Fires on | What it can do here |
 | --- | --- | --- |
@@ -969,18 +1044,20 @@ under the same `permissions` block:
 **What this does and does not do is worth being precise about**, because the name is borrowed from
 tools where it means something stronger. Elsewhere the workspace is a permission boundary: tools
 refuse paths outside it, so `/add-dir` unlocks access. pi has no such fence — `read`, `edit` and
-`bash` already accept any absolute path. So this **grants nothing**. What it does is tell the model
-the directory is in scope, and load that directory's `AGENTS.md` the way pi loads the project's own.
-Both are capped (24 directories, 48k characters of guidance) because they are re-sent every turn.
+`bash` already accept any absolute path. So outside `acceptChanges` mode this **grants nothing**.
+What it does is tell the model the directory is in scope, and load that directory's `AGENTS.md` the
+way pi loads the project's own. Both are capped (24 directories, 48k characters of guidance) because
+they are re-sent every turn.
 
 It does have one effect beyond the model, and it exists because telling only the model was not
 enough: the full list is published on the `workspace:dirs` event, and the `permissions` extension
 subscribes. Auto mode's classifier decides half of what it decides by asking "is this path inside
 the project", so before this, `/add-dir` put a directory in scope for the agent and left the
-classifier prompting for every write to it. Each message carries the whole list and replaces the
-last, so a removal — and a `/rewind` past an `/add-dir` — needs no event of its own. As everywhere
-in this repo, the two sides share the channel string rather than a module; with `permissions` not
-installed, nothing listens and nothing breaks.
+classifier prompting for every write to it. The same list is the workspace `acceptChanges` lets
+edits into without a prompt — the one mode where adding a directory does grant something. Each
+message carries the whole list and replaces the last, so a removal — and a `/rewind` past an
+`/add-dir` — needs no event of its own. As everywhere in this repo, the two sides share the channel
+string rather than a module; with `permissions` not installed, nothing listens and nothing breaks.
 
 Session-scoped additions are written to the session as custom entries rather than held in memory,
 which makes them behave correctly around `/rewind`: rewinding past an `/add-dir` un-adds the
@@ -3183,7 +3260,7 @@ git clone git@github.com:OysterD3/dotpi.git ~/.pi     # or https://github.com/Oy
 
 # 2. Nothing to copy: agent/settings.json is tracked and arrives with the clone,
 #    package pins and all. Do NOT cp settings.example.json over it — that would
-#    wipe the `packages` array and revert permissions.defaultMode.
+#    wipe the `packages` array.
 
 # 3. Authenticate this machine (auth.json is gitignored — each machine logs in itself)
 pi          # then /login; pi installs everything in `packages` on first start

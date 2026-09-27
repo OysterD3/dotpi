@@ -9,7 +9,7 @@
   "followUpMode": "all",
   "collapseChangelog": true,
   "permissions": {
-    "defaultMode": "askDestructive",
+    "defaultMode": "auto",
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.*)",

@@ -7,7 +7,7 @@
  *
  * The exemption removes permission prompts, so every test below is really the
  * same question asked from a different angle: can it remove one it should not?
- * Hence the deny, ask, denyAll and traversal cases, and hence bash being pinned
+ * Hence the deny, ask and traversal cases, and hence bash being pinned
  * to "still classified" rather than left unstated.
  */
 
@@ -180,13 +180,8 @@ eq("a deny rule still wins inside the scratchpad", behavior(denied, "write", { p
 const asked = policyFor({ defaultMode: "auto", ask: ["Write(**/*.sh)"] });
 eq("an ask rule still wins inside the scratchpad", behavior(asked, "write", { path: `${SCRATCH}/run.sh` }), "ask");
 
-// An implicit rule written in no settings file has no business being the thing
-// that lets something run in the mode whose point is that nothing does.
-const denyAll = policyFor({ defaultMode: "denyAll" });
-eq("denyAll is not loosened by it", behavior(denyAll, "write", { path: FILE }), "deny");
-
 // It is an allow, so it is at least as permissive as the modes above auto.
-eq("askMutating stops prompting for scratch writes", behavior(policyFor({ defaultMode: "askMutating" }), "write", { path: FILE }), "allow");
+eq("acceptChanges stops prompting for scratch writes", behavior(policyFor({ defaultMode: "acceptChanges" }), "write", { path: FILE }), "allow");
 eq("askAll stops prompting for scratch writes", behavior(policyFor({ defaultMode: "askAll" }), "write", { path: FILE }), "allow");
 eq(
 	"askAll still prompts for a write outside it",

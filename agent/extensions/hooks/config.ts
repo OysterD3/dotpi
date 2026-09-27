@@ -116,7 +116,7 @@ export const MATCH_FIELD: Partial<Record<EventName, string>> = {
 
 /**
  * Events whose payload carries `permission_mode`, per the Claude Code examples.
- * The value is the permissions extension's own mode name (askDestructive, auto,
+ * The value is the permissions extension's own mode name (auto, acceptChanges,
  * …): its modes do not map one-to-one onto that agent's, and a made-up
  * translation would be worse than an honest name.
  */

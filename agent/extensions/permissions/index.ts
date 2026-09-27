@@ -10,20 +10,21 @@
  * Rules use the conventional syntax so a settings file can be carried across:
  *
  *   { "permissions": {
- *       "defaultMode": "askDestructive",
+ *       "defaultMode": "auto",
  *       "deny":  ["Read(**\/.env)", "Bash(curl * | sh)"],
  *       "ask":   ["Bash(git push *)"],
  *       "allow": ["Bash(git status)", "Bash(pnpm test *)"]
  *   } }
  *
- * The default mode is `askDestructive`: everything runs without a prompt except
- * commands that destroy work, publish, or escalate privilege. Those are matched
- * by a readable table in destructive.ts — deterministic, so it is fast, works
- * offline, costs nothing, and can be audited by reading it.
+ * The default mode is `auto`. Commands that destroy work, publish, or escalate
+ * privilege are matched by a readable table in destructive.ts — deterministic,
+ * so it is fast, works offline, costs nothing, and can be audited by reading
+ * it — and a model gives a second opinion on everything the table cleared. The
+ * classifier can only ever turn an allow into an ask — see auto.ts for why that
+ * bound is the entire reason it is safe to put a model here.
  *
- * `auto` is that mode plus a model's second opinion on everything the table
- * cleared. The classifier can only ever turn an allow into an ask — see auto.ts
- * for why that bound is the entire reason it is safe to put a model here.
+ * `acceptChanges` is Claude Code's acceptEdits: reads and edits inside the
+ * workspace run, everything else asks (see workspace.ts).
  *
  *   config.ts       modes and their ordering
  *   settings.ts     loading and layering the JSON files
@@ -52,7 +53,7 @@ import { parseRules, ruleTarget } from "./rules.ts";
 import { escapesScratchpad, usableScratchDir } from "./scratch.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
 import { type Verdict } from "./verdict.ts";
-import { workspaceDirs } from "./workspace.ts";
+import { escapesWorkspace, workspaceDirs } from "./workspace.ts";
 
 function compile(agentDir: string, cwd: string, trusted: boolean): { policy: CompiledPolicy; report: string[] } {
 	const { settings, sources, warnings } = loadSettings(agentDir, cwd, trusted);
@@ -269,23 +270,30 @@ export default function (pi: ExtensionAPI) {
 		const call = { tool: event.toolName, input, cwd: ctx.cwd, scratchDir, hook };
 		const active = policy;
 
-		// decide(), plus the one allow that is not final on its own. decide()
+		// decide(), plus the two allows that are not final on their own. decide()
 		// answered by comparing text, which cannot see that `<scratch>/notes.txt`
-		// is a symlink to `~/.ssh/id_rsa`; this is where that gets checked against
-		// the filesystem. An escape does not deny — it just withdraws the exemption
-		// and lets the call be judged as what it is, a path outside the scratchpad.
+		// or `<cwd>/notes.txt` is a symlink to `~/.ssh/id_rsa`; this is where that
+		// gets checked against the filesystem. An escape does not deny — it just
+		// withdraws the exemption and lets the call be judged as what it is, a path
+		// outside the scratchpad or the workspace.
 		//
-		// It reads the policy and scratchpad in force when it is called, not when
-		// the call arrived: the PermissionRequest re-check below runs after a hook
-		// that may take a while, and a mode switch or /permissions reload that
-		// lands meanwhile must apply to it.
+		// It reads the policy, scratchpad and workspace in force when it is called,
+		// not when the call arrived: the PermissionRequest re-check below runs after
+		// a hook that may take a while, and a mode switch or /permissions reload
+		// that lands meanwhile must apply to it.
 		const judge = (judged: typeof call): Decision => {
 			const live = policy ?? active;
-			const first = decide(live, { ...judged, scratchDir });
-			if (!first.scratch || !scratchDir) return first;
-			const target = ruleTarget(event.toolName, judged.input);
-			if (target === undefined || !escapesScratchpad(target, ctx.cwd, scratchDir)) return first;
-			return decide(live, { ...judged, scratchDir: undefined });
+			let full = { ...judged, scratchDir, workspace: dirsFor(ctx.cwd), agentDir };
+			let decision = decide(live, full);
+			if (decision.scratch && full.scratchDir) {
+				const target = ruleTarget(event.toolName, judged.input);
+				if (target !== undefined && escapesScratchpad(target, ctx.cwd, full.scratchDir)) {
+					full = { ...full, scratchDir: undefined };
+					decision = decide(live, full);
+				}
+			}
+			if (decision.workspace && escapesWorkspace(full)) decision = decide(live, { ...full, workspace: [] });
+			return decision;
 		};
 		let decision = judge(call);
 
@@ -514,15 +522,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Cycle permission mode",
 		handler: (ctx) => {
 			if (!policy) return;
-			const next = nextMode(policy.settings.defaultMode);
-			if (!next) {
-				ctx.ui.notify(
-					`Permissions: staying on ${policy.settings.defaultMode} — Shift+Tab will not loosen it. Use /permissions mode <mode> to change it deliberately.`,
-					"info",
-				);
-				return;
-			}
-			ctx.ui.notify(setMode(next), "info");
+			ctx.ui.notify(setMode(nextMode(policy.settings.defaultMode)), "info");
 		},
 	});
 
@@ -731,9 +731,9 @@ export default function (pi: ExtensionAPI) {
 					`Mode: ${settings.defaultMode}${override ? " (this session — Shift+Tab)" : ""} — ${MODE_HELP[settings.defaultMode]}`,
 					`Rules: ${policy.deny.length} deny, ${policy.ask.length} ask, ${policy.allow.length} allow`,
 					// Shown in every mode, not just auto. It is an allow, so it suppresses
-					// prompts in askMutating and askAll too — the modes someone picks
-					// *because* they want to be asked about every write — and this line is
-					// the only place that is visible. /permissions forget turns it off.
+					// prompts in askAll too — the mode someone picks *because* they want
+					// to be asked about every write — and this line is the only place that
+					// is visible. /permissions forget turns it off.
 					...(usableScratchDir(scratchDir, ctx.cwd)
 						? [`Scratchpad (writes never prompt): ${scratchDir}`]
 						: []),
@@ -787,10 +787,10 @@ function replaceInput(target: Record<string, unknown>, next: Record<string, unkn
  * The one-time warning that auto mode is not actually auditing anything.
  *
  * Worth a warning rather than silence in either direction. With `onError:
- * "allow"` the session is running at `askDestructive` while the user believes a
- * model is checking their commands, which is the more dangerous
- * misunderstanding; with `"ask"` they are about to be prompted for everything
- * and deserve to know why.
+ * "allow"` the session is running on the destructive table alone while the
+ * user believes a model is checking their commands, which is the more
+ * dangerous misunderstanding; with `"ask"` they are about to be prompted for
+ * everything and deserve to know why.
  */
 function degradedMessage(verdict: Extract<Verdict, { kind: "error" }>, onError: "allow" | "ask"): string {
 	const consequence =

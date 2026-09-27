@@ -26,23 +26,21 @@ const ALIASES: Record<string, string> = {
 /** Tools whose rule content is a filesystem path. */
 export const PATH_TOOLS = new Set(["read", "write", "edit"]);
 
-/** Tools that can change the machine, used by the write-oriented modes. */
-export const MUTATING_TOOLS = new Set(["write", "edit", "bash", "generate_image"]);
-
 /**
  * pi built-ins that only ever read, and read nothing but the filesystem.
  *
- * Used by `auto` mode's `skipReadOnly`, which is a cost decision rather than a
- * safety one: these are what an agent does hundreds of times a turn, and paying
- * for a model call before each `grep` would make the mode unusable. It is
+ * Used by `acceptChanges`, which lets them run, and by `auto` mode's
+ * `skipReadOnly`, which is a cost decision rather than a safety one: these are
+ * what an agent does hundreds of times a turn, and paying for a model call
+ * before each `grep` would make the mode unusable. It is
  * deliberately a closed list of built-ins — a custom or MCP tool never lands
  * here, however read-only its name sounds, because an extension's tool can do
  * anything at all.
  *
  * The gap this leaves is real and worth naming: reading a file *is* how a secret
  * gets exposed. `deny` rules are the answer to that (`Read(**\/.env)` and
- * friends), and `auto.skipReadOnly: false` closes it at the price of a call per
- * read.
+ * friends). In `auto` mode, `auto.skipReadOnly: false` also closes it at the
+ * price of a call per read; in `acceptChanges` only deny rules do.
  */
 export const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 

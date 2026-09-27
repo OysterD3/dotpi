@@ -272,7 +272,7 @@ const toolResult = (request: Request | undefined, needle: string) =>
 // ─── 4. PreToolUse "ask" makes permissions prompt for a call it would allow ───
 {
 	const run = await start({
-		permissions: { defaultMode: "askDestructive" },
+		permissions: { defaultMode: "auto" },
 		hooks: { PreToolUse: [{ matcher: "Bash", hooks: [cmd("guard")] }], Notification: [{ hooks: [cmd("notify")] }] },
 		plan: {
 			guard: {
@@ -298,7 +298,7 @@ const toolResult = (request: Request | undefined, needle: string) =>
 // ─── 5. PreToolUse "allow" skips the prompt; a deny rule still wins ───────────
 {
 	const run = await start({
-		permissions: { defaultMode: "askMutating", deny: ["Write(**/secret.txt)"] },
+		permissions: { defaultMode: "askAll", deny: ["Write(**/secret.txt)"] },
 		hooks: { PreToolUse: [{ matcher: "Write", hooks: [cmd("allow")] }] },
 		plan: { allow: { stdout: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } } } },
 		responses: [
@@ -363,7 +363,7 @@ const toolResult = (request: Request | undefined, needle: string) =>
 // ─── 8. PermissionRequest decides the prompt permissions would show ───────────
 {
 	const run = await start({
-		permissions: { defaultMode: "askMutating" },
+		permissions: { defaultMode: "askAll" },
 		hooks: { PermissionRequest: [{ matcher: "Write", hooks: [cmd("request")] }] },
 		plan: {
 			request: [
@@ -378,7 +378,7 @@ const toolResult = (request: Request | undefined, needle: string) =>
 	check("8 allow let the write run", existsSync(join(CWD, "a.txt")), true);
 	check("8 deny blocked it with the hook's message", [existsSync(join(CWD, "b.txt")), Boolean(toolResult(run.requests[2], "not today"))], [false, true]);
 	const [entry] = logged("request");
-	check("8 PermissionRequest payload", [entry?.payload.tool_name, entry?.payload.tool_input?.path, entry?.payload.permission_mode], ["Write", "a.txt", "askMutating"]);
+	check("8 PermissionRequest payload", [entry?.payload.tool_name, entry?.payload.tool_input?.path, entry?.payload.permission_mode], ["Write", "a.txt", "askAll"]);
 	run.session.dispose();
 }
 
@@ -533,16 +533,19 @@ const toolResult = (request: Request | undefined, needle: string) =>
 	check("14 and blocked, so the directory survives", existsSync(join(CWD, "victim")), true);
 	run.session.dispose();
 
+	// acceptChanges asks about a write outside the workspace only because that is
+	// its default, so both paths sit in ROOT, outside CWD. A rewrite into CWD
+	// would be allowed by the mode itself and prove nothing here.
 	const quiet = await start({
-		permissions: { defaultMode: "askMutating" },
+		permissions: { defaultMode: "acceptChanges" },
 		hooks: { PermissionRequest: [{ matcher: "Write", hooks: [cmd("rewrite")] }] },
 		plan: {
-			rewrite: { stdout: { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { path: "rewritten.txt", content: "R" } } } } },
+			rewrite: { stdout: { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { path: join(ROOT, "rewritten.txt"), content: "R" } } } } },
 		},
-		responses: [write("a.txt", "A", "c1"), say("done")],
+		responses: [write(join(ROOT, "a.txt"), "A", "c1"), say("done")],
 	});
 	await quiet.session.prompt("go");
-	check("14 a rewrite only the mode would ask about is allowed", [quiet.selects.length, existsSync(join(CWD, "rewritten.txt"))], [0, true]);
+	check("14 a rewrite only the mode would ask about is allowed", [quiet.selects.length, existsSync(join(ROOT, "rewritten.txt"))], [0, true]);
 	quiet.session.dispose();
 }
 

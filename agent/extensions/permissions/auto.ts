@@ -13,9 +13,10 @@
  *   - Its only power is to **escalate an allow to an ask**. There is no verdict
  *     it can return that runs something the policy would have stopped.
  *
- * The floor that gives you: fully compromised, auto mode degrades to
- * `askDestructive` — the mode below it, and this repo's default. Working, it is
- * that plus a second opinion.
+ * The floor that gives you: fully compromised, auto mode keeps every deny rule,
+ * ask rule and hard finding. Working, it is that plus a second opinion. (The
+ * two bullets above predate decide.ts step 2, where the classifier also judges
+ * soft destructive findings and can clear them; see there.)
  *
  * Two limits on that claim, both found by review rather than by design, and both
  * worth stating here because the earlier version of this comment denied them:

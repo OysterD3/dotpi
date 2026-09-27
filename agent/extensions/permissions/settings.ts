@@ -49,11 +49,10 @@ export type AutoSettings = {
 	/**
 	 * What an unreachable or unreadable classifier means.
 	 *
-	 * `allow` — the default — degrades auto mode to `askDestructive`, which is the
-	 * mode directly below it and the one this repo ships as standard. Offline, out
-	 * of quota, or misconfigured, you get the deterministic table and a warning,
-	 * not a session where every command needs a keystroke. `ask` is the paranoid
-	 * setting: no verdict, no silent pass.
+	 * `allow` — the default — degrades auto mode to the deterministic destructive
+	 * table alone. Offline, out of quota, or misconfigured, you get the table and
+	 * a warning, not a session where every command needs a keystroke. `ask` is the
+	 * paranoid setting: no verdict, no silent pass.
 	 */
 	onError: "allow" | "ask";
 	/** Per-call budget. Past this the call is an error and `onError` decides. */
@@ -106,7 +105,7 @@ export type LoadResult = {
 };
 
 export const BUILTIN: PermissionSettings = {
-	defaultMode: "askDestructive",
+	defaultMode: "auto",
 	allow: [],
 	ask: [],
 	deny: [],
@@ -150,11 +149,12 @@ function stringArray(value: unknown): string[] {
  * Is `candidate` at least as restrictive as `current`?
  *
  * The ladder answers this everywhere except at `auto`, which is not a subset of
- * the mode above it: `askMutating` prompts for every write but says nothing at
- * all about custom tools, which `auto` judges. So a project moving a session off
- * `auto` would be trading prompts, not adding them — and a repo that wanted an
- * MCP tool to run unwatched could do it by "tightening" the mode. Only the two
- * modes that stop everything qualify as an upgrade from `auto`.
+ * the mode above it: `acceptChanges` prompts for every bash command but lets
+ * every workspace edit through unjudged, which `auto` judges. So a project
+ * moving a session off `auto` would be trading prompts, not adding them — and a
+ * repo that wanted an edit to run unwatched could do it by "tightening" the
+ * mode. Only `askAll`, which stops everything, qualifies as an upgrade from
+ * `auto`.
  */
 function atLeastAsStrict(candidate: Mode, current: Mode): boolean {
 	// A project may never switch a session INTO auto. It is the one mode that
@@ -231,7 +231,9 @@ export function loadSettings(agentDir: string, cwd: string, projectTrusted: bool
 				// Restrictions only.
 				settings.deny.push(...stringArray(project.deny));
 				settings.ask.push(...stringArray(project.ask));
-				if (isMode(project.defaultMode) && atLeastAsStrict(project.defaultMode, settings.defaultMode)) {
+				if (project.defaultMode !== undefined && !isMode(project.defaultMode)) {
+					warnings.push(`${projectPath}: unknown defaultMode "${String(project.defaultMode)}" — one of: ${MODE_ORDER.join(", ")}`);
+				} else if (isMode(project.defaultMode) && atLeastAsStrict(project.defaultMode, settings.defaultMode)) {
 					settings.defaultMode = project.defaultMode;
 				} else if (project.defaultMode !== undefined) {
 					warnings.push(
@@ -271,7 +273,7 @@ function applyFull(
 ): void {
 	if (source.defaultMode !== undefined) {
 		if (isMode(source.defaultMode)) target.defaultMode = source.defaultMode;
-		else warnings.push(`${path}: unknown defaultMode "${String(source.defaultMode)}"`);
+		else warnings.push(`${path}: unknown defaultMode "${String(source.defaultMode)}" — one of: ${MODE_ORDER.join(", ")}`);
 	}
 
 	target.allow.push(...stringArray(source.allow));

@@ -8,35 +8,33 @@
  * Ordered from most permissive to most restrictive; the order is load-bearing,
  * because an untrusted project may only move the mode *up* this list.
  *
- * `auto` sits directly above `askDestructive` because that is exactly what it
- * is: the same deterministic table, plus a model's second opinion on whatever
- * the table said nothing about. It can only ever *add* prompts.
+ * `auto` sits directly above `allowAll`: the deterministic destructive table,
+ * plus a model's second opinion on whatever the table said nothing about.
  *
  * The ladder is not a total order, and `auto` is where that shows. It is not a
- * subset of `askMutating`: `askMutating` prompts for every write and edit, which
- * `auto` waves through when they look ordinary, but `askMutating` says nothing
- * at all about custom tools, which `auto` does judge. So moving a session from
- * `auto` to `askMutating` would trade one kind of prompt for another rather than
- * tightening, and `atLeastAsStrict` in settings.ts refuses it for that reason.
+ * subset of `acceptChanges`: `acceptChanges` prompts for every bash command and
+ * custom tool, which `auto` waves through when they look ordinary, but it lets
+ * every workspace edit through unjudged, which `auto` does judge. So moving a
+ * session from `auto` to `acceptChanges` would trade one kind of prompt for
+ * another rather than tightening, and `atLeastAsStrict` in settings.ts refuses
+ * it for that reason.
  */
-export const MODE_ORDER = ["allowAll", "askDestructive", "auto", "askMutating", "askAll", "denyAll"] as const;
+export const MODE_ORDER = ["allowAll", "auto", "acceptChanges", "askAll"] as const;
 
 export type Mode = (typeof MODE_ORDER)[number];
 
 /**
- * The only modes that are unambiguously stricter than `auto` — they prompt for,
- * or refuse, every call, so nothing `auto` would have caught slips through.
- * See MODE_ORDER above for why an index comparison is not enough here.
+ * The only mode that is unambiguously stricter than `auto` — it prompts for
+ * every call, so nothing `auto` would have caught slips through. See
+ * MODE_ORDER above for why an index comparison is not enough here.
  */
-export const STRICTER_THAN_AUTO: ReadonlySet<Mode> = new Set<Mode>(["askAll", "denyAll"]);
+export const STRICTER_THAN_AUTO: ReadonlySet<Mode> = new Set<Mode>(["askAll"]);
 
 export const MODE_HELP: Record<Mode, string> = {
 	allowAll: "Never prompt. Rules still apply.",
-	askDestructive: "Prompt only for commands that destroy, publish, or escalate. The default.",
-	auto: "askDestructive, plus a model's verdict on everything the table cleared. Costs one small call per unrecognised tool call.",
-	askMutating: "Prompt for anything that writes: bash, write, edit, generate_image.",
+	auto: "A model decides: on commands the table flags as destructive, and on everything else it does not recognise. Costs one small call per such tool call. The default.",
+	acceptChanges: "Reads, and edits inside the workspace, run. Prompt for bash, other tools, and edits outside the workspace or to protected paths (.pi/, .git/, shell rc files, …).",
 	askAll: "Prompt for every tool call.",
-	denyAll: "Refuse everything not explicitly allowed.",
 };
 
 export function isMode(value: unknown): value is Mode {
@@ -46,45 +44,74 @@ export function isMode(value: unknown): value is Mode {
 /**
  * The modes Shift+Tab cycles between, and the key it is bound to.
  *
- * `allowAll` and `denyAll` are deliberately NOT in the cycle. They are the two
- * ends of the ladder, and neither should ever be one mistyped keystroke away:
- * tabbing into "never prompt" by accident is precisely the accident this
- * extension exists to prevent, and tabbing into "refuse everything" would look
- * like the agent had broken. Both remain available in settings.json, where
- * choosing them is deliberate.
+ * `allowAll` is deliberately NOT in the cycle. It is the loose end of the
+ * ladder and should never be one mistyped keystroke away: tabbing into "never
+ * prompt" by accident is precisely the accident this extension exists to
+ * prevent. It remains available in settings.json and through
+ * `/permissions mode allowAll`, where choosing it is deliberate.
  *
  * Shift+Tab is pi's `app.thinking.cycle` by default, and reserved bindings beat
  * extension shortcuts, so this only fires once that binding is moved — see the
  * README for the two-line agent/keybindings.json that does it.
  */
-export const CYCLE: readonly Mode[] = ["askDestructive", "auto", "askMutating", "askAll"];
+export const CYCLE: readonly Mode[] = ["auto", "acceptChanges", "askAll"];
 
 export const CYCLE_KEY = "shift+tab";
 
 /**
- * The mode one press of Shift+Tab moves to, or undefined when it refuses.
+ * The mode one press of Shift+Tab moves to.
  *
  * A function rather than an inline `indexOf` at the call site so the shortcut
  * and its test exercise the same code — a test that recomputed the step was
  * asserting a copy, and the copy is exactly what drifts.
  *
- * `denyAll` is a dead end on purpose. Every other mode outside the cycle enters
- * at the front, which is a tightening; from `denyAll` that same step is the
- * largest loosening in the whole ladder, and it was reachable by one mistyped
- * keystroke. The usual justification for letting a keystroke loosen — that a
- * human at the keyboard can approve any individual prompt anyway — is false
- * here: `denyAll` refuses without ever showing a prompt, so there is nothing to
- * approve and nothing to notice. Leaving it stays possible with an explicit
- * `/permissions mode <mode>`.
- *
- * Treating `indexOf`'s -1 as an index would jump to the second entry and read
- * as a skipped step, hence the explicit branch.
+ * From `allowAll`, outside the cycle, it enters at the front, which is a
+ * tightening. Treating `indexOf`'s -1 as an index would jump to the second
+ * entry and read as a skipped step, hence the explicit branch.
  */
-export function nextMode(current: Mode): Mode | undefined {
-	if (current === "denyAll") return undefined;
+export function nextMode(current: Mode): Mode {
 	const at = CYCLE.indexOf(current);
 	return CYCLE[at === -1 ? 0 : (at + 1) % CYCLE.length]!;
 }
+
+/**
+ * Paths inside the workspace that `acceptChanges` still prompts for.
+ *
+ * An edit to one of these is not only an edit: it is a command that runs later
+ * with no prompt. `.pi/` holds project settings and hooks — a `hooks.json` there
+ * is a shell command pi runs at the next session start, and a `settings.json`
+ * can loosen this very policy. `.git/` holds git hooks and config
+ * (`core.fsmonitor`, `core.hooksPath`), which run on the next ordinary `git`
+ * command; a shell rc file runs in the next shell. Letting such a write through
+ * unprompted would turn "edit files" into "run commands", which is the thing
+ * the mode prompts for.
+ *
+ * Claude Code's own protected-path list for acceptEdits, plus `.pi`. `dirs`
+ * match a run of path segments anywhere below the workspace directory, so a
+ * nested repo's `.git/` counts too; `files` match the last segment. Both
+ * compare without case, because macOS and Windows file systems do.
+ *
+ * `agentFiles` are pi's own config in the agent dir (~/.pi/agent), matched by
+ * full path wherever the workspace is. The segment rules cannot see them when
+ * the workspace IS ~/.pi — the path below it is `agent/settings.json`, with no
+ * `.pi` in it. Each one is policy or a command: the permission rules and
+ * packages, hooks, provider endpoints, logins, project trust, MCP servers.
+ * The rest of the agent dir — extension code included — is ordinary work there.
+ */
+export const PROTECTED = {
+	dirs: [".pi", ".claude", ".git", ".config/git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn"],
+	files: [
+		".gitconfig", ".gitmodules",
+		".bashrc", ".bash_profile", ".bash_login", ".bash_aliases", ".bash_logout",
+		".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".profile", ".envrc",
+		".npmrc", ".yarnrc", ".yarnrc.yml", ".pnp.cjs", ".pnp.loader.mjs", ".pnpmfile.cjs",
+		"bunfig.toml", ".bunfig.toml", ".bazelrc", ".bazelversion", ".bazeliskrc",
+		".pre-commit-config.yaml", "lefthook.yml", "lefthook.yaml", ".lefthook.yml", ".lefthook.yaml",
+		"gradle-wrapper.properties", "maven-wrapper.properties",
+		".devcontainer.json", ".ripgreprc", "pyrightconfig.json", ".mcp.json", ".claude.json",
+	],
+	agentFiles: ["settings.json", "hooks.json", "models.json", "auth.json", "trust.json", "mcp.json"],
+} as const;
 
 export const CONFIG = {
 	/** Command text shown in the prompt before truncating. */
@@ -218,8 +245,8 @@ export const SCRATCHPAD = {
  * announced just before a prompt would be shown. The listener fills `reply`
  * synchronously with a promise of `{ behavior: "allow" | "deny", updatedInput?,
  * message?, interrupt? }` or undefined. An allow that rewrites the input is
- * judged again: a deny rule (or denyAll's default) blocks it, an ask rule or a
- * table finding puts it to the user, and the classifier is never asked.
+ * judged again: a deny rule blocks it, an ask rule or a table finding puts it
+ * to the user, and the classifier is never asked.
  *
  * `modeChannel` announces the mode in force — on session start and on every
  * change — for the `permission_mode` field hooks send. Its arrival is also how

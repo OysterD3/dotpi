@@ -53,11 +53,11 @@ console.log("--- settings writer ---");
 // Existing unrelated content must survive, since this file is pi's too.
 writeFileSync(
 	USER_SETTINGS,
-	JSON.stringify({ theme: "one-dark-pro", permissions: { defaultMode: "askDestructive", deny: ["Read(**/.env)"] } }, null, 2),
+	JSON.stringify({ theme: "one-dark-pro", permissions: { defaultMode: "acceptChanges", deny: ["Read(**/.env)"] } }, null, 2),
 );
 persist(USER_SETTINGS, LIB);
 check("other top-level keys preserved", readJson(USER_SETTINGS).theme, "one-dark-pro");
-check("other permission keys preserved", readJson(USER_SETTINGS).permissions.defaultMode, "askDestructive");
+check("other permission keys preserved", readJson(USER_SETTINGS).permissions.defaultMode, "acceptChanges");
 check("deny list preserved", readJson(USER_SETTINGS).permissions.deny, ["Read(**/.env)"]);
 check("directory written", readJson(USER_SETTINGS).permissions.additionalDirectories, [LIB]);
 
@@ -73,7 +73,7 @@ check("unpersist of an absent dir is false", unpersist(USER_SETTINGS, "/nope"), 
 
 unpersist(USER_SETTINGS, DOCS);
 check("empty list key dropped", "additionalDirectories" in readJson(USER_SETTINGS).permissions, false);
-check("permissions block kept when it holds other keys", readJson(USER_SETTINGS).permissions.defaultMode, "askDestructive");
+check("permissions block kept when it holds other keys", readJson(USER_SETTINGS).permissions.defaultMode, "acceptChanges");
 
 // Writing into a file that does not exist yet must create it and its directory.
 const FRESH = join(ROOT, "fresh", "settings.json");

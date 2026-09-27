@@ -258,7 +258,7 @@ const hardChecks: Array<[string, unknown, unknown]> = [];
 const expect = (label: string, got: unknown, want: unknown) => hardChecks.push([label, got, want]);
 
 // 1. No mode turns it off — including allowAll, which the rest of the table skips.
-for (const defaultMode of ["allowAll", "auto", "askDestructive", "askMutating", "askAll", "denyAll"]) {
+for (const defaultMode of ["allowAll", "auto", "acceptChanges", "askAll"]) {
 	expect(`mode ${defaultMode} denies it`, behaviorOf(policy({ defaultMode }), EXPOSE), "deny");
 }
 // ...and allowAll still keeps its promise for everything else.

@@ -28,10 +28,7 @@
  *
  * Nothing here can loosen a `deny` rule or the destructive table — the check
  * sits at the allow step, which both of those have already run ahead of. So
- * `Read(**\/.env)` still blocks a `.env` inside the scratchpad, and `denyAll` is
- * excluded outright: its allow rules are the only way anything runs at all, and
- * an implicit rule that is not written in any settings file has no business
- * being one of them.
+ * `Read(**\/.env)` still blocks a `.env` inside the scratchpad.
  *
  * ## Two halves, because text is not enough
  *
@@ -49,7 +46,7 @@
  * invitation.
  */
 
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { ruleTarget } from "./rules.ts";
 import { PATH_TOOLS } from "./tools.ts";
@@ -222,17 +219,23 @@ export function escapesScratchpad(path: string, cwd: string, scratchDir: string)
  * `path` with every symlink in its existing prefix resolved, and the part that
  * does not exist yet appended unchanged.
  *
+ * An entry that exists but does not resolve — a dangling symlink, or a loop —
+ * is undefined, not "a file that does not exist yet": a write follows a
+ * dangling link and creates its target, wherever that is, so walking up past
+ * it would judge the link's own directory instead.
+ *
  * The loop is bounded rather than `while (true)`: `dirname` reaching a fixed
  * point is the intended exit, but a bound means a path this file did not
  * anticipate cannot hang a permission check.
  */
-function realOrNearest(path: string): string | undefined {
+export function realOrNearest(path: string): string | undefined {
 	let current = path;
 
 	for (let depth = 0; depth < 64; depth++) {
 		try {
 			return resolve(realpathSync(current), relative(current, path));
 		} catch {
+			if (exists(current)) return undefined;
 			const parent = dirname(current);
 			if (parent === current) return undefined;
 			current = parent;
@@ -240,4 +243,14 @@ function realOrNearest(path: string): string | undefined {
 	}
 
 	return undefined;
+}
+
+/** Whether an entry is there at all, a symlink itself and not its target. */
+function exists(path: string): boolean {
+	try {
+		lstatSync(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
