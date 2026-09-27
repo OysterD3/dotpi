@@ -43,7 +43,7 @@
 
 import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { AutoClassifier } from "./auto.ts";
-import { AUTO, CONFIG, CYCLE, CYCLE_KEY, isMode, MODE_HELP, MODE_ORDER, nextMode, SCRATCHPAD, WORKSPACE, type Mode } from "./config.ts";
+import { AUTO, CONFIG, CYCLE, CYCLE_KEY, HOOKS, isMode, MODE_HELP, MODE_ORDER, nextMode, SCRATCHPAD, WORKSPACE, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
 import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
@@ -158,6 +158,27 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	/**
+	 * PreToolUse hook verdicts by toolCallId (see HOOKS in config.ts). Each is
+	 * read once, by this handler, for the call it names. One the handler never
+	 * reaches — a later extension blocked the call first — is dropped when the
+	 * run settles rather than kept for a toolCallId that will not come back.
+	 */
+	const hookDecisions = new Map<string, { decision: "allow" | "ask"; reason: string }>();
+
+	pi.events.on(HOOKS.decisionChannel, (data) => {
+		const { toolCallId, decision, reason } = (data ?? {}) as { toolCallId?: unknown; decision?: unknown; reason?: unknown };
+		if (typeof toolCallId !== "string" || (decision !== "allow" && decision !== "ask")) return;
+		hookDecisions.set(toolCallId, { decision, reason: typeof reason === "string" ? reason : "" });
+	});
+
+	pi.on("agent_settled", () => hookDecisions.clear());
+
+	/** Tell hooks the mode in force, for the `permission_mode` it sends. */
+	const announceMode = () => {
+		if (policy) pi.events.emit(HOOKS.modeChannel, { mode: policy.settings.defaultMode });
+	};
+
+	/**
 	 * The workspace as the classifier should see it: cwd, the settings key,
 	 * `/add-dir`, and the scratchpad.
 	 *
@@ -215,6 +236,7 @@ export default function (pi: ExtensionAPI) {
 		override = next === loaded?.settings.defaultMode ? undefined : next;
 		applyOverride();
 		classifier.clear();
+		announceMode();
 
 		const suffix =
 			next === "auto" && !policy?.settings.auto.model
@@ -229,6 +251,7 @@ export default function (pi: ExtensionAPI) {
 		// A keystroke override belongs to the session that saw the keystroke.
 		override = undefined;
 		rebuild(ctx.cwd, ctx.isProjectTrusted());
+		announceMode();
 		// Verdicts are session-scoped by design, and a new session can be a new cwd
 		// and a new policy — a cached "safe" reached under the old one has no
 		// standing here. Also re-arms the degraded-mode warning.
@@ -241,20 +264,30 @@ export default function (pi: ExtensionAPI) {
 		if (!policy) return undefined;
 
 		const input = event.input as Record<string, unknown>;
-		const call = { tool: event.toolName, input, cwd: ctx.cwd, scratchDir };
-		let decision = decide(policy, call);
+		const hook = hookDecisions.get(event.toolCallId);
+		hookDecisions.delete(event.toolCallId);
+		const call = { tool: event.toolName, input, cwd: ctx.cwd, scratchDir, hook };
+		const active = policy;
 
-		// The one allow that is not final on its own. decide() answered by comparing
-		// text, which cannot see that `<scratch>/notes.txt` is a symlink to
-		// `~/.ssh/id_rsa`; this is where that gets checked against the filesystem.
-		// An escape does not deny — it just withdraws the exemption and lets the
-		// call be judged as what it is, a path outside the scratchpad.
-		if (decision.scratch && scratchDir) {
-			const target = ruleTarget(event.toolName, input);
-			if (target !== undefined && escapesScratchpad(target, ctx.cwd, scratchDir)) {
-				decision = decide(policy, { ...call, scratchDir: undefined });
-			}
-		}
+		// decide(), plus the one allow that is not final on its own. decide()
+		// answered by comparing text, which cannot see that `<scratch>/notes.txt`
+		// is a symlink to `~/.ssh/id_rsa`; this is where that gets checked against
+		// the filesystem. An escape does not deny — it just withdraws the exemption
+		// and lets the call be judged as what it is, a path outside the scratchpad.
+		//
+		// It reads the policy and scratchpad in force when it is called, not when
+		// the call arrived: the PermissionRequest re-check below runs after a hook
+		// that may take a while, and a mode switch or /permissions reload that
+		// lands meanwhile must apply to it.
+		const judge = (judged: typeof call): Decision => {
+			const live = policy ?? active;
+			const first = decide(live, { ...judged, scratchDir });
+			if (!first.scratch || !scratchDir) return first;
+			const target = ruleTarget(event.toolName, judged.input);
+			if (target === undefined || !escapesScratchpad(target, ctx.cwd, scratchDir)) return first;
+			return decide(live, { ...judged, scratchDir: undefined });
+		};
+		let decision = judge(call);
 
 		if (decision.behavior === "allow") return undefined;
 
@@ -270,8 +303,8 @@ export default function (pi: ExtensionAPI) {
 		// the first everyday mode that prompts for those tools at all, so it is
 		// what made the gap visible. `subjectOf` already renders their arguments
 		// for the classifier; the human deciding deserves at least as much.
-		const target = ruleTarget(event.toolName, input) ?? subjectOf(event.toolName, input).body;
-		const findings = decision.findings ?? [];
+		let target = ruleTarget(event.toolName, input) ?? subjectOf(event.toolName, input).body;
+		let findings = decision.findings ?? [];
 		const grantContext = { tool: event.toolName, target, findings, rule: decision.rule };
 
 		// Checked only after deny: a grant can lift an ask, never a hard block.
@@ -327,6 +360,43 @@ export default function (pi: ExtensionAPI) {
 				// only one of those can be looked up and argued with.
 				decision = { behavior: "ask", reason: `auto classifier: ${verdict.reason}` };
 			}
+		}
+
+		// PermissionRequest hooks get the last word before a human does — and
+		// before the no-UI fallback, which is a prompt nobody would see. The reply
+		// comes back as a promise the listener puts on the message synchronously;
+		// with hooks not installed, or no such hook, there is none.
+		const request: { tool: string; input: Record<string, unknown>; reply?: Promise<unknown> } = { tool: event.toolName, input };
+		pi.events.emit(HOOKS.requestChannel, request);
+		const signal = ctx.signal;
+		const reply = readReply(request.reply ? await request.reply : undefined);
+		// Esc while a hook ran: the loop will discard this call, and a dialog opened
+		// for it now would hold up the abort until someone answered it.
+		if (request.reply && signal?.aborted) return { block: true, reason: "Permission check was interrupted before this call was approved" };
+		if (reply?.behavior === "deny") {
+			if (reply.interrupt) ctx.abort();
+			return { block: true, reason: `Permission denied by a PermissionRequest hook${reply.message ? ` — ${reply.message}` : ""}` };
+		}
+		if (reply?.behavior === "allow") {
+			if (reply.updatedInput === undefined) return undefined;
+			// The rewritten call is judged again, without the PreToolUse verdict: a
+			// hook may clear a prompt, but not use the rewrite to slip in a call a
+			// deny rule stops, an ask rule names, or the table flags. What the mode
+			// alone would have asked is the prompt the hook's allow already answered.
+			// A flagged call auto mode would classify is asked about instead — the
+			// same fallback a classifier error takes on a flagged call.
+			replaceInput(input, reply.updatedInput);
+			const again = judge({ ...call, hook: undefined });
+			if (again.behavior === "deny") {
+				ctx.ui.notify(`Blocked ${event.toolName}: ${again.reason}`, "error");
+				return { block: true, reason: `Permission denied — ${again.reason}` };
+			}
+			const flagged = (again.findings?.length ?? 0) > 0;
+			const asks = (again.behavior === "ask" && (again.rule !== undefined || flagged)) || (again.behavior === "classify" && flagged);
+			if (!asks) return undefined;
+			decision = { behavior: "ask", reason: again.reason, rule: again.rule, findings: again.findings };
+			target = ruleTarget(event.toolName, input) ?? subjectOf(event.toolName, input).body;
+			findings = decision.findings ?? [];
 		}
 
 		if (!ctx.hasUI) {
@@ -605,6 +675,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (text === "reload") {
 				rebuild(ctx.cwd, ctx.isProjectTrusted());
+				announceMode();
 				// Verdicts were reached under the old settings — a different model, or
 				// a different notion of what is skipped. Keeping them would let a
 				// reload look like it took effect while old answers were still in use.
@@ -686,6 +757,30 @@ export default function (pi: ExtensionAPI) {
 			);
 		},
 	});
+}
+
+/** A PermissionRequest hook's answer, as the hooks extension hands it over; anything else is no answer. */
+function readReply(value: unknown):
+	| { behavior: "allow"; updatedInput?: Record<string, unknown> }
+	| { behavior: "deny"; message?: string; interrupt: boolean }
+	| undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const reply = value as { behavior?: unknown; updatedInput?: unknown; message?: unknown; interrupt?: unknown };
+	if (reply.behavior === "deny") {
+		return { behavior: "deny", message: typeof reply.message === "string" ? reply.message : undefined, interrupt: reply.interrupt === true };
+	}
+	if (reply.behavior !== "allow") return undefined;
+	const updated = reply.updatedInput;
+	return {
+		behavior: "allow",
+		updatedInput: typeof updated === "object" && updated !== null && !Array.isArray(updated) ? (updated as Record<string, unknown>) : undefined,
+	};
+}
+
+/** In place: pi hands the tool the same object this handler was given. */
+function replaceInput(target: Record<string, unknown>, next: Record<string, unknown>): void {
+	for (const key of Object.keys(target)) delete target[key];
+	Object.assign(target, next);
 }
 
 /**

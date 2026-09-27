@@ -845,6 +845,108 @@ nor, in auto mode, anything a model was talked out of naming.
 | `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
+**`agent/extensions/hooks/`** — Claude Code's hooks API: run a shell command, POST to a URL, or ask
+a model at fixed points in the agent's lifecycle. The protocol is that agent's own — the event
+arrives as JSON on stdin, exit 2 blocks, JSON on stdout decides — so a hook written for it runs here
+unchanged. `~/.claude/hooks/bash-guard.py` works as it is:
+
+```jsonc
+// agent/settings.json, or the same object in agent/hooks.json
+"hooks": {
+  "PreToolUse": [
+    { "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "python3 \"$HOME/.claude/hooks/bash-guard.py\"",
+                  "statusMessage": "Safety check..." }] }
+  ],
+  "Stop": [
+    { "hooks": [{ "type": "prompt", "prompt": "Did the agent run the tests it changed? $ARGUMENTS" }] }
+  ]
+}
+```
+
+Four files, merged rather than overriding each other: `hooks` in `~/.pi/agent/settings.json`,
+`~/.pi/agent/hooks.json`, and the same two under a project's `.pi/`. A `hooks.json` may be the bare
+event map or a Claude Code plugin's `{ "description", "hooks" }` file. The same handler in two files
+runs once. `disableAllHooks: true` in a settings file turns them all off. **A project's hooks load
+only when you trusted the project** — and not by pi's own test, which calls a repository whose only
+project file is `.pi/hooks.json` trusted without ever asking; hooks wants trust that was actually
+decided, so such a project needs `/trust` first. Every bad value — a mistyped event, a regex that
+does not compile, a handler type pi cannot run — is a named warning at startup, because a hook that
+silently failed to load is a guard that is not there. `/hooks` lists what loaded and from where.
+
+Matchers follow that agent exactly: `Edit|Write` is a list of exact names, `Edit.*` is a regex, and
+both are case-sensitive. The one deliberate difference is what a hook is shown: **`tool_name` is
+the conventional name** (`Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob` for pi's `find`, `LS`),
+**but `tool_input` is pi's own** — `path`, not `file_path`; `edits[]`, not `old_string`. pi's edit
+can carry several replacements, which have no single-string form, so translating the input would be
+lossy where translating the name is not. Extension and MCP tools keep their pi names (`task`,
+`mcp`). `permission_mode` is the permissions extension's mode name (`askDestructive`, `auto`, …).
+
+| Event | Fires on | What it can do here |
+| --- | --- | --- |
+| `SessionStart` | start, `/new` (`clear`), resume, fork, and after compaction (`compact`) | context for the first prompt, which waits for it |
+| `UserPromptSubmit` | a prompt you typed (not one an extension sent) | block it; add context |
+| `PreToolUse` | every tool call, before permissions | deny; ask; allow; rewrite the input |
+| `PermissionRequest` | permissions is about to prompt you | allow or deny in your place |
+| `PostToolUse` / `PostToolUseFailure` | a tool finished / failed | feedback and context appended to the result; replace it |
+| `PostToolBatch` | a turn's tools all finished | context for the next request; block stops the agent |
+| `Stop` / `StopFailure` | the agent finished / ended on an API error | keep it going with a reason (8 times in a row; the 9th is overruled) |
+| `SubagentStart` / `SubagentStop` | the `task` tool starts / ends a subagent | observe only |
+| `Notification` | a permission prompt or `ask_user` question still open after 6 s, 60 s idle | side effects; `terminalSequence` |
+| `PreCompact` / `PostCompact` | compaction | block it / observe |
+| `PostModelSwitch` | `/model` or cycling | context for the next request |
+| `DirectoryAdded` | `/add-dir` | `systemMessage` goes to the model |
+| `SessionEnd` | quit, `/new`, `/resume` | side effects, inside a 1.5 s budget |
+
+**PreToolUse and permissions decide together.** A `tool_call` handler can block a call but never
+clear one, so an `allow` means something only if the prompt it skips is permissions'. hooks loads
+first, runs its hooks, and hands permissions its verdict for that call on `hooks:decision`;
+permissions weighs it exactly as a matching `allow` or `ask` rule. So a hook's `allow` skips the
+prompt your mode would raise, and its `ask` raises one your mode would not — but deny rules, the
+hard findings, and (with `destructiveOverridesAllow`) the destructive table still come first. A hook
+can move a call along the ladder, never past a refusal. `deny` needs no help: hooks blocks it
+itself, before any prompt. PermissionRequest runs where permissions would prompt; an input it
+rewrites is checked again against deny rules, ask rules and the destructive table (in auto mode a
+flagged rewrite is put to you, not to the classifier). A rewrite whose `command` or `path` is not a
+string is refused outright, since pi does not validate a rewritten input and every rule reads those
+as strings. Without permissions installed, `ask` shows hooks' own confirm and `allow` has nothing to
+skip.
+
+An `async: true` command runs with no deadline, as in Claude Code, and its `additionalContext`
+reaches the model with the next request — in the same run if the agent is still working. Every hook
+still running when the session ends (`/new`, `/resume`, `/reload`, quit) is killed with its process
+group, so none outlives pi and none reports into a session that is gone. `terminalSequence` works
+as there — OSC 0/1/2/9/99/777 or BEL, anything else refused — and only in the TUI.
+
+Where pi and Claude Code differ, pi's behaviour is what you get, and it is stated rather than
+papered over. `transcript_path` is pi's own JSONL, and it may not exist on disk before the first
+reply. Subagents run as separate pi processes without extensions, so hooks do not run *inside*
+them, and `SubagentStop` cannot keep one going. A `PostToolBatch` block stops the agent the way Esc
+does, since pi has no "end the loop here" result; `continue: false` stops it the same way, and its
+`stopReason` stays in the transcript. Esc cannot interrupt a running Stop hook (pi gives no abort
+signal at that point) or take back the first prompt while SessionStart hooks run — give slow ones a
+`timeout`. `statusMessage` shows only while the agent is working; pi has no indicator otherwise. A `prompt`
+hook with no `model` runs on the session model, not a small fast one — name one to keep it cheap.
+A prompt typed while the agent works carries its UserPromptSubmit context just *ahead* of it.
+Not supported: the `agent` and `mcp_tool` handler types, the `if` field (warned — on a tool event the
+handler runs for every call its matcher selects; elsewhere it never runs, as in Claude Code),
+`asyncRewake`, `CLAUDE_ENV_FILE`, `CLAUDE_PLUGIN_ROOT`, and the events pi has no
+signal for — `Setup`, `UserPromptExpansion`, `PermissionDenied`, `Elicitation`, `TaskCreated`,
+`TeammateIdle`, `ConfigChange`, `PreModelSwitch`, `Worktree*`, `CwdChanged`, `FileChanged`,
+`InstructionsLoaded`, `MessageDisplay`. Each is named when a settings file uses it.
+
+| File | Role |
+| --- | --- |
+| `index.ts` | Event wiring: each pi signal to its hook event, and applying the answer |
+| `config.ts` | Events, tool names, defaults, channel names |
+| `settings.ts` | Loading, checking and merging the four files; the trust gate |
+| `match.ts` | Matcher strings (pure) |
+| `output.ts` | The exit-code and JSON protocol; merging many hooks' answers (pure) |
+| `run.ts` | Running a command, an HTTP POST, or a model call |
+| `model.ts` | Resolving a prompt hook's `model` (a copy of permissions') |
+| `hooks.test.ts` | The protocol, matcher and loader as tables |
+| `hooks.e2e.ts` | A real session with hooks and permissions loaded and real hook commands |
+
 **`agent/extensions/add-dir/`** — adds `/add-dir`, plus `/dirs` to list and remove. Brings another
 directory into the session's workspace:
 
@@ -3110,8 +3212,9 @@ things — extensions, themes, the permissions policy template, subagents — tr
 - **Models** — the session model is pi's own `defaultProvider` / `defaultModel` /
   `defaultThinkingLevel` in `agent/settings.json` (or whatever `/model` picked since). A feature
   that makes model calls of its own takes a model reference in the same file — `goal.model`,
-  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model` — and a subagent
-  takes one on the `model:` line of `agent/agents/<name>.md`. Unset, the feature uses the session
+  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model` — a `prompt`
+  hook takes one in its own `model` field, and a subagent takes one on the `model:` line of
+  `agent/agents/<name>.md`. Unset, the feature uses the session
   model; session-ref's summary always does. Write the full `provider/id`. A
   bare id or a distinctive part of one also works, by pi's `--model` rules (exact before partial, an
   undated alias before a dated id), and an ambiguous reference is an error, never a silent pick.

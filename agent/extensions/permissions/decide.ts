@@ -3,14 +3,16 @@
  *
  * Order of evaluation:
  *
+ *   0. malformed input                — a non-string command or path; refused
  *   1. deny rules                     — always win, nothing overrides them
  *   1b. hard findings                 — a refusal; no rule, mode or grant lifts it
  *   2. destructive check              — when the mode asks for it (see below)
- *   3. ask rules
- *   4. allow rules
+ *   3. ask rules, then a PreToolUse hook's "ask" (weighed as an ask rule)
+ *   4. allow rules, then a PreToolUse hook's "allow" (weighed as an allow rule)
  *   5. the mode's default
  *
- * Step 1b is the only outcome here that cannot be configured. A couple of
+ * Step 0 is a backstop, not policy: see the comment on it below. Step 1b is the
+ * only policy outcome here that cannot be configured. A couple of
  * patterns in destructive.ts are marked `hard`, meaning the exposure they create
  * outlives the command and cannot be undone by whoever approved it — a public
  * tunnel is the case it was added for. Everything else in this file is policy
@@ -45,17 +47,18 @@
  * `git status` has not agreed to silent history rewrites. Set
  * `destructiveOverridesAllow: false` for the strict conventional order.
  *
- * Step 4 has one member that is not in any settings file: a path tool writing
- * inside the session scratchpad. It sits at the allow step precisely so it
- * inherits that step's bounds — deny rules and the destructive table have both
- * already run — and it is excluded from `denyAll`. See scratch.ts.
+ * Step 4 has two members that are not in any settings file: a hook's verdict
+ * (above), and a path tool writing inside the session scratchpad. The second
+ * sits at the allow step precisely so it inherits that step's bounds — deny
+ * rules and the destructive table have both already run — and it is excluded
+ * from `denyAll`. See scratch.ts.
  */
 
 import { findDestructive, findHardInContent, type Finding } from "./destructive.ts";
 import { firstMatch, type Rule } from "./rules.ts";
 import { targetsScratchpad } from "./scratch.ts";
 import type { PermissionSettings } from "./settings.ts";
-import { MUTATING_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
+import { MUTATING_TOOLS, PATH_TOOLS, READ_ONLY_TOOLS } from "./tools.ts";
 import { isTrivial } from "./trivial.ts";
 
 /**
@@ -104,10 +107,26 @@ export type Call = {
 	 * its absence makes: nothing else here consults it.
 	 */
 	scratchDir?: string;
+	/**
+	 * A PreToolUse hook's verdict on this one call, from the hooks extension.
+	 * Weighed exactly as a matching rule of the same kind: `ask` where ask rules
+	 * are, `allow` where allow rules are. Nothing a hook says reaches past a deny
+	 * rule, a hard finding, or — with destructiveOverridesAllow — the table.
+	 */
+	hook?: { decision: "allow" | "ask"; reason: string };
 };
 
 export function decide(policy: CompiledPolicy, call: Call): Decision {
 	const { tool, input, cwd } = call;
+
+	// Every rule and pattern below reads `command` and `path` as strings, so a
+	// call where one is something else would slip past all of them. pi checks a
+	// call against its tool's schema before any extension sees it, but a hook's
+	// updatedInput is applied after that, and pi does not check again — this is
+	// the backstop for that path, and for any other that edits the input late.
+	if ((tool === "bash" && input.command !== undefined && typeof input.command !== "string") || (PATH_TOOLS.has(tool) && input.path !== undefined && typeof input.path !== "string")) {
+		return { behavior: "deny", reason: `the ${tool} call's ${tool === "bash" ? "command" : "path"} is not a string` };
+	}
 
 	const denied = firstMatch(policy.deny, tool, input, cwd);
 	if (denied) {
@@ -167,6 +186,7 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 		if (askedFirst) {
 			return { behavior: "ask", reason: `matched ask rule ${askedFirst.source}`, rule: askedFirst.source, findings };
 		}
+		if (call.hook?.decision === "ask") return { behavior: "ask", reason: hookReason(call.hook), findings };
 		if (mode === "auto") return { behavior: "classify", reason: describe(findings), findings };
 		return { behavior: "ask", reason: describe(findings), findings };
 	}
@@ -175,11 +195,13 @@ export function decide(policy: CompiledPolicy, call: Call): Decision {
 	if (asked) {
 		return { behavior: "ask", reason: `matched ask rule ${asked.source}`, rule: asked.source };
 	}
+	if (call.hook?.decision === "ask") return { behavior: "ask", reason: hookReason(call.hook) };
 
 	const allowed = firstMatch(policy.allow, tool, input, cwd);
 	if (allowed) {
 		return { behavior: "allow", reason: `allowed by rule ${allowed.source}`, rule: allowed.source };
 	}
+	if (call.hook?.decision === "allow") return { behavior: "allow", reason: hookReason(call.hook) };
 
 	// Same inversion on the conventional-ordering path (destructiveOverridesAllow
 	// false), reached only when no ask or allow rule matched first.
@@ -278,6 +300,11 @@ function hardInWrite(call: Call): Finding[] {
 	}
 
 	return [];
+}
+
+function hookReason(hook: { decision: "allow" | "ask"; reason: string }): string {
+	const verb = hook.decision === "allow" ? "allowed" : "asked about";
+	return hook.reason ? `a PreToolUse hook ${verb} this call — ${hook.reason}` : `a PreToolUse hook ${verb} this call`;
 }
 
 /** "deletes files recursively; force-pushes, overwriting published history" */

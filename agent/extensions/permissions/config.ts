@@ -200,3 +200,37 @@ export const WORKSPACE = {
 export const SCRATCHPAD = {
 	channel: "scratchpad:dir",
 };
+
+/**
+ * The hooks extension's side of a tool call, and what this one tells it.
+ *
+ * A PreToolUse hook can say `allow` or `ask`, and only this extension can act
+ * on either: a tool_call handler can block a call but never clear one, so an
+ * allow means nothing unless the prompt it skips is this one. hooks loads
+ * first (extensions load in directory order), runs its hooks, and publishes its
+ * verdict on `decisionChannel` keyed by toolCallId; this handler, running next
+ * for the same call, reads it and treats it exactly as a matching `allow` or
+ * `ask` rule. Deny rules, hard findings and (with destructiveOverridesAllow)
+ * the destructive table still come first — a hook can move a call along the
+ * ladder, never past a refusal.
+ *
+ * `requestChannel` is Claude Code's PermissionRequest: `{ tool, input, reply }`,
+ * announced just before a prompt would be shown. The listener fills `reply`
+ * synchronously with a promise of `{ behavior: "allow" | "deny", updatedInput?,
+ * message?, interrupt? }` or undefined. An allow that rewrites the input is
+ * judged again: a deny rule (or denyAll's default) blocks it, an ask rule or a
+ * table finding puts it to the user, and the classifier is never asked.
+ *
+ * `modeChannel` announces the mode in force — on session start and on every
+ * change — for the `permission_mode` field hooks send. Its arrival is also how
+ * hooks knows this extension is installed.
+ *
+ * Duplicated strings, not a shared module, like every channel in this repo.
+ * With hooks not installed nothing publishes a decision and nothing fills a
+ * reply, and every call is decided exactly as before.
+ */
+export const HOOKS = {
+	decisionChannel: "hooks:decision",
+	requestChannel: "permissions:request",
+	modeChannel: "permissions:mode",
+};
