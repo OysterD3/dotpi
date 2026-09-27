@@ -481,7 +481,7 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			sessionId = undefined;
 		}
-		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
+		const branch = ctx.sessionManager.getBranch() as Array<{ type: string } & Record<string, any>>;
 		const restored = restoreFromBranch(mode, branch);
 		previousLevel = restored.previousLevel;
 		keywordFiredThisSession = restored.keywordFired;
@@ -595,7 +595,7 @@ export default function (pi: ExtensionAPI) {
 		const optedIn = triggered || mode.isOn() || keywordFiredThisSession;
 		const justFinished =
 			optedIn &&
-			hasMessageSinceLastUserTurn(ctx.sessionManager.getBranch() as Array<Record<string, any>>, RESULT_MESSAGE);
+			hasMessageSinceLastUserTurn(ctx.sessionManager.getBranch() as Array<{ type: string } & Record<string, any>>, RESULT_MESSAGE);
 
 		// reminderForTurn() is called on every turn and never conditionally: the
 		// cadence counter lives inside it, so skipping the call would postpone

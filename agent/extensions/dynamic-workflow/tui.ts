@@ -610,8 +610,8 @@ export class WorkflowsPanel {
 		if (matchesKey(data, "down") || data === "j") return void this.move(1);
 		if (matchesKey(data, "left") || data === "h") return void this.back();
 		if (matchesKey(data, "right") || matchesKey(data, "return") || data === "l") return void this.forward();
-		if (matchesKey(data, "pageup")) return void this.scrollPrompt(-PROMPT_PREVIEW_LINES);
-		if (matchesKey(data, "pagedown")) return void this.scrollPrompt(PROMPT_PREVIEW_LINES);
+		if (matchesKey(data, "pageUp")) return void this.scrollPrompt(-PROMPT_PREVIEW_LINES);
+		if (matchesKey(data, "pageDown")) return void this.scrollPrompt(PROMPT_PREVIEW_LINES);
 		if (data === "p") return void this.togglePause();
 		if (data === "c") return void this.cancel();
 		if (data === "R") return void this.resumeRun();

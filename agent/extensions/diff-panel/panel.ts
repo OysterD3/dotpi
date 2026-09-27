@@ -138,8 +138,8 @@ export class DiffPanel {
 		if (matchesKey(data, "escape")) return void this.host.unfocus();
 		if (matchesKey(data, "up") || data === "k") this.scroll -= 1;
 		else if (matchesKey(data, "down") || data === "j") this.scroll += 1;
-		else if (matchesKey(data, "pageup") || data === "b") this.scroll -= this.page;
-		else if (matchesKey(data, "pagedown") || data === " ") this.scroll += this.page;
+		else if (matchesKey(data, "pageUp") || data === "b") this.scroll -= this.page;
+		else if (matchesKey(data, "pageDown") || data === " ") this.scroll += this.page;
 		else if (data === "g") this.scroll = 0;
 		else if (data === "G") this.scroll = Number.MAX_SAFE_INTEGER;
 		else if (matchesKey(data, "tab") || data === "n") this.jump(1);
