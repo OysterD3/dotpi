@@ -42,7 +42,14 @@
  * sandbox — it cannot contain code that is already running.
  */
 
-import { getAgentDir, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	type ToolCallEvent,
+} from "@earendil-works/pi-coding-agent";
 import { AutoClassifier } from "./auto.ts";
 import { AUTO, CONFIG, CYCLE, CYCLE_KEY, HOOKS, isMode, MODE_HELP, MODE_ORDER, nextMode, SCRATCHPAD, WORKSPACE, type Mode } from "./config.ts";
 import { decide, type CompiledPolicy, type Decision } from "./decide.ts";
@@ -219,10 +226,38 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
-	const rebuild = (cwd: string, trusted: boolean) => {
-		const built = compile(agentDir, cwd, trusted);
+	/**
+	 * Whether the project's files may loosen the policy.
+	 *
+	 * pi's own isProjectTrusted() is true for a repository whose only project
+	 * file is the legacy .pi/permissions.json, because that file is not on pi's
+	 * list of trust-requiring resources — so a cloned repo holding just that file
+	 * could set allowAll and allow rules. Trust here must have been decided:
+	 * either pi had a reason to ask, or the project is in trust.json. The hooks
+	 * extension asks the same question the same way (hooks/index.ts), and the two
+	 * must agree on what "trusted" means.
+	 */
+	const trustFor = (ctx: ExtensionContext): { trusted: boolean; problem?: string } => {
+		try {
+			return {
+				trusted:
+					ctx.isProjectTrusted() &&
+					(hasTrustRequiringProjectResources(ctx.cwd) || new ProjectTrustStore(agentDir).get(ctx.cwd) === true),
+			};
+		} catch (error) {
+			// An unreadable trust.json costs the project's loosening, never the user's policy.
+			return {
+				trusted: false,
+				problem: `project settings are deny/ask only: the trust store could not be read (${error instanceof Error ? error.message : String(error)})`,
+			};
+		}
+	};
+
+	const rebuild = (ctx: ExtensionContext) => {
+		const { trusted, problem } = trustFor(ctx);
+		const built = compile(agentDir, ctx.cwd, trusted);
 		loaded = built.policy;
-		report = built.report;
+		report = problem ? [problem, ...built.report] : built.report;
 		applyOverride();
 	};
 
@@ -251,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		// A keystroke override belongs to the session that saw the keystroke.
 		override = undefined;
-		rebuild(ctx.cwd, ctx.isProjectTrusted());
+		rebuild(ctx);
 		announceMode();
 		// Verdicts are session-scoped by design, and a new session can be a new cwd
 		// and a new policy — a cached "safe" reached under the old one has no
@@ -674,7 +709,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (text === "reload") {
-				rebuild(ctx.cwd, ctx.isProjectTrusted());
+				rebuild(ctx);
 				announceMode();
 				// Verdicts were reached under the old settings — a different model, or
 				// a different notion of what is skipped. Keeping them would let a

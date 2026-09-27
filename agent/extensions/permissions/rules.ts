@@ -17,6 +17,7 @@
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
 import { matchCommandPattern, matchGlob } from "./glob.ts";
+import { resolveToolPath } from "./paths.ts";
 import { PATH_TOOLS, resolveToolName } from "./tools.ts";
 
 export type Rule = {
@@ -122,7 +123,14 @@ export function matchRule(rule: Rule, tool: string, input: Record<string, unknow
 
 	if (tool === "bash") return matchBash(rule.content, target);
 
-	return matchPath(rule.content, target, cwd);
+	if (matchPath(rule.content, target, cwd)) return true;
+	// The path as pi's tool will resolve it, too. Matching only the text the model
+	// sent let `@.env`, `file://<cwd>/.env` and `~/.ssh/id_rsa` past
+	// `Read(**/.env)` and `Read(/Users/me/.ssh/**)`: pi drops the `@`, reads the
+	// URL and expands the `~`, and the rule never saw the file it names.
+	if (!PATH_TOOLS.has(tool)) return false;
+	const resolved = resolveToolPath(target, cwd);
+	return resolved !== undefined && resolved !== target && matchPath(rule.content, resolved, cwd);
 }
 
 /**

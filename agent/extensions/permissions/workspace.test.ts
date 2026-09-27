@@ -15,7 +15,7 @@
  */
 
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Call, type CompiledPolicy, type Decision, decide } from "./decide.ts";
 import { parseRules } from "./rules.ts";
@@ -178,6 +178,35 @@ const rows: Array<[string, string, string]> = [
 	["a write with no path", run("write", { content: "x" }), "ask"],
 ];
 for (const [label, actual, expected] of rows) eq(label, actual, expected);
+
+// ---------------------------------------------------------------------------
+console.log("rules match the path pi resolves, not only the text the model sent");
+
+// Before, a rule saw only the raw path: `@.env` got past `Write(**/.env)`, and
+// `~/.ssh/id_rsa` past `Read(/Users/me/.ssh/**)`, while pi's tool touched the
+// file the rule names. (A `**/` rule on a deeper path matched anyway — `**`
+// swallows `@config` — so the rows are the spellings where it did not.) With
+// the workspace allow resolving the path correctly, the two halves disagreed
+// about which file a call touches.
+const guarded = (mode: PermissionSettings["defaultMode"]) =>
+	policyFor({
+		defaultMode: mode,
+		deny: ["Write(**/.env)", `Read(${homedir()}/.ssh/**)`, `Read(${homedir()}/.aws/**)`],
+		ask: ["Edit(src/secrets.ts)"],
+		allow: ["Write(src/**)"],
+	});
+const rulesRows: Array<[string, string, string]> = [
+	["deny: the raw path still matches", run("write", write(".env"), {}, guarded("acceptChanges")), "deny"],
+	["deny: @.env", run("write", write("@.env"), {}, guarded("acceptChanges")), "deny"],
+	["ask: a file:// URL to an anchored rule's file", run("edit", edit(`file://${CWD}/src/secrets.ts`), {}, guarded("acceptChanges")), "ask"],
+	["deny: ~/.ssh/id_rsa against an absolute rule, in acceptChanges", run("read", { path: "~/.ssh/id_rsa" }, {}, guarded("acceptChanges")), "deny"],
+	["deny: ~/.ssh/id_rsa in auto, ahead of skipReadOnly", run("read", { path: "~/.ssh/id_rsa" }, {}, guarded("auto")), "deny"],
+	["deny: @~/.aws/credentials", run("read", { path: "@~/.aws/credentials" }, {}, guarded("auto")), "deny"],
+	["ask: @src/secrets.ts", run("edit", edit("@src/secrets.ts"), {}, guarded("acceptChanges")), "ask"],
+	["allow: @src/a.ts in askAll, the same way", run("write", write("@src/a.ts"), {}, guarded("askAll")), "allow"],
+	["a path the rules do not name is unchanged", run("read", { path: "~/notes.md" }, {}, guarded("askAll")), "ask"],
+];
+for (const [label, actual, expected] of rulesRows) eq(label, actual, expected);
 
 // ---------------------------------------------------------------------------
 console.log("escapesWorkspace — confirming the lexical answer against the disk");

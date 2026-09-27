@@ -400,6 +400,12 @@ permissions block intact.
 legacy spelling), `Bash(git status)` is exact, `Read(src/**)` is a path glob, and a bare `Bash`
 matches every use of the tool.
 
+A path rule matches the path as the model wrote it **and** the path pi's `read`, `write` and `edit`
+will actually touch: pi drops a leading `@`, expands `~`, and reads a `file://` URL as a path, so
+`@.env` is caught by `Write(.env)` and `~/.ssh/id_rsa` by `Read(/Users/you/.ssh/**)`. Before, a rule
+saw only the text, and those spellings walked past it. Rule *patterns* are not expanded — write
+`~/…` paths out in full.
+
 **Rules can name extension tools too**, and every tool the extensions in here register is allowed
 outright: `Workflow`, `Ask_user`, `Task`, `Memory`, `Scratchpad`, `Lsp_diagnostics`,
 `Bash_output`, `Kill_shell`, and the three `Intercom_*`. Unknown names pass through lower-cased
@@ -880,6 +886,12 @@ offline, and reports a classify outcome as the unanswered question it is. `/perm
 drops cached verdicts along with grants — a remembered "safe" is an approval in every sense that
 matters.
 
+"Trusted" here is stricter than pi's own answer. pi asks about trust only when a project has a file
+on its list, and the legacy `.pi/permissions.json` is not on it — so for a repository whose only pi
+file is that one, pi's `isProjectTrusted()` says yes without anyone having decided. The loader
+treats such a project as trusted only when `trust.json` says so (`/trust`); until then its file
+adds deny and ask rules and nothing else. The hooks extension draws the same line for `hooks.json`.
+
 One layering subtlety: the mode ladder is not a total order, and `auto` is where that shows. It is
 not a subset of `acceptChanges`, which prompts for every bash command and custom tool but lets every
 edit inside the workspace through unjudged — edits `auto` does judge. So an untrusted project may
@@ -903,6 +915,7 @@ nor, in auto mode, anything a model was talked out of naming.
 | `scratch.ts` | The session scratchpad exemption and its containment test (pure) |
 | `trivial.ts` | **The trivially-safe command grammar — edit this list to taste** (pure) |
 | `rules.ts` | Rule syntax: parsing and matching (pure) |
+| `paths.ts` | The path pi's `read`/`write`/`edit` will touch (`@`, `~`, `file://`), shared by rules and the workspace check (pure) |
 | `glob.ts` | Path and command pattern matching (pure) |
 | `settings.ts` | Loading and layering the JSON files |
 | `workspace.ts` | Resolving the directory set the classifier is told is in scope, and `acceptChanges`' inside-the-workspace check (pure, but for its symlink half) |

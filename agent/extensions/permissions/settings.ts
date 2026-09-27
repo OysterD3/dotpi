@@ -19,8 +19,10 @@
  * have written. Denies and asks from a project always apply — a repo is welcome
  * to ask for *more* caution. Its `allow` rules and any loosening of the mode are
  * ignored unless the project is trusted, so cloning a hostile repo cannot
- * silently grant itself permission to run anything. pi already gates config
- * loading behind project trust for the same reason.
+ * silently grant itself permission to run anything. pi gates config loading
+ * behind project trust for the same reason — but not the legacy
+ * .pi/permissions.json, which is not on its list, so index.ts decides
+ * `projectTrusted` with a stronger test than pi's own (trustFor there).
  */
 
 import { existsSync, readFileSync } from "node:fs";

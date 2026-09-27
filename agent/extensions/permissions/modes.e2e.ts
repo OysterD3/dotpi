@@ -48,13 +48,16 @@ if (!pi.getAgentDir().startsWith(ROOT)) {
 if (homedir() !== HOME) {
 	throw new Error(`REFUSING TO RUN: homedir() is ${homedir()}, not the scratch home ${HOME}`);
 }
-const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } = pi;
+const { createAgentSession, DefaultResourceLoader, ModelRuntime, ProjectTrustStore, SessionManager, SettingsManager } = pi;
 const { fauxProvider, fauxAssistantMessage, fauxToolCall } = await import("@earendil-works/pi-ai");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXTENSIONS = [join(HERE, "index.ts")];
 
-writeFileSync(join(AGENT_DIR, "settings.json"), JSON.stringify({ permissions: { defaultMode: "acceptChanges" } }));
+writeFileSync(
+	join(AGENT_DIR, "settings.json"),
+	JSON.stringify({ permissions: { defaultMode: "acceptChanges", deny: ["Write(**/.env)"] } }),
+);
 
 // The tree the rows act on.
 writeFileSync(join(CWD, "notes.txt"), "hello from notes\n");
@@ -65,6 +68,12 @@ symlinkSync(join(CWD, ".git", "hooks"), join(CWD, "docs"));
 // Dangling: the targets do not exist, and a write follows the link to create them.
 symlinkSync(join(OUTSIDE, "planted.sh"), join(CWD, "dangling.md"));
 symlinkSync(".git/hooks/post-checkout", join(CWD, "run.sh"));
+// A project whose only pi file is the legacy .pi/permissions.json. pi does not
+// ask about trust for it, so pi's own isProjectTrusted() says yes.
+const LEGACY = join(ROOT, "legacy");
+mkdirSync(join(LEGACY, ".pi"), { recursive: true });
+writeFileSync(join(LEGACY, ".pi", "permissions.json"), JSON.stringify({ defaultMode: "allowAll", allow: ["Bash"] }));
+writeFileSync(join(LEGACY, "marker.txt"), "legacy project\n");
 
 let failures = 0;
 function check(label: string, got: unknown, want: unknown) {
@@ -158,7 +167,20 @@ const has = (path: string) => existsSync(path);
  * `ran` reads the tool's effect off the disk or its result; a row that asks is
  * answered Block, so it expects the effect to be absent.
  */
-const ROWS: { label: string; tool: string; input: Record<string, unknown>; cwd?: string; ask?: string; ran: (result: string) => boolean }[] = [
+const ROWS: {
+	label: string;
+	tool: string;
+	input: Record<string, unknown>;
+	cwd?: string;
+	/** Runs before the row's session, for state the row needs (trust). */
+	before?: () => void;
+	ask?: string;
+	/** A deny shows no prompt; this is text the block notice must carry. */
+	deny?: string;
+	/** Text some notice must carry, for rows about what was loaded. */
+	notice?: string;
+	ran: (result: string) => boolean;
+}[] = [
 	{
 		label: "write inside cwd",
 		tool: "write",
@@ -243,6 +265,33 @@ const ROWS: { label: string; tool: string; input: Record<string, unknown>; cwd?:
 		cwd: ROOT,
 		ran: () => has(join(AGENT_DIR, "notes.md")),
 	},
+	// A deny rule matches the path pi will touch, not only the text the model
+	// sent: pi drops the @ and writes <cwd>/.env.
+	{
+		label: "write @.env against deny Write(**/.env)",
+		tool: "write",
+		input: { path: "@.env", content: "SECRET=1\n" },
+		deny: "blocked by deny rule Write(**/.env)",
+		ran: () => has(join(CWD, ".env")),
+	},
+	// The legacy file loosens nothing until the project's trust is decided.
+	{
+		label: "bash in a project with only .pi/permissions.json (allowAll, allow Bash)",
+		tool: "bash",
+		input: { command: "ls" },
+		cwd: LEGACY,
+		ask: "acceptChanges mode: bash is not a file edit",
+		notice: "ignoring allow rules — project is not trusted",
+		ran: (result) => result.includes("marker.txt"),
+	},
+	{
+		label: "the same project once trust.json trusts it",
+		tool: "bash",
+		input: { command: "ls" },
+		cwd: LEGACY,
+		before: () => new ProjectTrustStore(AGENT_DIR).set(LEGACY, true),
+		ran: (result) => result.includes("marker.txt"),
+	},
 	{
 		label: "write .pi/hooks.json",
 		tool: "write",
@@ -269,11 +318,16 @@ const ROWS: { label: string; tool: string; input: Record<string, unknown>; cwd?:
 const warned: string[] = [];
 const crashed: unknown[] = [];
 for (const row of ROWS) {
+	row.before?.();
 	const { notes, reasons, result, errors } = await run(row.tool, row.input, row.cwd);
-	warned.push(...notes.filter((note) => note.includes("defaultMode")));
+	// The legacy project's own defaultMode is reported on purpose.
+	if (row.cwd !== LEGACY) warned.push(...notes.filter((note) => note.includes("defaultMode")));
 	crashed.push(...errors.map(String));
+	const blocked = row.ask !== undefined || row.deny !== undefined;
 	check(`${row.label}: ${row.ask ? "prompts" : "no prompt"}`, reasons, row.ask ? [row.ask] : []);
-	check(`${row.label}: ${row.ask ? "blocked, did not run" : "ran"}`, row.ran(result), !row.ask);
+	check(`${row.label}: ${blocked ? "blocked, did not run" : "ran"}`, row.ran(result), !blocked);
+	if (row.deny) check(`${row.label}: the block names the rule`, notes.some((note) => note.includes(row.deny!)), true);
+	if (row.notice) check(`${row.label}: says why`, notes.some((note) => note.includes(row.notice!)), true);
 }
 // An unknown mode name falls back to the default with a warning, and several
 // rows above would pass under that default too. This is what tells them apart.
