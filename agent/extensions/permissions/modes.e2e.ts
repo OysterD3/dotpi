@@ -338,7 +338,11 @@ check("acceptChanges loaded with no defaultMode warning", warned, []);
 // pass for the wrong reason.
 check("the extension raised no error", crashed, []);
 
-rmSync(ROOT, { recursive: true, force: true });
+// On exit, not here: pi's model runtime still writes models-store.json and
+// auth.json into the agent dir after the last session is disposed, and a
+// removal here was followed by those writes, which left the root behind.
+// "exit" fires once nothing is pending, so nothing writes after it.
+process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 if (failures === 0) console.log("\nALL PASS");
 else {
 	console.log(`\n${failures} FAILED`);
