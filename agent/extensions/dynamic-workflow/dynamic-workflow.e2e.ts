@@ -30,7 +30,7 @@ if (!getAgentDir().startsWith(ROOT)) {
 
 const { KEYWORD_REMINDER, ENTER_FULL, ENTER_SPARSE, AFTER_RUN, EXIT, editStreakReminder, routingReminder } = await import("./reminders.ts");
 const { COLLECT_CHANNEL, CONFIG, PANEL_CHANNEL, PANEL_OPEN_CHANNEL, SPEND_CHANNEL, SPEND_SOURCE } = await import("./config.ts");
-const { SUBAGENT_PREAMBLE } = await import("./description.ts");
+const { REFERENCE_PATH, SUBAGENT_PREAMBLE } = await import("./description.ts");
 const { createRun, readJournalLines, readMeta, readOutcome, writeMeta } = await import("./store.ts");
 const { phaseSummary, progressFromJournal } = await import("./panel.ts");
 
@@ -226,12 +226,19 @@ console.log("--- registration ---");
 check("workflow tool registered", tools.has("workflow"), true);
 check("workflow is sequential", tools.get("workflow")?.executionMode, "sequential");
 check("workflow has prompt snippet", typeof tools.get("workflow")?.promptSnippet, "string");
-check("description carries Ultracode section", tools.get("workflow")?.description.includes("**Ultracode.**"), true);
-check("description explains background runs", tools.get("workflow")?.description.includes("run in the BACKGROUND"), true);
-check("description routes models from the request", tools.get("workflow")?.description.includes("**Model routing.**"), true);
+// The tool description holds what decides whether and how to call the tool; the
+// authoring guide lives in REFERENCE.md, which the description points at. Rules
+// the model needs at call time are asserted on the description; moved rules on
+// the two together; and the absence of old phrasings on both, so a regression
+// cannot come back in either place.
+const description = tools.get("workflow")?.description ?? "";
+const guide = `${description}\n${readFileSync(REFERENCE_PATH, "utf8")}`;
+check("description carries Ultracode section", description.includes("**Ultracode.**"), true);
+check("description explains background runs", description.includes("run in the BACKGROUND"), true);
+check("the guide routes models from the request", guide.includes("## Model routing"), true);
 check(
 	"routing section points at the triggering request",
-	tools.get("workflow")?.description.includes("triggering request"),
+	guide.includes("triggering request"),
 	true,
 );
 // The posture assertions below are the point of the description, not decoration.
@@ -240,11 +247,10 @@ check(
 // substantive task with cost no object. If either phrasing comes back, so does
 // the spend — so both the absence of the old text and the presence of the
 // depth-bounding section are asserted.
-const description = tools.get("workflow")?.description ?? "";
 check("description bounds agent depth", description.includes("**Bounding an agent.**"), true);
 check("depth section says the prompt is the budget", description.includes("the prompt is the only budget"), true);
-check("no standing instruction to always workflow", description.includes("for every substantive task"), false);
-check("cost is not declared a non-constraint", description.toLowerCase().includes("cost is not a constraint"), false);
+check("no standing instruction to always workflow", guide.includes("for every substantive task"), false);
+check("cost is not declared a non-constraint", guide.toLowerCase().includes("cost is not a constraint"), false);
 check(
 	"ultracode section reads as permission, not instruction",
 	description.includes("That is permission, not an instruction"),
@@ -258,8 +264,8 @@ check(
 // replaced it is a test the model can apply before splitting, so both the rule
 // and the absence of the old licence are asserted, here and in AFTER_RUN.
 check("phases live in one script", description.includes("is ONE script with a phase() call per stage"), true);
-check("and the split test is stated", description.includes("author the next phase's prompts NOW"), true);
-check("no licence to run one workflow per phase", description.includes("one per phase"), false);
+check("and the split test is stated", guide.includes("author the next phase's prompts NOW"), true);
+check("no licence to run one workflow per phase", guide.includes("one per phase"), false);
 check("after-run notice does not license a split for mere ordering", AFTER_RUN.includes("could not begin until this one finished"), false);
 // The umbrella, not the sub-case: dropping "whose shape needs a fleet" from this
 // reminder once left it licensing a second FLEET for an unpredicted one-file
@@ -291,12 +297,12 @@ check("and observation beats intention", SUBAGENT_PREAMBLE.includes("Report what
 // was itself the weaker fix: it asked the model to pick a better criterion
 // while leaving the VERDICT with the agent. shell() moves the verdict to the
 // host, so the description must point at it and must not regress to prose.
-check("description gates on facts, not claims", description.includes("**Gating on facts, not on claims.**"), true);
-check("and names the mechanism", description.includes("Only shell() gives you a number the model never touched"), true);
-check("with the null-exit gotcha", description.includes("exitCode === 0"), true);
+check("the guide gates on facts, not claims", guide.includes("## Gating on facts, not on claims"), true);
+check("and names the mechanism", guide.includes("Only shell() gives you a number the model never touched"), true);
+check("with the null-exit gotcha", guide.includes("exitCode === 0"), true);
 check("shell() is in the globals list", description.includes("shell(command, opts?)"), true);
-check("and names the closed loop by name", description.includes("are a closed loop"), true);
-check("the measured failure is kept as evidence", description.includes("an application that did not start"), true);
+check("and names the closed loop by name", guide.includes("are a closed loop"), true);
+check("the measured failure is kept as evidence", guide.includes("an application that did not start"), true);
 // The other half of the same measurement. Bounding depth stops one agent
 // grinding; it does not by itself make the run wide, and on this machine every
 // implement phase came out one agent deep — 53 minutes and 177 turns for a
@@ -304,28 +310,28 @@ check("the measured failure is kept as evidence", description.includes("an appli
 // phases fanned out to three or four. Every pattern in the description reads or
 // judges, so "workflow" read as "a way to review things". These assert the
 // implementation half is present and says how to keep concurrent writers apart.
-check("description says building fans out too", description.includes("**Implementing is fan-out too.**"), true);
-check("and splits by file ownership", description.includes("ONE AGENT PER DELIVERABLE"), true);
-check("ownership is stated in the prompt, not just the script", description.includes("Stating the ownership IN THE PROMPT"), true);
-check("a bulleted prompt is named as the fan-out", description.includes("that list IS the fan-out"), true);
+check("the guide says building fans out too", guide.includes("## Implementing is fan-out too"), true);
+check("and splits by file ownership", guide.includes("ONE AGENT PER DELIVERABLE"), true);
+check("ownership is stated in the prompt, not just the script", guide.includes("Stating the ownership IN THE PROMPT"), true);
+check("a bulleted prompt is named as the fan-out", guide.includes("that list IS the fan-out"), true);
 // The worked example is what anchors the shape — "count the seams" under a
 // three-part example reads as three, and the example is the part a model
 // copies. It is now the run the panel actually shows: ten owners in one
 // Implement phase, a shell() Gate, a Fix driven by what the gate returned,
 // and an Audit, all in ONE script rather than four.
-check("the example runs four phases in one script", description.includes("phases: [{ title: 'Implement' }, { title: 'Gate' }, { title: 'Fix' }, { title: 'Audit' }]"), true);
-check("and fans out to ten owners", (description.match(/owns: '/g) ?? []).length, 10);
-check("the gate is shell(), not an agent", description.includes("const gate = await shell("), true);
-check("and Fix runs on what the gate returned", description.includes("gate.stderr.slice(-4000)"), true);
+check("the example runs four phases in one script", guide.includes("phases: [{ title: 'Implement' }, { title: 'Gate' }, { title: 'Fix' }, { title: 'Audit' }]"), true);
+check("and fans out to ten owners", (guide.match(/owns: '/g) ?? []).length, 10);
+check("the gate is shell(), not an agent", guide.includes("const gate = await shell("), true);
+check("and Fix runs on what the gate returned", guide.includes("gate.stderr.slice(-4000)"), true);
 // The graph half. The engine is structured concurrency over the promise
 // graph — an unawaited agent() is explicitly safe, and phase() orders
 // nothing — but every example awaited immediately, so the only shapes the
 // text taught were the full barrier and the per-item chain. A join is what
 // most work actually is, and it was unwritten.
-check("phase() is named as a label, not a barrier", description.includes("phase() is a LABEL, not a barrier"), true);
-check("and the join shape is shown", description.includes("Promise.all([api, store])"), true);
-check("with the rule that makes it safe", description.includes("carries an observer"), true);
-check("the example says why ITS barriers are forced", description.includes("the gate is a SINGLE GLOBAL command"), true);
+check("phase() is named as a label, not a barrier", guide.includes("phase() is a LABEL, not a barrier"), true);
+check("and the join shape is shown", guide.includes("Promise.all([api, store])"), true);
+check("with the rule that makes it safe", guide.includes("carries an observer"), true);
+check("the example says why ITS barriers are forced", guide.includes("the gate is a SINGLE GLOBAL command"), true);
 // The width half of the same lesson, which the depth correction overshot.
 // "Most work is served by three to five agents" was a number standing where the
 // task's seams should be counted, and the fleet-shape list beside it named only
@@ -333,12 +339,12 @@ check("the example says why ITS barriers are forced", description.includes("the 
 // agent wide, or split along backend/frontend/cli, a taxonomy that exists before
 // any request does. The number's absence is asserted for the same reason the
 // other old phrasings are: it is what the narrow runs were made of.
-check("no default fleet size", description.includes("three to five agents"), false);
+check("no default fleet size", guide.includes("three to five agents"), false);
 check("width is counted from the task", description.includes("Width is COUNTED, not chosen"), true);
 check("and deliverables are a fleet shape", description.includes("several deliverables that different agents would own"), true);
 check("a one-agent workflow is ruled out", description.includes("A fleet of ONE is the same failure"), true);
-check("the tier split is named as a smell", description.includes("or any other tier an org chart would recognise"), true);
-check("and the worktree example does not model tier names", description.includes("withWorktree('backend'"), false);
+check("the tier split is named as a smell", guide.includes("or any other tier an org chart would recognise"), true);
+check("and the worktree example does not model tier names", guide.includes("withWorktree('backend'"), false);
 // Same criterion in the reminders, or the weaker text is the one delivered.
 check("the entry reminder counts seams too", ENTER_FULL.includes("count the task's seams and run one agent per seam"), true);
 check("and names the org-chart split", ENTER_FULL.includes("backend/frontend/cli is an org chart"), true);
@@ -349,18 +355,18 @@ check("the keyword reminder counts seams, not a default", KEYWORD_REMINDER.inclu
 // field, nothing reads one, and an unknown key is silently ignored rather than
 // rejected — so two agents "isolated" that way would overwrite each other while
 // the run reported done.
-check("no invented isolation option", description.includes("isolation: 'worktree'"), false);
-check("worktree isolation is offered as a scope", description.includes("**Isolating concurrent writers.**"), true);
-check("and still no per-agent isolation option", description.includes("there is no per-agent"), true);
+check("no invented isolation option", guide.includes("isolation: 'worktree'"), false);
+check("worktree isolation is offered as a scope", guide.includes("## Isolating concurrent writers"), true);
+check("and still no per-agent isolation option", guide.includes("there is no per-agent"), true);
 check("withWorktree is in the globals list", description.includes("withWorktree(name, callback)"), true);
 // The branch must be described as retained: deleting it is the exact bug in the
 // implementation this was modelled against.
-check("the branch is described as retained", description.includes("retained branch"), true);
+check("the branch is described as retained", guide.includes("retained branch"), true);
 // Context budgeting was removed; buildContextBundle passes Infinity everywhere.
 // The forking section promised trimming that no longer happens, which would have
 // a script seed a 2MB bundle and fail every agent on the first request.
-check("no promise of context budgeting", description.includes("Context is budgeted"), false);
-check("and the absence is stated", description.includes("Nothing here is truncated"), true);
+check("no promise of context budgeting", guide.includes("Context is budgeted"), false);
+check("and the absence is stated", guide.includes("Nothing here is truncated"), true);
 check("/ultracode registered", commands.has("ultracode"), true);
 check("/workflows registered", commands.has("workflows"), true);
 check("/effort registered", commands.has("effort"), true);

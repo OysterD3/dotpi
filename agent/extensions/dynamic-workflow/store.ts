@@ -637,7 +637,7 @@ export interface AgentPromptLookup {
  *
  * `ordinal` picks among MULTIPLE preamble-bearing messages, for a session
  * several agents share in turn (`agent(p, { session: "..." })` — see
- * "Shared sessions" in description.ts): the file then carries one such
+ * "Shared sessions" in REFERENCE.md): the file then carries one such
  * message per agent, in the order they ran, and the caller (tui.ts's
  * promptFor) works out which position THIS row is. See
  * AgentPromptLookup.isChainOpenerFallback for what happens when the scan

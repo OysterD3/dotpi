@@ -1535,8 +1535,9 @@ shape needs it (coverage wider than one context holds, independent verification 
 cannot check yourself, a mechanical sweep over many files) and work inline when it does not — and
 the tool description gained a **Bounding an agent** section, with the matching discipline in the
 subagent preamble: do what the task asks and then stop, do not widen scope, returning early is
-correct. The tool description is *not* smaller for this; it sits in the cached prefix, where ~2.7k
-tokens cost a few cents across a long session, so it is written for behaviour rather than brevity.
+correct. The tool description was *not* made smaller for this. It was later split: the description
+keeps only what decides whether and how to call the tool (about 1.3k tokens), and the authoring
+guidance moved word for word into `REFERENCE.md`, which the model reads before its first script.
 The e2e suite asserts both the presence of the new sections and the **absence** of the old phrasings,
 because the old phrasings are what the spend was made of.
 
@@ -1581,7 +1582,7 @@ than something to wait for evidence on.
 
 Past the ceiling, agents queue and are dispatched **round-robin across runs**, so a hundred-agent
 sweep cannot starve a two-agent workflow queued behind it. Within a run the queue is FIFO. Breadth is now free to ask for and entirely the script's
-responsibility to get right — the tool description says so in as many words, and pairs it with the
+responsibility to get right — the authoring reference (`REFERENCE.md`) says so in as many words, and pairs it with the
 decomposition guidance that makes a wide run the *normal* shape for implementation work rather than a
 special case.
 
@@ -1610,7 +1611,7 @@ Two things caused that, and both are fixed:
 **The script named a finish line the agent could satisfy by writing it.** The implement prompt ended
 "Run pnpm check"; the review prompt said "rerun `pnpm check`, and report evidence". A typecheck
 proves the code compiles. Tests an agent wrote against a fixture it also wrote are a closed loop that
-closes green whatever the code does. The tool description now says this in as many words, with the
+closes green whatever the code does. The authoring reference now says this in as many words, with the
 measurement attached, and asks for acceptance stated against the real artifact — start the binary and
 see it answer, drive the actual endpoint, run the pre-existing suite and not just the new one — with
 the exact command and the observable that means success.
@@ -1975,7 +1976,7 @@ settings.json (ultracode's xhigh is no exception — the pre-ultracode level is 
 and restored on `/ultracode off`, even after a resume), and on models without an xhigh mapping pi
 clamps upward, so some models get `max` — reported honestly in the confirmation. Models that can't
 reach xhigh at all are refused. One caveat inherited from running scripts in-process: a workflow
-script that busy-waits synchronously would freeze the session, so the tool description instructs
+script that busy-waits synchronously would freeze the session, so the authoring reference instructs
 the model to always await.
 
 | File | Role |
@@ -1996,7 +1997,8 @@ the model to always await.
 | `routing.ts` | Spotting model names in the triggering request (pure) |
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |
-| `description.ts` | The tool's LLM-facing contract |
+| `description.ts` | The tool's LLM-facing contract: when to call it, and the shape of a script |
+| `REFERENCE.md` | The authoring reference the description points at; read before the first script in a session, so it costs nothing in sessions that never run a workflow |
 | `config.ts` | Constants and pi-side tunables |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
 

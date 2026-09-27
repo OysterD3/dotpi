@@ -39,8 +39,8 @@
  * Deviations (documented in README.md): no worktree isolation and no nested
  * workflow() (it throws). The script body itself runs unbounded on the host
  * event loop — a synchronous infinite loop in a script wedges the session (same
- * trust level as extension code; the tool description tells the model to always
- * await, never busy-wait).
+ * trust level as extension code; the authoring reference, REFERENCE.md, tells
+ * the model to always await, never busy-wait).
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { runInNewContext } from "node:vm";

@@ -9,7 +9,7 @@
  * installed, or pi's own package dir):
  *     jiti agent/extensions/dynamic-workflow/dynamic-workflow.test.ts
  */
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -21,7 +21,7 @@ import { branchSections, buildContextBundle, renderParent } from "./context.ts";
 import { agentKey, ReplayIndex, shellKey, stableStringify } from "./journal.ts";
 import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { loadSettings } from "./index.ts";
-import { SUBAGENT_PREAMBLE } from "./description.ts";
+import { REFERENCE_PATH, SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, phaseState, phaseSummary, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
@@ -93,6 +93,25 @@ check("after newline", hasUltracodeKeyword("fix the bug\nultracode"), true);
 check("apostrophe earlier in text", hasUltracodeKeyword("don't skip it, ultracode this"), true);
 check("between html tags", hasUltracodeKeyword("<b>ultracode</b>"), true);
 check("comparison < is not a span", hasUltracodeKeyword("a < b and ultracode it"), true);
+
+console.log("\n--- description: the short contract and its reference ---");
+{
+	// The tool description is sent on every request, so the authoring guide lives
+	// in REFERENCE.md and the description points at it by absolute path.
+	check("the description names the reference", WORKFLOW_DESCRIPTION.includes(`read ${REFERENCE_PATH}`), true);
+	check("and the reference is there", existsSync(REFERENCE_PATH), true);
+	// The reminders send the model to these sections by name.
+	for (const section of ["**Ultracode.**", "**Bounding an agent.**"]) {
+		check(`the description keeps ${section}`, WORKFLOW_DESCRIPTION.includes(section), true);
+	}
+	for (const [, name] of ENTER_FULL.matchAll(/\*\*([^*]+)\*\*/g)) {
+		check(`the full reminder's **${name}** is in the description`, WORKFLOW_DESCRIPTION.includes(`**${name}.**`), true);
+	}
+	const reference = readFileSync(REFERENCE_PATH, "utf8");
+	for (const heading of ["One script or two", "Forking context", "Shared sessions", "Agent types", "Resume", "Determinism", "Saved workflows", "Almost nothing is capped", "Implementing is fan-out too", "Gating on facts, not on claims", "Isolating concurrent writers", "Model routing"]) {
+		check(`the reference has "${heading}"`, reference.includes(`## ${heading}`), true);
+	}
+}
 
 console.log("\n--- keyword: non-matches ---");
 check("slash command", hasUltracodeKeyword("/ultracode"), false);

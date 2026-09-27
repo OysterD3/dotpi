@@ -42,7 +42,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { loadAgentTypes, type AgentTypeDef } from "./agents.ts";
 import { buildContextBundle, seedAgentSession, type BranchEntry } from "./context.ts";
 import { CONFIG, USAGE_PERSIST_MS, WORKFLOW_DIR, type UltracodeSettings } from "./config.ts";
-import { SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
+import { REFERENCE_PATH, SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION, WORKFLOW_PROMPT_SNIPPET } from "./description.ts";
 import {
 	runWorkflowScript,
 	validateScript,
@@ -1073,7 +1073,7 @@ function startRun(
 			const shape: string[] = [];
 			if (tally.total > 1 && progress.peakConcurrency <= 1) {
 				shape.push(
-					`Every one of the ${tally.total} agents ran alone: peak concurrency was 1, so this was a queue, not a fleet. Independent agents belong in one parallel() or pipeline() call — see "Implementing is fan-out too".`,
+					`Every one of the ${tally.total} agents ran alone: peak concurrency was 1, so this was a queue, not a fleet. Independent agents belong in one parallel() or pipeline() call — see "Implementing is fan-out too" in ${REFERENCE_PATH}.`,
 				);
 			}
 			if (progress.deepestAgentTurns >= 40) {
