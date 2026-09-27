@@ -168,8 +168,7 @@ export default function (pi: ExtensionAPI) {
 			// Creating is a conversation: the skill asks for what the request
 			// leaves out instead of guessing it, so add hands the words to it.
 			// A command reaches the agent as a user message; expandPromptTemplates
-			// makes pi expand "/skill:…" as if it were typed (scheduler/index.ts
-			// has the probe that confirmed the option reaches prompt()).
+			// makes pi expand "/skill:…" as if it were typed.
 			if (sub === "add") {
 				const skill = pi.getCommands?.().some((command) => command.name === CREATOR_SKILL);
 				if (skill === false) {
