@@ -1291,6 +1291,17 @@ function resolveReference(reference: string, ctx: ExtensionContext): string {
  * is the cheap side of the trade — the doctrine the tool description states,
  * start the run and end the turn, is written for exactly this shape — and
  * the expensive side was a fleet finishing into silence.
+ *
+ * ## Why the wait has no limit
+ *
+ * It used to give up after ten minutes and leave the outcome owed. But an
+ * owed outcome is said only at the next session start, and without a turn, so
+ * giving up was the same silence by another route: a turn waiting on
+ * ask_user while its user was away for two hours outlasted it, the fleet
+ * finished, and nothing resumed until the user typed. The wait is already
+ * bounded by what it waits on — a replaced session makes isIdle() throw, and
+ * the timer is unref'd, so a process exit ends it — and a check every half
+ * second costs nothing in between.
  */
 function deliverResult(
 	pi: ExtensionAPI,
@@ -1298,7 +1309,6 @@ function deliverResult(
 	run: WorkflowRun,
 	onSettled: (delivered: boolean) => void,
 ): void {
-	let attempts = 0;
 	const attempt = (): void => {
 		let idle: boolean;
 		try {
@@ -1313,12 +1323,6 @@ function deliverResult(
 			return;
 		}
 		if (!idle) {
-			if (++attempts > CONFIG.deliveryAttempts) {
-				// Owed, not lost: the outcome is beside the run and the next session
-				// says it. Better than a timer that outlives what it was waiting for.
-				onSettled(false);
-				return;
-			}
 			// unref so a pending re-check never holds the process open by itself.
 			setTimeout(attempt, CONFIG.deliveryPollMs).unref?.();
 			return;

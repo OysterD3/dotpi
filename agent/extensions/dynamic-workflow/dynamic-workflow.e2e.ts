@@ -1621,6 +1621,33 @@ console.log("\n--- workflow tool: mid-turn delivery and model pinning ---");
 	check("which is the run's own result", sent[0]?.message.customType, "workflow-result");
 	check("now recorded as delivered", readMeta(AGENT, midturnRun)?.delivered, true);
 
+	// However long the session stays busy. The wait used to give up after 1,200
+	// polls — ten minutes — and leave the outcome owed, which is said only at
+	// the next session start and without a turn. A turn waiting on ask_user
+	// while its user was away for two hours was enough: the fleet finished, the
+	// session went quiet, and nothing resumed until the user typed. Polling
+	// every 1 ms here puts the old limit about 1.2 s out, so a 3 s wait crosses
+	// it.
+	const pollMs = CONFIG.deliveryPollMs;
+	(CONFIG as { deliveryPollMs: number }).deliveryPollMs = 1;
+	try {
+		const long = { model: MODEL, idle: false };
+		const { ctx: longCtx } = makeCtx(long);
+		events.get("session_start")!({}, longCtx);
+		sent.length = 0;
+		const longScript = `export const meta = { name: 'long-busy', description: 'busy for longer than any cap' }\nreturn 'ok'`;
+		const longRun = (await tool.execute("t8c", { script: longScript }, undefined, undefined, longCtx)).details.runId as string;
+		await new Promise((resolve) => setTimeout(resolve, 3_000));
+		check("a session busy past the old ten-minute limit is still told nothing", sent.length, 0);
+		check("and the result is still waited for, not left owed", readMeta(AGENT, longRun)?.delivered, false);
+		long.idle = true;
+		for (let i = 0; i < 200 && sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		check("once it goes idle, the result starts its own turn", sent[0]?.options, { triggerTurn: true });
+		check("and the run records that it was heard", readMeta(AGENT, longRun)?.delivered, true);
+	} finally {
+		(CONFIG as { deliveryPollMs: number }).deliveryPollMs = pollMs;
+	}
+
 	// A poller that gives up must not take back a delivery someone else made.
 	// persist() rewrites the whole meta, and the give-up path can outlive its own
 	// session by up to one poll — long enough for /new to have started, found the
