@@ -23,6 +23,7 @@ import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { loadSettings } from "./index.ts";
 import { REFERENCE_PATH, SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
+import { CONTINUE_MESSAGE, replyToResult } from "./continuation.ts";
 import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, phaseState, phaseSummary, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
@@ -2831,6 +2832,41 @@ console.log("\n--- mode: a workflow result since the last real turn ---");
 		true,
 	);
 	check("the customType must match", hasMessageSinceLastUserTurn([resultMsg()], "some-other-type"), false);
+}
+
+// ------------------------------------------------ continuation: whose reply
+
+console.log("\n--- continuation: the reply to a workflow result ---");
+{
+	const result = (details?: unknown) => ({ role: "custom", customType: "workflow-result", content: "done", details });
+	const retry = { role: "custom", customType: CONTINUE_MESSAGE, content: "go on", details: { runId: "wf_a" } };
+	const other = (customType: string) => ({ role: "custom", customType, content: "x" });
+	const user = { role: "user", content: [{ type: "text", text: "hi" }] };
+	const nothing = { role: "assistant", content: [] };
+	const text = { role: "assistant", content: [{ type: "text", text: "It found three." }] };
+	const call = { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "read", arguments: {} }] };
+	const toolResult = { role: "toolResult", content: [{ type: "text", text: "file" }] };
+	const cases: Array<[string, unknown[], { reply: string; runId?: string; status?: string }]> = [
+		["no result -> not ours", [user, nothing], { reply: "not-ours" }],
+		["an empty reply to a result", [user, text, result({ runId: "wf_a", status: "done" }), nothing], { reply: "empty", runId: "wf_a", status: "done" }],
+		["a text reply", [result({ runId: "wf_a" }), text], { reply: "answered", runId: "wf_a" }],
+		["a tool call, then an empty end", [result(), call, toolResult, nothing], { reply: "answered" }],
+		["only thinking is empty", [result(), { role: "assistant", content: [{ type: "thinking", thinking: "hm" }] }], { reply: "empty" }],
+		["no reply yet -> not ours", [result()], { reply: "not-ours" }],
+		["an empty reply to the retry", [result({ runId: "wf_a" }), nothing, retry, nothing], { reply: "empty-again", runId: "wf_a" }],
+		// pi adds a note sent mid-run after the settle hooks' entries: it is not a new input.
+		["a note between the retry and its reply", [result(), nothing, retry, other("hook-context"), nothing], { reply: "empty-again", runId: "wf_a" }],
+		["a note between a result and its reply", [result(), other("hook-context"), nothing], { reply: "empty" }],
+		// An input after the reply owns the reply that follows it.
+		["the answer to a question, after the reply", [result(), nothing, other("ask-user-answer"), nothing], { reply: "not-ours" }],
+		["an earlier extension's entry, after the reply", [result(), nothing, other("other")], { reply: "not-ours" }],
+		["Stop hook feedback, after a text reply", [result(), text, other("hooks-stop"), nothing], { reply: "not-ours" }],
+		["the user typed, after the reply", [result(), nothing, user, nothing], { reply: "not-ours" }],
+		["the user typed, before any reply", [result(), user, nothing], { reply: "not-ours" }],
+		["a result said at session start, then the user", [result(), user, nothing, user, text], { reply: "not-ours" }],
+		["a newer result is the one judged", [result({ runId: "wf_a" }), text, result({ runId: "wf_b" }), nothing], { reply: "empty", runId: "wf_b" }],
+	];
+	for (const [label, messages, want] of cases) check(`continuation: ${label}`, replyToResult(messages, "workflow-result"), want);
 }
 
 // ------------------------------------------------------------ streak: state

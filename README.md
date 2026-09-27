@@ -1017,7 +1017,7 @@ lossy where translating the name is not. Extension and MCP tools keep their pi n
 | `PermissionRequest` | permissions is about to prompt you | allow or deny in your place |
 | `PostToolUse` / `PostToolUseFailure` | a tool finished / failed | feedback and context appended to the result; replace it |
 | `PostToolBatch` | a turn's tools all finished | context for the next request; block stops the agent |
-| `Stop` / `StopFailure` | the agent finished / ended on an API error | keep it going with a reason (8 times in a row; the 9th is overruled) |
+| `Stop` / `StopFailure` | the agent finished / ended on an API error (not `Stop` while another extension keeps it going) | keep it going with a reason (8 times in a row; the 9th is overruled) |
 | `SubagentStart` / `SubagentStop` | the `task` tool starts / ends a subagent | observe only |
 | `Notification` | a permission prompt or `ask_user` question still open after 6 s, 60 s idle | side effects; `terminalSequence` |
 | `PreCompact` / `PostCompact` | compaction | block it / observe |
@@ -1923,6 +1923,16 @@ owed, so `wait: true` runs (which answer through their tool result) and every ru
 existed are never retold. This is the settled-run counterpart to the interrupted-run notice above:
 that one offers a resume because there is no result to give, this one gives the result.
 
+**A result that was heard must also be answered.** Delivery and reply are two different facts. A
+report from another machine showed the turn a result starts ending with no text and no tool call,
+and the session looked stopped until the user typed. `continuation.ts` now reads the reply when the
+run is about to settle (`agent_before_settle`). An empty reply — thinking alone counts as empty —
+gets one retry: a visible `workflow-continue` message that tells the model to answer from the
+result. An empty reply to that retry shows an error. Neither is sent when the user cancelled the
+turn or the workflow, an `ask_user` question is open, or the user queued a message. The run's
+journal records `delivered` and `reply` apart, with the reason when an empty reply is left alone.
+hooks loads after this extension, and does not fire `Stop` while the retry continues the run.
+
 **Agents can be forked context.** `agent(prompt, { context: { parent: 6, files: [...], text: ... } })`
 seeds that agent's session with recent turns of the conversation, whole files, or literal
 background, instead of the script pasting everything into a prompt string. It is built with pi's
@@ -2228,10 +2238,12 @@ the model to always await.
 | `routing.ts` | Spotting model names in the triggering request (pure) |
 | `models.ts` | Model references resolved with pi's `--model` rules (pure) |
 | `tool.ts` | Tool registration, background starts, result delivery, rendering |
+| `continuation.ts` | The reply to a delivered result: one retry when it is empty, then an error (pure) |
 | `description.ts` | The tool's LLM-facing contract: when to call it, and the shape of a script |
 | `REFERENCE.md` | The authoring reference the description points at; read before the first script in a session, so it costs nothing in sessions that never run a workflow |
 | `config.ts` | Constants and pi-side tunables |
 | `ultracode.test.ts` / `ultracode.e2e.ts` | Unit and wiring coverage (`ultracode.live.ts` spawns real subagents) |
+| `continuation.e2e.ts` | A real session and a real background run: when the retry and the error are sent, and when not |
 
 **`agent/extensions/background-shell/`** — background shells, shaped after Claude Code's: `bash`
 gains `run_in_background`, and a dev server stops costing the turn it runs in.

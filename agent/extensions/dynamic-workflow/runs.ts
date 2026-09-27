@@ -9,6 +9,7 @@
  * its session be resumed instead of merely apologised for.
  */
 import type { AgentOptions } from "./engine.ts";
+import type { JournalInput } from "./journal.ts";
 import { emptyUsage, type SpawnUsage } from "./spawn.ts";
 import type { RunStatus } from "./store.ts";
 
@@ -144,6 +145,8 @@ export interface WorkflowRun {
 	/** This run's label on the spend channel — "code-review (16:01)". */
 	spendDetail?: string;
 	outcome?: { text: string; isError: boolean };
+	/** Append to this run's journal, for what happens after the run: its delivery, and the reply to it. */
+	journal?: (record: JournalInput) => void;
 }
 
 export function newProgress(runId: string, name: string): RunProgress {

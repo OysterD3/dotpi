@@ -34,6 +34,7 @@
  *   PostToolBatch       turn_end of a turn that ran tools. Block stops the agent.
  *   Stop / StopFailure  agent_before_settle: completed / error. pi offers no
  *                       abort signal there, so Esc waits for a running Stop hook.
+ *                       Not Stop when an earlier extension continues the run.
  *   SubagentStart/Stop  the task tool starting and finishing. Observe only:
  *                       the subagent is a separate pi process run without
  *                       extensions, so these hooks do not run inside it.
@@ -589,6 +590,9 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 		if (event.outcome !== "completed" || !has("Stop")) return undefined;
+		// An extension earlier in the chain continues the run (dynamic-workflow's
+		// retry), so the agent is not stopping: Stop fires at the stop after it.
+		if (event.continue) return undefined;
 
 		const merged = await fire("Stop", ctx, { stop_hook_active: stopStreak > 0, last_assistant_message: textOf(last?.content) });
 		if (merged?.halt !== undefined) {

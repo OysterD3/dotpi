@@ -1024,6 +1024,7 @@ function startRun(
 		startedAt: meta.startedAt,
 		settled: Promise.resolve(),
 		spendDetail,
+		journal,
 	};
 
 	journal({ kind: "run", event: "start" });
@@ -1148,6 +1149,9 @@ function startRun(
 				// result a second time. The false is already on disk, from the
 				// persist() below.
 				if (!delivered) return;
+				// Handed over, which is not yet answered: index.ts records the reply
+				// separately, once the turn this starts is about to settle.
+				journal({ kind: "run", event: "delivered" });
 				meta.delivered = true;
 				persist();
 			});

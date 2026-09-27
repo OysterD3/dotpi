@@ -87,6 +87,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { Text } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { COLLECT_CHANNEL, CONFIG, DEFAULT_SETTINGS, ENTRY_TYPE, LEGACY_SETTINGS_KEY, PANEL_CHANNEL, SETTINGS_KEY, SPEND_CHANNEL, SPEND_SOURCE, type UltracodeSettings } from "./config.ts";
+import { ASK_CHANNEL, CONTINUE_MESSAGE, CONTINUE_TEXT, EMPTY_AGAIN_TEXT, replyToResult } from "./continuation.ts";
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
@@ -344,6 +345,55 @@ export default function (pi: ExtensionAPI) {
 	 * retired, and reading ctx.cwd on a dead runtime throws.
 	 */
 	let sessionCwd: string | undefined;
+
+	// ------------------------------------------------------ reply to a result
+
+	/**
+	 * Whether ask_user has a question open. An empty reply then is the model
+	 * doing as the pending question told it — stop and wait for the answer — and
+	 * asking it again would be the stall this is here to fix, from the other side.
+	 */
+	let questionOpen = false;
+	pi.events.on(ASK_CHANNEL, (data) => {
+		questionOpen = (data as { active?: unknown } | undefined)?.active === true;
+	});
+
+	/**
+	 * The turn a delivered result starts, checked as it is about to settle (see
+	 * continuation.ts for why here). An empty reply gets one visible retry that
+	 * says what to do; an empty reply to that is an error the user can see,
+	 * instead of a session that just stops. Not on a failed turn — pi reports
+	 * errors itself, and does not fire this after Esc — nor when the user
+	 * cancelled the workflow, a question is open, or the user queued a message
+	 * that pi runs next. A message another extension queues gets the retry too:
+	 * pi runs both in one turn. Extensions later in the chain see the retry as
+	 * `event.continue`, which is how hooks knows not to fire Stop for it.
+	 */
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (event.outcome !== "completed") return undefined;
+		const { reply, runId, status } = replyToResult(event.context.contextMessages, RESULT_MESSAGE);
+		if (reply === "not-ours") return undefined;
+		const journal = runId ? registry.get(runId)?.journal : undefined;
+		if (reply === "answered") {
+			journal?.({ kind: "run", event: "reply", reply });
+			return undefined;
+		}
+
+		const skipped = status === "aborted" ? "cancelled" : questionOpen ? "question" : ctx.hasPendingMessages() ? "queued" : undefined;
+		journal?.({ kind: "run", event: "reply", reply, skipped });
+		if (skipped) return undefined;
+		if (reply === "empty-again") {
+			ctx.ui.notify(EMPTY_AGAIN_TEXT, "error");
+			return undefined;
+		}
+		return {
+			entries: [
+				...event.entries,
+				{ type: "custom_message" as const, customType: CONTINUE_MESSAGE, content: CONTINUE_TEXT, display: true, details: runId ? { runId } : undefined },
+			],
+			continue: true,
+		};
+	});
 
 	// ------------------------------------------------------------ status panel
 

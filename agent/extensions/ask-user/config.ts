@@ -49,7 +49,7 @@ export const FOLLOWUP_ENTRY_TYPE = "ask-user-followup";
  * `{ active, blocking, question, header?, count, sessionId?, cwd? }` when it
  * opens, and `{ active: false, blocking }` when it is answered or dismissed.
  *
- * Three subscribers today, for three different reasons:
+ * Four subscribers today, for four different reasons:
  *   - the statusline blanks itself while a question is up, so the question owns
  *     the bottom of the screen. This extension cannot do that itself —
  *     `ui.setFooter(undefined)` restores pi's *built-in* footer, so swapping and
@@ -58,6 +58,8 @@ export const FOLLOWUP_ENTRY_TYPE = "ask-user-followup";
  *     as a permission prompt does.
  *   - elapsed stops the turn clock, so a turn's duration keeps meaning how long
  *     the agent worked rather than how long someone took to decide.
+ *   - dynamic-workflow does not ask again when the reply to a workflow result is
+ *     empty: with a question open, blocking or not, the model waits for the answer.
  *
  * `blocking` is false for the `/ask-user test` demo: the prompt is on screen but
  * the agent is not stuck behind it. The two subscribers that act on "the agent
