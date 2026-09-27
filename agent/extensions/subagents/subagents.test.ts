@@ -30,7 +30,7 @@ const { parseSubagentFile, serializeSubagent, effective, loadSubagents, userAgen
 const { formatReasoning, tableLines } = await import("./panel.ts");
 const { resolveModelReference, modelRef, resolveSuffixedReference, splitThinking } = await import("./models.ts");
 const { buildTaskDescription, registerTaskTool, rolePrompt, toPiUsage } = await import("./tool.ts");
-const { buildArgs } = await import("./spawn.ts");
+const { buildArgs, runSubagent } = await import("./spawn.ts");
 const { runWizard, pickName } = await import("./manage.ts");
 
 const USER_DIR = userAgentsDir(AGENT);
@@ -324,6 +324,10 @@ check("SpawnUsage -> pi Usage", toPiUsage({ input: 5, output: 7, cacheRead: 1, c
 	input: 5, output: 7, cacheRead: 1, cacheWrite: 2, totalTokens: 12,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.25 },
 });
+{
+	const { credits, billable } = toPiUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 2, credits: 6.5, billable: true });
+	check("Qoder credits ride along on the usage", { credits, billable }, { credits: 6.5, billable: true });
+}
 
 // ------------------------------------------------------- the role preamble
 
@@ -493,6 +497,73 @@ console.log("\n--- spawn args: the reasoning becomes --thinking ---");
 	checkTrue("no level, no flag", !buildArgs({ prompt: "go", cwd: ROOT, approved: false }).includes("--thinking"));
 }
 
+console.log("\n--- spawn args: a Qoder model gets its provider back ---");
+{
+	// --no-extensions drops the Qoder provider package with everything else, and
+	// the child then knows no qoder/* model at all.
+	const request = { prompt: "go", cwd: ROOT, model: "qoder/Efficient", approved: false };
+	checkTrue("not installed: no -e, the child reports the model", !buildArgs(request).includes("-e"));
+	const pkg = join(AGENT, "npm", "node_modules", "pi-provider-qoder");
+	mkdirSync(pkg, { recursive: true });
+	writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "pi-provider-qoder", pi: { extensions: ["./dist/index.js"] } }));
+	const args = buildArgs(request);
+	check("installed: -e loads its extension", args.slice(args.indexOf("-e"), args.indexOf("-e") + 2), ["-e", join(pkg, "dist", "index.js")]);
+	checkTrue("still no other extension", args.includes("--no-extensions"));
+	checkTrue("qoder-cn uses the same package", buildArgs({ ...request, model: "qoder-cn/Auto" }).includes("-e"));
+	checkTrue("other providers stay plain", !buildArgs({ ...request, model: "openai-codex/gpt-5.6-sol" }).includes("-e"));
+	rmSync(join(AGENT, "npm"), { recursive: true, force: true });
+}
+
+console.log("\n--- spawn: a Qoder child's credits add up ---");
+// A stand-in for the child pi: it prints the JSONL events pi's json mode
+// prints, with the usage pi-provider-qoder saves on each reply.
+const reply = (usage: Record<string, unknown>, stopReason = "stop") => ({
+	type: "message_end",
+	message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason, usage },
+});
+async function withFakeChild<T>(events: object[], run: () => Promise<T>): Promise<T> {
+	const fake = join(ROOT, "fake-pi.mjs");
+	writeFileSync(fake, events.map((event) => `process.stdout.write(${JSON.stringify(`${JSON.stringify(event)}\n`)});`).join("\n"));
+	const saved = process.argv[1];
+	process.argv[1] = fake;
+	try {
+		return await run();
+	} finally {
+		process.argv[1] = saved;
+	}
+}
+{
+	// A failed child rejects with the usage it spent; both count here.
+	const runFake = async (events: object[]) => {
+		const usage = await withFakeChild(events, () =>
+			runSubagent({ prompt: "go", cwd: ROOT, approved: false }).then((result) => result.usage, (error: any) => error.usage),
+		);
+		return { credits: usage.credits, billable: usage.billable };
+	};
+	check(
+		"billable replies add up, a non-billable one adds 0",
+		await runFake([reply({ input: 1, credits: 4, billable: true }), reply({ input: 1, credits: 9, billable: false }), reply({ input: 1, credits: 2.5, billable: true })]),
+		{ credits: 6.5, billable: true },
+	);
+	check(
+		"a billable reply before non-billable ones: still billable",
+		await runFake([reply({ input: 1, credits: 4, billable: true }), reply({ input: 1, credits: 9, billable: false })]),
+		{ credits: 4, billable: true },
+	);
+	check("only non-billable replies: 0, not billable", await runFake([reply({ input: 1, credits: 9, billable: false })]), { credits: 0, billable: false });
+	check("a child on another provider reports no credits", await runFake([reply({ input: 1 })]), { credits: undefined, billable: undefined });
+	check(
+		"the child's compaction summary is billed too",
+		await runFake([reply({ input: 1, credits: 2, billable: true }), { type: "compaction_end", result: { usage: { credits: 1.5, billable: true } } }]),
+		{ credits: 3.5, billable: true },
+	);
+	check(
+		"a child that fails still reports what it spent",
+		await runFake([reply({ input: 1, credits: 4, billable: true }), reply({ input: 1, credits: 1, billable: true }, "error")]),
+		{ credits: 5, billable: true },
+	);
+}
+
 // --------------------------------------------------- the interactive wizard
 
 console.log("\n--- manage: the wizard (scripted ui) ---");
@@ -605,6 +676,30 @@ function makePi(options: { skill?: boolean } = {}) {
 }
 
 const extension = (await import("./index.ts")).default;
+
+console.log("\n--- wiring: a failed subagent's spend reaches its tool result ---");
+{
+	// pi saves a thrown tool error with no usage; the extension's tool_result
+	// handler puts the failed run's spend back on it.
+	const h = makePi();
+	extension(h.pi as never);
+	const task = h.tools.find((tool: any) => tool.name === "task");
+	const ctx = { cwd: ROOT, model: { id: "gpt-5.6-luna", provider: "openai-codex" }, modelRegistry: { getAll: () => MODELS }, isProjectTrusted: () => false };
+	let error = "";
+	await withFakeChild([reply({ input: 3, credits: 4, billable: true }), reply({ input: 2, credits: 1, billable: true }, "error")], async () => {
+		try {
+			await task.execute("call-1", { prompt: "go" }, undefined, undefined, ctx);
+		} catch (e) {
+			error = (e as Error).message;
+		}
+	});
+	checkTrue("the tool call failed", error.includes("failed"));
+	const onToolResult = h.commands.get("on:tool_result");
+	const result = onToolResult({ type: "tool_result", toolName: "task", toolCallId: "call-1", isError: true, content: [], details: {} });
+	check("its spend comes back on the result", { input: result?.usage?.input, credits: result?.usage?.credits, billable: result?.usage?.billable }, { input: 5, credits: 5, billable: true });
+	check("once only", onToolResult({ type: "tool_result", toolName: "task", toolCallId: "call-1", isError: true }), undefined);
+	check("other tool results are left alone", onToolResult({ type: "tool_result", toolName: "read", toolCallId: "call-2", isError: false }), undefined);
+}
 
 {
 	rmAgents();

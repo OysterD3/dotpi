@@ -10,7 +10,8 @@
  *             The org pack reports its size as `cap`, not `total`.
  *   session : the provider copies each response's `usage.credits` / `billable` onto
  *             its usage, which pi saves on the assistant message (or on the
- *             compaction / branch summary it produced). A request counts once
+ *             compaction / branch summary it produced). A `task` subagent adds
+ *             its requests up onto its tool result's usage. A request counts once
  *             `billable` is a boolean; a non-billable one counts as 0.
  *
  * The footer renders synchronously, so the balance is cached and refreshed in the
@@ -204,13 +205,13 @@ export function sessionCredits(entries: Iterable<EntryLike>): number | undefined
 	return total;
 }
 
-/**
- * The usage a session entry recorded. pi's own session stats walk the same entries,
- * plus subagent tool results, whose usage keeps no credits.
- */
+/** The usage a session entry recorded, walked the way pi's own session stats walk it. */
 function billedUsage(entry: EntryLike): unknown {
 	switch (entry.type) {
 		case "message":
+			// A tool result records no provider either: it is a subagent's spend,
+			// and only a Qoder child sets `billable` on it.
+			if (entry.message?.role === "toolResult") return entry.message.usage;
 			return entry.message?.role === "assistant" && isQoderProvider(entry.message.provider)
 				? entry.message.usage
 				: undefined;

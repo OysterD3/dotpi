@@ -8,15 +8,17 @@
  * `--tools` for its allowlist, and `--append-system-prompt` for its role
  * prompt. `--no-extensions --no-skills` keep it plain pi (no recursion into
  * subagents), `--no-session` keeps sessions/ clean. Duplicated here so the
- * extension is independently installable.
+ * extension is independently installable. The one extension a child gets back
+ * is the provider package its model needs (Qoder), loaded with `-e`.
  *
  * Failures throw SubagentError carrying whatever usage the child accumulated
  * before dying, so a failed subagent's spend still reaches the session totals.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CONFIG } from "./config.ts";
 
 export interface SpawnRequest {
@@ -39,6 +41,10 @@ export interface SpawnUsage {
 	cost: number;
 	totalTokens: number;
 	turns: number;
+	/** Qoder credits of the billable requests; set once any request reported `billable`. */
+	credits?: number;
+	/** Whether any Qoder request was billable. */
+	billable?: boolean;
 }
 
 export interface SpawnResult {
@@ -71,8 +77,35 @@ export function piInvocation(args: string[]): { command: string; args: string[] 
 	return { command: "pi", args };
 }
 
+/**
+ * Providers that come from a pi package, not from pi itself. `--no-extensions`
+ * drops them with every other extension, so a subagent on one of their models
+ * gets that one package back with `-e`.
+ */
+const PROVIDER_PACKAGES: Record<string, string> = {
+	qoder: "pi-provider-qoder",
+	"qoder-cn": "pi-provider-qoder",
+};
+
+/** The installed extension file that registers the model's provider, when pi lacks it. */
+export function providerExtension(model: string | undefined): string | undefined {
+	const pkg = model ? PROVIDER_PACKAGES[model.split("/")[0] ?? ""] : undefined;
+	if (!pkg) return undefined;
+	const dir = join(getAgentDir(), "npm", "node_modules", pkg);
+	try {
+		const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { pi?: { extensions?: unknown } };
+		const entry = Array.isArray(manifest.pi?.extensions) ? manifest.pi.extensions[0] : undefined;
+		return typeof entry === "string" ? join(dir, entry) : undefined;
+	} catch {
+		// Not installed: the child reports the unknown model, as it did before.
+		return undefined;
+	}
+}
+
 export function buildArgs(request: SpawnRequest): string[] {
 	const args = ["--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills", "--offline"];
+	const extension = providerExtension(request.model);
+	if (extension) args.push("-e", extension);
 	if (request.model) args.push("--model", request.model);
 	if (request.thinking) args.push("--thinking", request.thinking);
 	if (request.tools && request.tools.length > 0) args.push("--tools", request.tools.join(","));
@@ -106,14 +139,27 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 		// two pipe reads does not become replacement characters.
 		const decoder = new StringDecoder("utf8");
 		let buffer = "";
+		// A Qoder request reports its credits; a non-billable one counts as 0.
+		const addCredits = (spent: { credits?: unknown; billable?: unknown } | undefined) => {
+			if (typeof spent?.billable !== "boolean") return;
+			const credits = spent.billable ? spent.credits : 0;
+			usage.credits = (usage.credits ?? 0) + (typeof credits === "number" ? credits : 0);
+			usage.billable = usage.billable === true || spent.billable;
+		};
 		const handleLine = (line: string) => {
 			if (!line.trim()) return;
-			let event: { type?: string; message?: Record<string, unknown> };
+			let event: {
+				type?: string;
+				message?: Record<string, unknown>;
+				result?: { usage?: { credits?: unknown; billable?: unknown } };
+			};
 			try {
 				event = JSON.parse(line);
 			} catch {
 				return;
 			}
+			// The child's own compaction summary is billed too, and is reported only here.
+			if (event.type === "compaction_end") return addCredits(event.result?.usage);
 			if (event.type !== "message_end" || !event.message) return;
 			const message = event.message as {
 				role?: string;
@@ -131,6 +177,7 @@ export async function runSubagent(request: SpawnRequest): Promise<SpawnResult> {
 				usage.cacheWrite += message.usage.cacheWrite ?? 0;
 				usage.cost += message.usage.cost?.total ?? 0;
 				usage.totalTokens = message.usage.totalTokens ?? usage.totalTokens;
+				addCredits(message.usage);
 			}
 			const text = (message.content ?? [])
 				.filter((block) => block.type === "text" && typeof block.text === "string")

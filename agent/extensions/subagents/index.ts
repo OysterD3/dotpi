@@ -30,7 +30,7 @@ import { pickName, runWizard, type WizardCtx } from "./manage.ts";
 import { formatReasoning, type PanelRow, tableLines } from "./panel.ts";
 import { resolveSuffixedReference } from "./models.ts";
 import { deleteSubagent, effective, findAgent, type LoadResult, loadSubagents, userAgentsDir, writeSubagent } from "./registry.ts";
-import { registerTaskTool } from "./tool.ts";
+import { failedSpend, registerTaskTool, toPiUsage } from "./tool.ts";
 
 /** The skill that creates a subagent, as pi lists it among its slash commands. */
 const CREATOR_SKILL = "skill:subagent-creator";
@@ -128,6 +128,15 @@ export default function (pi: ExtensionAPI) {
 		if (loaded.issues.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(`subagents: ${loaded.issues.length} config issue(s). Run /subagents to see them.`, "warning");
 		}
+	});
+
+	// pi saves a thrown tool error with no usage: put a failed run's spend back,
+	// so its tokens and credits still reach the session totals.
+	pi.on("tool_result", (event) => {
+		const spent = failedSpend.get(event.toolCallId);
+		if (!spent) return;
+		failedSpend.delete(event.toolCallId);
+		return { usage: toPiUsage(spent) };
 	});
 
 	// The creator skill ships with this extension, not in agent/skills/ (those

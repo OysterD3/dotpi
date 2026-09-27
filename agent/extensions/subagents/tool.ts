@@ -33,7 +33,13 @@ export interface TaskToolOptions {
 	load: (ctx: ExtensionContext) => readonly SubagentDef[];
 }
 
-export function toPiUsage(u: SpawnUsage): Usage {
+/**
+ * A failed run's spend, by tool call. pi saves a thrown tool error with no
+ * usage, so index.ts's tool_result handler puts this back on it.
+ */
+export const failedSpend = new Map<string, SpawnUsage>();
+
+export function toPiUsage(u: SpawnUsage): Usage & { credits?: number; billable?: boolean } {
 	return {
 		input: u.input,
 		output: u.output,
@@ -41,6 +47,9 @@ export function toPiUsage(u: SpawnUsage): Usage {
 		cacheWrite: u.cacheWrite,
 		totalTokens: u.totalTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: u.cost },
+		// Qoder credits, in the fields pi-provider-qoder puts on a reply's usage,
+		// so the statusline counts a subagent's spend like the session's own.
+		...(u.billable !== undefined ? { credits: u.credits ?? 0, billable: u.billable } : {}),
 	};
 }
 
@@ -139,7 +148,7 @@ export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): vo
 			),
 		}),
 
-		async execute(_toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
+		async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionContext) {
 			const requested = String(params.subagent_type ?? "").trim();
 			const inline = (["model", "reasoning", "tools"] as const).filter((key) => params[key] !== undefined);
 			let agent: SubagentDef;
@@ -209,6 +218,7 @@ export function registerTaskTool(pi: ExtensionAPI, options: TaskToolOptions): vo
 				};
 			} catch (error) {
 				if (error instanceof SubagentError) {
+					if (error.usage.turns > 0) failedSpend.set(toolCallId, error.usage);
 					// Surface the failure as a tool error so the main agent can react,
 					// but keep the message clean.
 					throw new Error(`Subagent "${name}" failed: ${error.message}`);

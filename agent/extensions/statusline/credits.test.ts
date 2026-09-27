@@ -98,6 +98,12 @@ const sessions: Array<[string, Parameters<typeof sessionCredits>[0], number | un
 	],
 	["a summary made by another provider has no credit report", [{ type: "compaction", usage: { input: 5 } }], undefined],
 	["a Qoder usage entry counts", [{ type: "usage", provider: "qoder", usage: { credits: 1.5, billable: true } }], 1.5],
+	[
+		"a subagent's spend on its tool result counts",
+		[reply({ credits: 4, billable: true }), { type: "message", message: { role: "toolResult", usage: { credits: 6.5, billable: true } } }],
+		10.5,
+	],
+	["a tool result with no credit report", [{ type: "message", message: { role: "toolResult", usage: { input: 5 } } }], undefined],
 	["no entries", [], undefined],
 ];
 
