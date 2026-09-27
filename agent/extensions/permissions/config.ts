@@ -157,6 +157,17 @@ export const AUTO = {
 	subjectChars: 4000,
 
 	/**
+	 * Scratchpad scripts shown to the classifier with the command that runs them
+	 * (see scratchScripts in scratch.ts): at most this many files per command,
+	 * each elided like the command past `scriptChars`. A file over `scriptBytes`
+	 * is not read at all — it is left unshown, which the classifier treats as
+	 * code it cannot read.
+	 */
+	scriptFiles: 3,
+	scriptChars: 8000,
+	scriptBytes: 1_000_000,
+
+	/**
 	 * Verdicts remembered for the session. An agent retries the same command
 	 * constantly, and paying for each identical judgement is pure waste. Oldest
 	 * are evicted first; nothing is written to disk.

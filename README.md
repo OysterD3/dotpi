@@ -677,6 +677,44 @@ deliberately *not* covered — a command is not judged by the paths it mentions,
 `curl … > $S/x.sh && sh $S/x.sh` writes only inside the scratchpad — so bash keeps going to the
 classifier.
 
+**A script in the scratchpad is shown to the classifier with the command that runs it.** The
+classifier only ever saw the command, and its prompt says code it cannot read is unsafe, so
+`python3 $S/check.py` came back as "runs a script whose contents are not shown" nearly every time —
+although the agent had written that file itself a moment earlier, through a `write` the exemption
+above never sent to the classifier. Now, for a `bash` call, each absolute path in the command with
+a script extension (`.py`, `.js`, `.mjs`, `.ts`, `.sh` and the like) whose file is really inside the
+scratchpad is read and shown below the command, in its own fence, cleaned and elided like the
+command, with a hash of its text (`scratchScripts` in `scratch.ts`). The classifier still decides;
+it judges the script the way it judges a `python -c` snippet, and any edit to the script is a new
+question, not a cached answer.
+
+What is read is bounded. The command is split into the words the shell will pass, quotes and all,
+so `"/tmp/a /S/x.py"` is one argument and not `/S/x.py`; a command with syntax that split cannot
+follow exactly — a heredoc, `$(…)`, a backtick, `$'…'` — shows nothing. A relative name shows
+nothing, since where it points depends on where the command is when it runs. The file is the one
+the kernel will open (`realpath(3)`, not Node's `realpathSync`, which removes `sub/..` as text and
+so, with `sub` a symlink out of the scratchpad, checked one file and read another); it must be
+inside the scratchpad, not hard-linked, text, and not covered by a `Read` deny rule — sending its
+text to the classifier's provider is a read.
+
+What is judged is bounded too. The text is what is on disk when the check runs, so it is shown
+only when no other call in the same assistant message can change the file first: every other call
+is a read-only built-in, or came earlier and has already finished (pi checks a whole batch and then
+runs it in parallel, unless one of its tools is sequential, as `background-shell`'s `bash` is). The
+file is read again after the verdict, and a change turns the verdict into a prompt. The prompt also
+says that a command which itself writes, downloads into, or edits the file makes the text shown out
+of date.
+
+Four limits remain. A process already running — a background shell, a workflow, another session —
+can change the file after that second read; the window is milliseconds, not closed. Files the
+script loads are not shown: the prompt tells the classifier a local import or a sourced file is
+code it cannot read, but it cannot see a `json.py` placed beside the script, which Python loads in
+place of the standard `json`. Both need an agent that is already acting against you, and such an
+agent has a simpler route anyway: write into the workspace, which is judged on the destination
+only, and run the tests. Scripts outside the scratchpad are not read, and are judged as before.
+And the script text now goes to the classifier's model, which may be a different provider from the
+session's.
+
 Three things bound it, and each is there because the first version without it was wrong.
 **The announced directory is validated, not trusted** (`usableScratchDir`): absolute, at least two
 segments deep, and neither containing nor contained by the working directory. The channel is the
@@ -928,9 +966,10 @@ nor, in auto mode, anything a model was talked out of naming.
 | `model.ts` | Resolving `permissions.auto.model` |
 | `corpus.test.ts` | 188 safe / 138 dangerous commands the table must get right, plus the hard tier's four bypass routes |
 | `auto.test.ts` | Auto mode's bounds: precedence, layering, what reaches the model |
-| `scratch.test.ts` | Containment, which tools are covered, and where the exemption sits |
+| `scratch.test.ts` | Containment, which tools are covered, where the exemption sits, and which scripts a command shows |
 | `workspace.test.ts` | `acceptChanges`: which calls run, the path spellings, protected paths, and the symlink check |
 | `modes.e2e.ts` | `acceptChanges` in a real session, with pi's real tools on a scratch tree |
+| `scripts.e2e.ts` | `auto` mode and scratchpad scripts in a real session: when the text is shown, and when not |
 | `auto.live.ts` | Classifier accuracy against a real model (costs a few cents) |
 
 **`agent/extensions/hooks/`** — Claude Code's hooks API: run a shell command, POST to a URL, or ask

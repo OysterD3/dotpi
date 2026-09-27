@@ -113,8 +113,10 @@ export class AutoClassifier {
 		dirs: readonly string[],
 		/** The destructive table's reason, when the table is why this is being asked. */
 		flagged?: string,
+		/** Scratchpad scripts the command runs, with their text. */
+		scripts: readonly { path: string; text: string }[] = [],
 	): Promise<Verdict> {
-		return this.ask(ctx, buildQuestion(tool, input, dirs, flagged), settings);
+		return this.ask(ctx, buildQuestion(tool, input, dirs, flagged, scripts), settings);
 	}
 
 	/** Which model to ask, resolving `permissions.auto.model` at most once. */

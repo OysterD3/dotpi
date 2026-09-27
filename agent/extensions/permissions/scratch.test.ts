@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CompiledPolicy, decide } from "./decide.ts";
 import { parseRules } from "./rules.ts";
-import { escapesScratchpad, isWithin, targetsScratchpad, usableScratchDir } from "./scratch.ts";
+import { escapesScratchpad, isWithin, scratchScripts, targetsScratchpad, usableScratchDir } from "./scratch.ts";
 import { BUILTIN, type PermissionSettings } from "./settings.ts";
 
 let failures = 0;
@@ -156,6 +156,54 @@ check("a symlinked directory escapes", escapesScratchpad(join(PAD, "door"), CWD,
 check("...and so does writing through it to a file that does not exist", escapesScratchpad(join(PAD, "door/planted.sh"), CWD, PAD));
 
 check("a missing scratchpad root fails closed", escapesScratchpad(join(PAD, "a.txt"), CWD, join(FS, "absent")));
+
+// ---------------------------------------------------------------------------
+console.log("scratchScripts — which words in a command name a script to show");
+
+writeFileSync(join(PAD, "check.py"), "print(1)\n");
+writeFileSync(join(PAD, "run.sh"), "echo hi\n");
+writeFileSync(join(PAD, "tool.py"), "print(3)\n");
+writeFileSync(join(PAD, "zip.py"), "PK\u0003\u0004\u0000\u0000binary");
+writeFileSync(join(OUTSIDE, "tool.py"), "print(2)\n");
+mkdirSync(join(OUTSIDE, "deep"), { recursive: true });
+// `<PAD>/sub/../tool.py` is `<PAD>/tool.py` as text, and `<OUTSIDE>/tool.py` to the kernel.
+symlinkSync(join(OUTSIDE, "deep"), join(PAD, "sub"));
+// A directory named `x ` holding a copy of the scratchpad's path, for the quoted-space row.
+const SPACED = join(FS, "x ");
+mkdirSync(join(SPACED, PAD), { recursive: true });
+writeFileSync(join(SPACED, PAD, "check.py"), "print(4)\n");
+const shownFor = (command: string) => scratchScripts(command, CWD, PAD).map((script) => script.path.slice(PAD.length + 1));
+for (const [command, want] of [
+	[`python3 ${PAD}/check.py`, ["check.py"]],
+	[`python3 '${PAD}/check.py'`, ["check.py"]],
+	[`python3 "${PAD}/check.py" --n 3`, ["check.py"]],
+	[`.venv/bin/python ${PAD}/check.py>${PAD}/out.txt`, ["check.py"]],
+	[`python3 ${PAD}/check.py && bash ${PAD}/run.sh`, ["check.py", "run.sh"]],
+	[`python3 ${PAD}/check.py # ${PAD}/run.sh`, ["check.py"]],
+	// The kernel would open a file outside the scratchpad.
+	[`python3 ${PAD}/sub/../tool.py`, []],
+	[`python3 ${OUTSIDE}/tool.py`, []],
+	// One argument, "<FS>/x <PAD>/check.py", which is not the scratchpad's check.py.
+	[`python3 "${SPACED}${PAD}/check.py"`, []],
+	// A relative name depends on where the command is when it runs.
+	[`cd ${PAD} && bash run.sh`, []],
+	["python3 check.py", []],
+	// Values not known here, or syntax not followed exactly: nothing shown.
+	["python3 $S/check.py", []],
+	[`python3 ${PAD}/che*.py`, []],
+	[`python3 ${PAD}/check.py "$(date)"`, []],
+	[`cat <<EOF\ndon't\nEOF\npython3 ${PAD}/check.py`, []],
+	[`cat <<EOF >/dev/null\nhi\nEOF\npython3 ${PAD}/check.py`, []],
+	[`python3 '${PAD}/check.py`, []],
+	// Not a script, not there, or not text.
+	[`python3 ${PAD}/check.pyc`, []],
+	[`python3 ${PAD}/missing.py`, []],
+	[`python3 ${PAD}/zip.py`, []],
+] as const) {
+	eq(`shows ${JSON.stringify(want)} for ${command.split(PAD).join("<S>")}`, JSON.stringify(shownFor(command)), JSON.stringify(want));
+}
+eq("the text shown is the file's", scratchScripts(`python3 ${PAD}/check.py`, CWD, PAD)[0]?.text, "print(1)\n");
+eq("no scratchpad, nothing shown", scratchScripts(`python3 ${PAD}/check.py`, CWD, undefined).length, 0);
 
 // ---------------------------------------------------------------------------
 console.log("decide — where the exemption sits in the order");

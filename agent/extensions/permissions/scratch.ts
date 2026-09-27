@@ -24,7 +24,8 @@
  * `curl … > $SCRATCH/x.sh && sh $SCRATCH/x.sh` writes only inside the scratchpad
  * and is exactly the thing the classifier exists to catch. Bash keeps going to
  * the classifier, whose own prompt already treats scratch space as safe *as a
- * destination* and unsafe as a source of code to run.
+ * destination* and unsafe as a source of code to run — unless it is shown the
+ * code, which is what `scratchScripts` below is for.
  *
  * Nothing here can loosen a `deny` rule or the destructive table — the check
  * sits at the allow step, which both of those have already run ahead of. So
@@ -46,8 +47,9 @@
  * invitation.
  */
 
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { AUTO } from "./config.ts";
 import { ruleTarget } from "./rules.ts";
 import { PATH_TOOLS } from "./tools.ts";
 
@@ -213,6 +215,136 @@ export function escapesScratchpad(path: string, cwd: string, scratchDir: string)
 	if (target === undefined) return true;
 
 	return !isWithin(target, root);
+}
+
+/** Extensions of the files an interpreter runs as a script. */
+const SCRIPT_FILE = /\.(?:py|js|mjs|cjs|ts|mts|cts|sh|bash|zsh|rb|pl|php|lua)$/;
+
+/**
+ * The words of a command as the shell will pass them, quotes removed.
+ *
+ * Not a shell parser. It has to be right about one thing — which strings are
+ * one whole argument — so that `python3 "/tmp/a /S/x.py"` is not read as
+ * naming `/S/x.py`. Syntax it cannot follow exactly makes it give up
+ * (undefined): a heredoc, whose body can hold an odd quote that turns every
+ * word after it inside out; `$'…'`; a command substitution; a backtick; a
+ * quote left open. A word holding an expansion — `$`, a glob, brace, or a
+ * leading `~` — is left out, since its value is not known here.
+ */
+export function plainWords(command: string): string[] | undefined {
+	if (/<<|\$['"(]|`/.test(command)) return undefined;
+
+	const words: string[] = [];
+	let word = "";
+	let open = false;
+	let known = true;
+	let quote: "'" | '"' | undefined;
+	const end = () => {
+		if (open && known) words.push(word);
+		word = "";
+		open = false;
+		known = true;
+	};
+
+	for (let at = 0; at < command.length; at++) {
+		const char = command[at]!;
+		if (quote === "'") {
+			if (char === "'") quote = undefined;
+			else word += char;
+			continue;
+		}
+		if (quote === '"') {
+			if (char === '"') quote = undefined;
+			else if (char === "\\" && /["\\$`\n]/.test(command[at + 1] ?? "")) word += command[++at];
+			else {
+				if (char === "$") known = false;
+				word += char;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			open = true;
+		} else if (char === "\\") {
+			word += command[++at] ?? "";
+			open = true;
+		} else if (/\s/.test(char) || ";&|<>()".includes(char)) {
+			end();
+		} else if (char === "#" && !open) {
+			const eol = command.indexOf("\n", at);
+			if (eol < 0) break;
+			at = eol;
+		} else {
+			if ("$*?[{".includes(char) || (char === "~" && !open)) known = false;
+			word += char;
+			open = true;
+		}
+	}
+	if (quote) return undefined;
+	end();
+	return words;
+}
+
+/**
+ * The scratchpad scripts a bash command names, with their text as it is now.
+ *
+ * The classifier is shown only the command, and its prompt says code it cannot
+ * read is unsafe. So `python3 <scratch>/check.py` was flagged nearly every
+ * time — "runs a script whose contents are not shown" — although the agent
+ * wrote that file itself a moment earlier. The write never went to the
+ * classifier either: path-tool writes into the scratchpad are exempt (above).
+ * Showing the text lets the classifier judge the script the way it judges a
+ * `python -c` snippet. The model still decides; it is given more to read.
+ *
+ * Only absolute paths. A relative name depends on where the command is when it
+ * runs, and a guess at that is a file shown under a label while another one
+ * runs; the agent writes the absolute path in practice anyway.
+ *
+ * Only files that are really inside the scratchpad. `realpathSync.native` is
+ * the file the kernel will open: Node's own `realpathSync` removes `sub/..` as
+ * text first, so with `sub` a symlink out of the scratchpad it passed a check
+ * on one file while the read got another. This is a read no tool call makes,
+ * so neither a symlink nor a hard link named `x.py` may be how a key reaches
+ * the classifier's provider; index.ts also drops a file a `deny` rule covers.
+ * A file that is not text is not shown: a zip runs as a `.py` too.
+ *
+ * The text is what is on disk when the check runs. index.ts asks for it only
+ * when no other call in the same batch can change the file first, and reads it
+ * again after the verdict; the classifier is told that a command which changes
+ * the file itself makes the text shown out of date.
+ */
+export function scratchScripts(
+	command: string,
+	cwd: string,
+	scratchDir: string | undefined,
+): { path: string; real: string; text: string }[] {
+	const dir = usableScratchDir(scratchDir, cwd);
+	if (!dir) return [];
+	const words = plainWords(command);
+	if (!words) return [];
+
+	const found = new Map<string, { path: string; real: string; text: string }>();
+	try {
+		const root = realpathSync.native(dir);
+		for (const word of words) {
+			if (found.size >= AUTO.scriptFiles) break;
+			if (!isAbsolute(word) || !SCRIPT_FILE.test(word)) continue;
+			try {
+				const real = realpathSync.native(word);
+				if (found.has(real) || !isWithin(real, root)) continue;
+				const stats = statSync(real);
+				if (!stats.isFile() || stats.nlink > 1 || stats.size > AUTO.scriptBytes) continue;
+				const text = readFileSync(real, "utf8");
+				if (text.includes("\u0000") || text.includes("\uFFFD")) continue;
+				found.set(real, { path: word, real, text });
+			} catch {
+				// Gone or unreadable: left unshown, which is where it was before.
+			}
+		}
+	} catch {
+		// No scratchpad on disk: nothing to show.
+	}
+	return [...found.values()];
 }
 
 /**

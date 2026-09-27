@@ -57,8 +57,9 @@ import { findDestructive, PATTERNS } from "./destructive.ts";
 import { type Grant, SessionGrants } from "./grants.ts";
 import { buildQuestion, subjectOf } from "./prompt.ts";
 import { parseRules, ruleTarget } from "./rules.ts";
-import { escapesScratchpad, usableScratchDir } from "./scratch.ts";
+import { escapesScratchpad, scratchScripts, usableScratchDir } from "./scratch.ts";
 import { loadSettings, projectSettingsPath, userSettingsPath } from "./settings.ts";
+import { READ_ONLY_TOOLS } from "./tools.ts";
 import { type Verdict } from "./verdict.ts";
 import { escapesWorkspace, workspaceDirs } from "./workspace.ts";
 
@@ -180,6 +181,59 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_settled", () => hookDecisions.clear());
+
+	/**
+	 * The latest assistant message, and which of its tool calls have ended.
+	 *
+	 * A scratchpad script's text is shown to the classifier as it is when the
+	 * check runs (scratchScripts in scratch.ts), and other calls in the same
+	 * message could change the file before the command runs: pi checks every
+	 * call of a batch first and then runs them all at once, unless one of its
+	 * tools is sequential. So the text is shown only when every other call in the
+	 * batch is read-only, or came earlier and has ended — which in a sequential
+	 * batch is every earlier call. pi awaits these handlers before it checks the
+	 * batch, so both are current when `tool_call` fires. The message itself is
+	 * kept, not a copy of its calls: an extension after this one may replace it,
+	 * and pi does that by changing this same object.
+	 *
+	 * This covers the batch only. A process already running — a background
+	 * shell, a workflow, another session — can still change the file, which the
+	 * second read after the verdict narrows to milliseconds but cannot close.
+	 */
+	let latest: { content: readonly { type: string; id?: string; name?: string }[] } | undefined;
+	const ended = new Set<string>();
+
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		latest = event.message;
+		ended.clear();
+	});
+
+	pi.on("tool_execution_end", (event) => {
+		ended.add(event.toolCallId);
+	});
+
+	/**
+	 * The scratchpad scripts a command runs, less any a `deny` rule keeps from
+	 * being read: sending a file's text to the classifier's model is a read. The
+	 * rule is tried on the path as written and on the file it really is.
+	 */
+	const scriptsFor = (command: string, cwd: string) => {
+		const live = policy;
+		if (!live) return [];
+		const denied = (path: string) => decide(live, { tool: "read", input: { path }, cwd }).behavior === "deny";
+		return scratchScripts(command, cwd, scratchDir).filter((script) => !denied(script.path) && !denied(script.real));
+	};
+
+	/** No other call in this call's batch can change a file before it runs. */
+	const batchSettled = (id: string): boolean => {
+		const batch = (latest?.content ?? []).filter((block) => block.type === "toolCall");
+		const at = batch.findIndex((call) => call.id === id);
+		if (at < 0) return false;
+		return batch.every(
+			(call, index) => index === at || READ_ONLY_TOOLS.has(call.name ?? "") || (index < at && ended.has(call.id ?? "")),
+		);
+	};
 
 	/** Tell hooks the mode in force, for the `permission_mode` it sends. */
 	const announceMode = () => {
@@ -363,6 +417,8 @@ export default function (pi: ExtensionAPI) {
 			// loosening — askWithoutUi decided this call's outcome before we got here.
 			if (!ctx.hasUI && policy.settings.askWithoutUi === "allow") return undefined;
 
+			const command = event.toolName === "bash" && typeof input.command === "string" ? input.command : undefined;
+			const scripts = command !== undefined && batchSettled(event.toolCallId) ? scriptsFor(command, ctx.cwd) : [];
 			const verdict = await classifier.judge(
 					ctx,
 					event.toolName,
@@ -370,18 +426,30 @@ export default function (pi: ExtensionAPI) {
 					auto,
 					dirsFor(ctx.cwd),
 					decision.findings !== undefined && decision.findings.length > 0 ? decision.reason : undefined,
+					scripts,
 				);
+
+			// A verdict on a script is about the text read before the model was
+			// asked, and the command runs whatever is there when it starts. So the
+			// scripts are read again, and a change turns the verdict into a prompt.
+			const changed = (): boolean => {
+				if (scripts.length === 0 || command === undefined) return false;
+				const now = scriptsFor(command, ctx.cwd);
+				return now.length !== scripts.length || now.some((script, index) => script.real !== scripts[index]!.real || script.text !== scripts[index]!.text);
+			};
 
 			// The classifier's entire authority: it can turn this allow into an ask.
 			// Nothing below reaches a deny, and `safe` returns to exactly where the
 			// call would have been without auto mode at all.
-			if (verdict.kind === "safe") return undefined;
+			if (verdict.kind === "safe" && !changed()) return undefined;
 
 			if (verdict.kind === "aborted") {
 				return { block: true, reason: "Permission check was interrupted before this call was approved" };
 			}
 
-			if (verdict.kind === "error") {
+			if (verdict.kind === "safe") {
+				decision = { behavior: "ask", reason: "a scratchpad script changed while the auto classifier was reading it" };
+			} else if (verdict.kind === "error") {
 				if (classifier.shouldReport()) ctx.ui.notify(degradedMessage(verdict, auto.onError), "warning");
 				// `onError: "allow"` is sound only where the table already cleared the
 				// call: an unreachable classifier falls back to the table, and the table
@@ -661,7 +729,7 @@ export default function (pi: ExtensionAPI) {
 				// dry run that exercised different code would be worth very little.
 				const verdict = await classifier.ask(
 					ctx,
-					buildQuestion("bash", { command }, dirsFor(ctx.cwd)),
+					buildQuestion("bash", { command }, dirsFor(ctx.cwd), undefined, scriptsFor(command, ctx.cwd)),
 					policy.settings.auto,
 				);
 				ctx.ui.notify(
