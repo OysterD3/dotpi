@@ -1741,13 +1741,12 @@ xhigh **and** standing orchestration; the second half works at any level. So the
 by pi as usual and the notice says where it landed (`high + workflow orchestration — plain-model
 tops out below xhigh`) instead of pretending nothing happened.
 
-**The mode now asks for a verdict before it asks for a fleet.** The entry reminder gained one line:
-judge whether the task's shape needs a fleet and *say which*, in one line, before acting. That is
-there because the mode is reachable as an effort level now — something you set once and stop
-thinking about — where before it was a verb typed at the task in front of you. A standing opt-in
-with no moment of judgement in it decays into "the mode is on, so run a fleet"; making the model
-state the verdict before it acts is what puts that moment back. The keyword reminder has always
-asked for it on the inline side ("say so in one line"); this asks for it both ways.
+**The mode now asks for a verdict before it asks for a fleet.** The entry reminder says to judge
+whether the task's shape needs a fleet before acting. That is there because the mode is reachable as
+an effort level now — something you set once and stop thinking about — where before it was a verb
+typed at the task in front of you. A standing opt-in with no moment of judgement in it decays into
+"the mode is on, so run a fleet". The reminders once also told the model to say that verdict in one
+line; that is gone, because extensions here leave the model's output alone, tone aside.
 
 **What the mode means was rewritten after measuring it.** It used to say *"optimize for the most
 exhaustive, correct answer"*, *"use the Workflow tool on every substantive task"* and *"token cost
@@ -1927,9 +1926,10 @@ that one offers a resume because there is no result to give, this one gives the 
 report from another machine showed the turn a result starts ending with no text and no tool call,
 and the session looked stopped until the user typed. `continuation.ts` now reads the reply when the
 run is about to settle (`agent_before_settle`). An empty reply — thinking alone counts as empty —
-gets one retry: a visible `workflow-continue` message that tells the model to answer from the
+gets one retry: a visible `workflow-continue` message that tells the model to continue from the
 result. An empty reply to that retry shows an error. Neither is sent when the user cancelled the
-turn or the workflow, an `ask_user` question is open, or the user queued a message. The run's
+turn or the workflow, another run is still going (its result starts a turn of its own), an
+`ask_user` question is open, or the user queued a message. The run's
 journal records `delivered` and `reply` apart, with the reason when an empty reply is left alone.
 hooks loads after this extension, and does not fire `Stop` while the retry continues the run.
 
@@ -2116,8 +2116,8 @@ its own transcript for the sentence that announced them.
 "this died a moment ago" but made the notice a one-shot: a run not resumed in the very session
 after the crash was never mentioned again, and had just left the panel as well. Runs still owed are
 now gathered separately and repeated once per session start until something resumes them. That
-second half of the notice is deliberately quiet — it tells the model to raise them *only if they
-bear on what the user is asking now* — because it recurs, and a nag on every unrelated turn would
+second half of the notice is deliberately quiet — it tells the model to leave them alone *unless
+they bear on what the user is asking now* — because it recurs, and a nag on every unrelated turn would
 be worse than the silence it replaced. The list is capped at three with the remainder counted, not
 dropped.
 
@@ -2881,9 +2881,10 @@ round, right after the tool results that triggered it. The test asserts the mode
 runtime would say.
 
 The wording matters as much as the timing. It names the count and the command, because a model
-mid-loop has no sense of either, and it offers *two* ways out — change something, or say plainly
-what you observed, including that it is still failing. "Stop" alone reads as "abandon the task", and
-a model will pick the suite over abandoning every time.
+mid-loop has no sense of either, and it offers *two* ways out — change something and re-run it, or
+stop re-running it and move on. "Stop" alone reads as "abandon the task", and a model will pick the
+suite over abandoning every time. It does not say what the model should report: extensions here
+leave the model's output alone, tone aside.
 
 There is no settings block. Both constants live in `streak.ts`, and "should the agent be told it is
 looping" is not a preference anyone holds.
@@ -3066,7 +3067,11 @@ requests actually use.
 The reminder's second half is as load-bearing as the first. "Consider asking" on its own reads as
 "ask", which is the opposite bug and the one the tool description spends four lines warning about —
 so the same reminder says, in as many words, that finding nothing is the common case and the correct
-response to it is to state the assumption in one line and get on with the work.
+response to it is to get on with the work. Neither wording says what the model should write —
+extensions here leave the model's output alone, tone aside. OpenAI-family models once got a gate that
+ended in a visible `ASSUMPTIONS:` block on every task; that block is gone. They keep a concrete list
+of the decisions that qualify, and a hidden follow-up that repeats, up to three times between two
+questions, until the model asks.
 
 A cooldown (`CONFIG.nudgeCooldownTurns`, 8) keeps a session of successive task statements from
 pulling the same reminder in over and over; the previous one is still in context and still applies.

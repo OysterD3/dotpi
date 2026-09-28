@@ -4,6 +4,9 @@
  * <system-reminder> blocks.
  */
 
+/** The start of KEYWORD_REMINDER. Resume finds the reminder by this, so a reworded rest still counts. */
+export const KEYWORD_MARK = 'The user included the keyword "ultracode"';
+
 /**
  * The keyword grants permission for the turn. It used to end "— use the
  * Workflow tool to fulfill the request", which reads as an order and got one:
@@ -13,8 +16,7 @@
  * per-turn one had not, so the loudest of the three was the only one still
  * mandating.
  */
-export const KEYWORD_REMINDER =
-	'The user included the keyword "ultracode", opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task\'s SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, say so in one line and do the work inline. If it does, width comes from counting the task\'s seams — one agent per deliverable — not from a default number. The keyword removes the need to ask, not the need to decide.';
+export const KEYWORD_REMINDER = `${KEYWORD_MARK}, opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task's SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, do the work inline. If it does, width comes from counting the task's seams — one agent per deliverable — not from a default number. The keyword removes the need to ask, not the need to decide.`;
 
 /**
  * Delivered on the turn a workflow's result arrives.
@@ -35,7 +37,7 @@ export const KEYWORD_REMINDER =
  * before this result was read.
  */
 export const AFTER_RUN =
-	"A workflow's result has landed and the opt-in still stands, which is not a reason to start another one. Read what came back and answer from it. Run a second workflow only if the result itself surfaced work whose shape needs a fleet — work that could not have been scripted before reading this result, or a gap too wide for one context — and say which. A phase that merely had to wait for this one was a phase of this one. Following up inline is the normal case, and \"the last one went well\" is not a justification.";
+	"A workflow's result has landed and the opt-in still stands, which is not a reason to start another one. Read what came back and continue from it. Run a second workflow only if the result itself surfaced work whose shape needs a fleet — work that could not have been scripted before reading this result, or a gap too wide for one context. A phase that merely had to wait for this one was a phase of this one. Following up inline is the normal case, and \"the last one went well\" is not a justification.";
 
 /**
  * The width half is here because this reminder is the one a session opens
@@ -44,16 +46,16 @@ export const AFTER_RUN =
  * org chart rather than this task's seams. It states the same counting rule
  * the description does, so the two cannot drift into different criteria.
  *
- * The one-line verdict is the newest part, and it is there because the mode is
- * now reachable as an effort LEVEL — something you set once and forget you set
- * — where before it was a verb you typed at the task in front of you. A
- * standing opt-in with no moment of judgement in it decays into "the mode is
- * on, so run a fleet". Making the model say which way it went, before it goes,
- * is what puts that moment back; the keyword reminder has always asked for it
- * on the inline side ("say so in one line"), and this asks for it both ways.
+ * "Judge that before you act" is there because the mode is now reachable as an
+ * effort LEVEL — something you set once and forget you set — where before it
+ * was a verb you typed at the task in front of you. A standing opt-in with no
+ * moment of judgement in it decays into "the mode is on, so run a fleet". It
+ * once also asked the model to say its verdict in one line; that is gone,
+ * because the user wants extensions to leave the model's output alone, tone
+ * aside.
  */
 export const ENTER_FULL =
-	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. Judge that before you act, and say the verdict in ONE line: name the task's seams and why they need a fleet, or say why the task has none and work inline. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
+	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. Judge that before you act. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
 
 /**
  * The sparse reminder repeats the two rules that actually change behaviour

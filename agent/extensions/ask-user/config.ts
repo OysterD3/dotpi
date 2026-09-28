@@ -118,8 +118,8 @@ export const CONFIG = {
 		afterMutations: 5,
 		/**
 		 * Contract style only (see style.ts): once the follow-up has fired and
-		 * the model is STILL neither asking nor printing an ASSUMPTIONS block,
-		 * this is how many FURTHER distinct files buy it another reminder. The
+		 * the model is STILL not asking, this is how many FURTHER distinct
+		 * files buy it another reminder. The
 		 * socratic path has no equivalent — it stays a one-shot latch per
 		 * arming, because the benchmark this schedule answers for
 		 * (nudge.ts's header) is specifically the OpenAI-family failure mode:
@@ -134,9 +134,8 @@ export const CONFIG = {
 		 * persistent silence gets a bounded number of reminders rather than
 		 * one every rearmMutations forever — a schedule that never stopped
 		 * would just be nudgeCooldownTurns's failure mode again, spam that
-		 * trains the model to skim past it. Compliance — an ask_user call OR
-		 * a printed ASSUMPTIONS block, see index.ts and nudge.ts's
-		 * hasAssumptionsBlock — resets this alongside the mutation count, the
+		 * trains the model to skim past it. Compliance — an ask_user call, see
+		 * index.ts — resets this alongside the mutation count, the
 		 * same re-arm-on-ask semantics the socratic latch already has, so a
 		 * session that goes quiet again after complying gets the full budget
 		 * back rather than being silenced for the rest of the run.
@@ -144,8 +143,8 @@ export const CONFIG = {
 		maxFollowUps: 3,
 	},
 	/**
-	 * The "asking contract": which models get CONTRACT_NUDGE (imperative,
-	 * artifact-bearing) instead of OPENING_NUDGE (judgment-based) — see
+	 * The "asking contract": which models get CONTRACT_NUDGE (imperative, a
+	 * concrete list of decisions) instead of OPENING_NUDGE (judgment-based) — see
 	 * style.ts and nudge.ts's header for why a second wording exists at all.
 	 * Provider-level by default, because the benchmark gap this closes is
 	 * provider-wide (OpenAI-family models across the board do not ask on

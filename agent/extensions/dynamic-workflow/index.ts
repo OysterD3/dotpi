@@ -91,7 +91,7 @@ import { ASK_CHANNEL, CONTINUE_MESSAGE, CONTINUE_TEXT, EMPTY_AGAIN_TEXT, replyTo
 import { hasUltracodeKeyword } from "./keyword.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
 import { interruptedNotice, panelLines, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
-import { AFTER_RUN, editStreakReminder, ENTER_SPARSE, KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
+import { AFTER_RUN, editStreakReminder, ENTER_SPARSE, KEYWORD_MARK, KEYWORD_REMINDER, routingReminder, systemReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 import { allAgents, RunRegistry } from "./runs.ts";
 import { EDIT_STREAK_TOOLS, EditStreak, restoreEditStreak } from "./streak.ts";
@@ -299,8 +299,9 @@ export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<stri
 			// Reminders combine onto one message (keyword first, see
 			// before_agent_start below), so this is a substring check, not an
 			// equality — a turn that also carried a routing or mode reminder
-			// still counts.
-			if (text.includes(KEYWORD_REMINDER)) keywordFired = true;
+			// still counts. By the reminder's fixed start, not its whole text, so a
+			// session saved before the reminder was reworded still counts too.
+			if (text.includes(KEYWORD_MARK)) keywordFired = true;
 		} else if (entry.type === "message" && entry.message?.role === "user" && on && announced) {
 			turns++;
 		}
@@ -364,8 +365,9 @@ export default function (pi: ExtensionAPI) {
 	 * says what to do; an empty reply to that is an error the user can see,
 	 * instead of a session that just stops. Not on a failed turn — pi reports
 	 * errors itself, and does not fire this after Esc — nor when the user
-	 * cancelled the workflow, a question is open, or the user queued a message
-	 * that pi runs next. A message another extension queues gets the retry too:
+	 * cancelled the workflow, another run is still going (its result starts a
+	 * turn of its own, so an empty reply is the model waiting for it), a
+	 * question is open, or the user queued a message that pi runs next. A message another extension queues gets the retry too:
 	 * pi runs both in one turn. Extensions later in the chain see the retry as
 	 * `event.continue`, which is how hooks knows not to fire Stop for it.
 	 */
@@ -379,7 +381,16 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		const skipped = status === "aborted" ? "cancelled" : questionOpen ? "question" : ctx.hasPendingMessages() ? "queued" : undefined;
+		const skipped =
+			status === "aborted"
+				? "cancelled"
+				: registry.active().length > 0
+					? "running"
+					: questionOpen
+						? "question"
+						: ctx.hasPendingMessages()
+							? "queued"
+							: undefined;
 		journal?.({ kind: "run", event: "reply", reply, skipped });
 		if (skipped) return undefined;
 		if (reply === "empty-again") {

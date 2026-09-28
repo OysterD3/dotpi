@@ -89,7 +89,7 @@ console.log("\n--- the reminder ---");
 	// "Stop" alone reads as "abandon the task", and the model will pick the
 	// suite over abandoning every time. Both ways out have to be there.
 	check("offers changing something", text.includes("change something"), true);
-	check("and saying what was seen", text.includes("what you observed"), true);
+	check("or stopping the loop", text.includes("stop re-running it"), true);
 }
 
 console.log("\n--- wiring ---");

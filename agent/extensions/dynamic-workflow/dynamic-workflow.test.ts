@@ -23,7 +23,7 @@ import { CONFIG, DEFAULT_SETTINGS } from "./config.ts";
 import { loadSettings } from "./index.ts";
 import { REFERENCE_PATH, SUBAGENT_PREAMBLE, WORKFLOW_DESCRIPTION } from "./description.ts";
 import { hasMessageSinceLastUserTurn, UltracodeMode } from "./mode.ts";
-import { CONTINUE_MESSAGE, replyToResult } from "./continuation.ts";
+import { CONTINUE_MESSAGE, CONTINUE_TEXT, replyToResult } from "./continuation.ts";
 import { resolveModelReference, resolveSuffixedReference, splitThinking } from "./models.ts";
 import { formatElapsed, interruptedNotice, panelLines, phaseState, phaseSummary, progressFromJournal, sessionRuns, spendRuns, startedLabel, statusReport } from "./panel.ts";
 import {
@@ -70,7 +70,7 @@ import {
 	zipColumns,
 	type PanelResult,
 } from "./tui.ts";
-import { editStreakReminder, ENTER_FULL, ENTER_SPARSE, EXIT, routingReminder } from "./reminders.ts";
+import { AFTER_RUN, editStreakReminder, ENTER_FULL, ENTER_SPARSE, EXIT, KEYWORD_REMINDER, routingReminder } from "./reminders.ts";
 import { findModelMentions, modelVocabulary } from "./routing.ts";
 
 /** The session the panel fixtures below belong to. */
@@ -2515,7 +2515,7 @@ console.log("\n--- notice: runs owed from earlier sessions ---");
 	check("and still resumable", staleOnly.includes('resumeFromRunId: "wf-old"'), true);
 	// It repeats every session until resolved, so it must not read as urgent or
 	// demand the user's attention on a turn about something else.
-	check("but does not demand to be raised", staleOnly.includes("only if it bears on what they are asking"), true);
+	check("but does not demand to be acted on", staleOnly.includes("alone unless this bears on what the user is asking"), true);
 	check("nothing owed and nothing dead -> no notice", interruptedNotice([], []), undefined);
 
 	const both = interruptedNotice([meta("wf-new")], [meta("wf-old")])!;
@@ -2867,6 +2867,29 @@ console.log("\n--- continuation: the reply to a workflow result ---");
 		["a newer result is the one judged", [result({ runId: "wf_a" }), text, result({ runId: "wf_b" }), nothing], { reply: "empty", runId: "wf_b" }],
 	];
 	for (const [label, messages, want] of cases) check(`continuation: ${label}`, replyToResult(messages, "workflow-result"), want);
+}
+
+console.log("\n--- no injected text tells the main model what to write ---");
+{
+	// The user wants extensions to leave the model's output alone, tone aside.
+	// These are the clauses that were taken out; none may come back.
+	// SUBAGENT_PREAMBLE is not here: a script reads a subagent's reply, not the user.
+	const told = /tell the user|say so\b|say the verdict|say which|say what is in flight|answer from it|mention (it|them) to the user|briefly describe/i;
+	const stale = interruptedNotice([], [
+		{ runId: "wf-old", name: "audit", status: "interrupted", cwd: "/p", pid: 1, startedAt: 0, agentCount: 2, usage: emptyUsage() },
+	])!;
+	for (const [label, text] of [
+		["KEYWORD_REMINDER", KEYWORD_REMINDER],
+		["AFTER_RUN", AFTER_RUN],
+		["ENTER_FULL", ENTER_FULL],
+		["ENTER_SPARSE", ENTER_SPARSE],
+		["EXIT", EXIT],
+		["WORKFLOW_DESCRIPTION", WORKFLOW_DESCRIPTION],
+		["CONTINUE_TEXT", CONTINUE_TEXT],
+		["the interrupted-run notice", stale],
+	] as const) {
+		check(`${label}: says nothing about what to write`, told.test(text), false);
+	}
 }
 
 // ------------------------------------------------------------ streak: state

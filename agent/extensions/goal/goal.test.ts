@@ -30,7 +30,7 @@ import { formatDuration, formatTokens, oneLine, plural, statsLine, summaryLine }
 import { loadSettings } from "./settings.ts";
 import { goalElapsed, GoalState, restoreGoal, tokensSpent, type GoalEntryData } from "./state.ts";
 import { buildSections, buildTranscript, fitSections } from "./transcript.ts";
-import { reassertInstruction, systemReminder, TRUNCATION_NOTICE } from "./prompts.ts";
+import { goalSetInstruction, reassertInstruction, systemReminder, TRUNCATION_NOTICE } from "./prompts.ts";
 
 // The wiring below loads the extension, which reads goal.model from the agent
 // dir's settings.json. Pointed at the real ~/.pi/agent, a goal.model there
@@ -245,6 +245,11 @@ check("error mentions goal.model", resolveModel("nope", MODELS), {
 	ok: false,
 	error: 'goal.model "nope" matched no available model',
 });
+
+console.log("\n--- the opening instruction says what to do, not what to write ---");
+// The user wants extensions to leave the model's output alone, tone aside.
+check("no 'acknowledge' and no 'tell the user'", /acknowledge|tell the user/i.test(goalSetInstruction("all tests pass")), false);
+check("still starts work at once", goalSetInstruction("all tests pass").includes("Immediately start"), true);
 
 console.log("\n--- reassertion wording ---");
 // Pinned exactly: this rides in hidden, with no chance to be asked about, so

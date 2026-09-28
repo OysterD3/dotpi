@@ -18,7 +18,7 @@
  * and the guidelines all sit in the cached prefix, read long before there is a
  * request to apply them to. nudge.ts supplies the missing half — on the turn a
  * request that opens new work arrives, a hidden reminder rides in with it and
- * says to settle the open decisions now, or to state the assumption and start.
+ * says to settle the open decisions now, or to start the work.
  *
  * The opening nudge only fires once, though, and a model that reads past it
  * anyway is left with no other checkpoint — which is exactly what happened in
@@ -41,11 +41,11 @@
  * and it does not compromise that: it never silences the nudge, it only picks
  * which of two always-on wordings a matched model gets. style.ts resolves
  * that choice — "socratic" (OPENING_NUDGE, the original wording) or
- * "contract" (CONTRACT_NUDGE, unconditional and artifact-bearing) — fresh
+ * "contract" (CONTRACT_NUDGE, a concrete list of decisions) — fresh
  * from `ctx.model` at the one point below that actually sends a nudge, never
  * cached, so a model_select mid-session changes the wording on the very next
- * nudge rather than waiting for a new session. Everywhere else — enforcement,
- * compliance detection — keys off `deliveredStyle`, the style that resolved
+ * nudge rather than waiting for a new session. Everywhere else — the follow-up
+ * schedule — keys off `deliveredStyle`, the style that resolved
  * to, not a fresh re-read: the gate a model is answerable to is the one it
  * was actually sent, and a model swapped out mid-session must not desync that
  * from what its own turns are being graded against. See nudge.ts's header for
@@ -61,7 +61,6 @@ import {
 	CONTRACT_NUDGE,
 	contractFollowUpReminder,
 	followUpReminder,
-	hasAssumptionsBlock,
 	OPENING_NUDGE,
 	opensWork,
 	systemReminder,
@@ -84,8 +83,8 @@ export default function (pi: ExtensionAPI) {
 	let turnsSinceNudge = Number.POSITIVE_INFINITY;
 
 	// The style of the last nudge (or contract follow-up) actually DELIVERED
-	// this session — undefined until the first one goes out. Enforcement and
-	// compliance detection below key off this, not a fresh askStyle(ctx.model,
+	// this session — undefined until the first one goes out. The follow-up
+	// schedule below keys off this, not a fresh askStyle(ctx.model,
 	// ...) read: the gate a model is following is whatever text it was
 	// actually sent, and re-deriving from ctx.model at every check would
 	// desync the moment the model changes mid-session (a model_select, or a
@@ -102,9 +101,7 @@ export default function (pi: ExtensionAPI) {
 	// this counts. A Set, not a count of calls: five edits to one file is one
 	// file still unchecked against the opening questions, and the follow-up
 	// message says "N files" — it would be false to count tool calls and
-	// print that word. Cleared by whatever counts as compliance for the
-	// current style: an ask_user call (either style), or an ASSUMPTIONS block
-	// (contract style only — see the message_end handler below).
+	// print that word. Cleared by compliance: an ask_user call, either style.
 	let mutatedFilesSinceAsk = new Set<string>();
 	// Socratic style's one-shot-per-arming latch: true once the follow-up has
 	// fired, so it does not repeat on every mutation after the first. Only
@@ -123,24 +120,19 @@ export default function (pi: ExtensionAPI) {
 	// compliance, so a session that goes quiet again after complying gets the
 	// full budget back rather than being silenced for the rest of the run.
 	let contractFollowUpsFired = 0;
-	// Whether contract style has EVER registered compliance this session
-	// (an ask_user call, or a printed ASSUMPTIONS block) — distinct from
-	// contractFollowUpsFired, which resets on every compliance and so cannot
-	// carry this. Before the first compliance, an arm's first firing is at
-	// CONFIG.followUp.afterMutations, same as socratic. After it, EVERY arm's
-	// first firing uses CONFIG.followUp.rearmMutations instead, forever —
-	// afterMutations is a one-time grace period, not a threshold a compliant
-	// model keeps getting handed back. Without this, markCompliant() resetting
+	// Whether contract style has EVER registered compliance (an ask_user call)
+	// this session — distinct from contractFollowUpsFired, which resets on
+	// every compliance and so cannot carry this. Before the first compliance,
+	// an arm's first firing is at CONFIG.followUp.afterMutations, same as
+	// socratic. After it, EVERY arm's first firing uses
+	// CONFIG.followUp.rearmMutations instead, forever — afterMutations is a
+	// one-time grace period, not a threshold a compliant model keeps getting
+	// handed back. Without this, markCompliant() resetting
 	// contractFollowUpsFired to 0 would drop the next threshold back to
 	// afterMutations (5) — LOWER than the intra-arming rearm step (15) — so a
-	// model that dutifully complies gets nagged sooner, and more often, than
-	// one that never complies at all and simply rides the schedule out to its
-	// cap. Worse, message_end fires for an assistant message before that same
-	// message's own tool calls execute (pi-agent-core's ordering), so
-	// "print ASSUMPTIONS then scaffold 6 files" in one reply would trip
-	// afterMutations(5) within the very turn that complied — an accusation of
-	// silence aimed at the message that just spoke. See markCompliant and the
-	// tool_call handler below.
+	// model that dutifully asks gets nagged sooner, and more often, than one
+	// that never asks at all and simply rides the schedule out to its cap. See
+	// markCompliant and the tool_call handler below.
 	let contractHasCompliedOnce = false;
 
 	registerAskUserTool(pi);
@@ -153,8 +145,8 @@ export default function (pi: ExtensionAPI) {
 	const currentStyle = (ctx: ExtensionContext): AskStyle => askStyle(ctx.model, contractModelPatterns);
 
 	/** Reset whatever counts as "unaddressed decisions" for both styles at
-	 * once. Called on every event that constitutes compliance, whichever
-	 * style is active — see the tool_call and message_end handlers below. */
+	 * once. Called on an ask_user call, whichever style is active — see the
+	 * tool_call handler below. */
 	const markCompliant = () => {
 		mutatedFilesSinceAsk = new Set();
 		followUpDelivered = false;
@@ -247,8 +239,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", (event, ctx) => {
 		if (event.toolName === TOOL_NAME) {
 			// An ask_user call is compliance for either style: whatever was built
-			// without asking (or without an ASSUMPTIONS block) is now accounted
-			// for, and both styles' counters start over for whatever comes next.
+			// without asking is now accounted for, and both styles' counters start
+			// over for whatever comes next.
 			markCompliant();
 			return;
 		}
@@ -286,59 +278,14 @@ export default function (pi: ExtensionAPI) {
 		// is true (any compliance has ever registered), every arm's first
 		// firing uses rearmMutations instead, forever, so a model that keeps
 		// complying is never nagged sooner than one that never does — see
-		// contractHasCompliedOnce's comment above for the false-accusation this
-		// prevents. Compliance (an ask_user call, above, or an ASSUMPTIONS
-		// block, in message_end below) resets contractFollowUpsFired to 0, so
-		// the schedule restarts from that base the next time this arms.
+		// contractHasCompliedOnce's comment above. Compliance (an ask_user call, above) resets
+		// contractFollowUpsFired to 0, so the schedule restarts from that base
+		// the next time this arms.
 		if (contractFollowUpsFired >= CONFIG.followUp.maxFollowUps) return;
 		const base = contractHasCompliedOnce ? CONFIG.followUp.rearmMutations : CONFIG.followUp.afterMutations;
 		const threshold = base + contractFollowUpsFired * CONFIG.followUp.rearmMutations;
 		if (mutatedFilesSinceAsk.size < threshold) return;
 		contractFollowUpsFired++;
 		deliverFollowUp(contractFollowUpReminder(mutatedFilesSinceAsk.size), ctx);
-	});
-
-	// Contract style's other compliance path: an ASSUMPTIONS block is not
-	// something the model tells the follow-up about, it is something it
-	// prints in its own reply, so this is the one place that has to go
-	// looking for it rather than being told. message_end fires once the
-	// message is finalized (not message_update, which streams a partial block
-	// that would trip hasAssumptionsBlock on an incomplete line before the
-	// model finishes writing it). Socratic sessions are left alone here:
-	// CONTRACT_NUDGE is the only wording that ever mentions this marker, so a
-	// socratic model's text happening to start a line with "ASSUMPTIONS:"
-	// (vanishingly unlikely, but not impossible) must not silently satisfy a
-	// gate that was never offered to it. Keyed on deliveredStyle rather than
-	// currentStyle(ctx): the block is compliance with the gate that was
-	// actually delivered (nudge or follow-up), and a model switched to
-	// something style.ts would resolve differently by the time this message
-	// finishes must not un-arm a check the model was genuinely just told to
-	// pass.
-	pi.on("message_end", (event, ctx) => {
-		if (deliveredStyle !== "contract" || !ctx.hasUI) return;
-		const message = event.message as { role?: string; content?: unknown; stopReason?: string };
-		if (message.role !== "assistant" || !Array.isArray(message.content)) return;
-		// pi-agent-core finalizes and emits message_end with the PARTIAL message
-		// on user abort (Escape) and on a stream error, stopReason "aborted" or
-		// "error" either way — a message the user cut off or that never
-		// actually reached the model is not the model choosing to comply, so it
-		// must not register as having done so (e.g. Escape mid-"ASSUMPTIONS:
-		// none" must not silently satisfy the gate for the rest of the run).
-		if (message.stopReason === "aborted" || message.stopReason === "error") return;
-		const textBlocks = message.content
-			.filter((block): block is { type: "text"; text: string } => {
-				const candidate = block as { type?: unknown; text?: unknown } | null;
-				return !!candidate && typeof candidate === "object" && candidate.type === "text" && typeof candidate.text === "string";
-			})
-			.map((block) => block.text);
-		// Each block checked on its own — not concatenated into one string
-		// first — so compliance never depends on how many text blocks the
-		// message happened to arrive in or in what order, only on whether ANY
-		// of them, read on its own terms, is the artifact CONTRACT_NUDGE asked
-		// for. Gluing blocks together with an inserted separator first is not
-		// obviously safer: it would make hasAssumptionsBlock's fenced-region
-		// tracking depend on which block a fence's opening and closing delimiter
-		// happen to land in, an assumption this makes unnecessary.
-		if (textBlocks.some((text) => hasAssumptionsBlock(text))) markCompliant();
 	});
 }

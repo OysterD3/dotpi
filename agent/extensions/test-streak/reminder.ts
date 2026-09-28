@@ -9,7 +9,7 @@
  */
 
 export function rerunReminder(count: number, command: string): string {
-	return `You have run \`${command}\` ${count} times with no edit between them. The result cannot change while the code does not, so another run will tell you nothing this one did not. Either change something and re-run it, or say plainly what you observed — including that it is still failing, if it is — and move on.`;
+	return `You have run \`${command}\` ${count} times with no edit between them. The result cannot change while the code does not, so another run will tell you nothing this one did not. Either change something and re-run it, or stop re-running it and move on.`;
 }
 
 export function rerunNotice(count: number): string {

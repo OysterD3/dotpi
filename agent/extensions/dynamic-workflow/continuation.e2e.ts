@@ -8,8 +8,8 @@
  * agent looked stopped until the user typed. Delivery alone was being checked;
  * this checks what the parent did with it. An empty reply to a result gets one
  * retry with an explicit instruction, and a second empty reply an error, except
- * when the user cancelled (the turn, or the workflow), a question to the user is
- * pending, or the user queued a message.
+ * when the user cancelled (the turn, or the workflow), another run is still
+ * going, a question to the user is pending, or the user queued a message.
  *
  * Run it after editing dynamic-workflow (from ~/.pi):
  *     node_modules/.bin/jiti agent/extensions/dynamic-workflow/continuation.e2e.ts
@@ -129,6 +129,8 @@ async function run(
 		after?: (session: any) => Promise<void>;
 		withWorkflow?: boolean;
 		workflow?: string;
+		/** Several workflows started in the one tool-call message; overrides `workflow`. */
+		workflows?: string[];
 		other?: "continue" | "queue" | "note" | "user";
 		hooks?: Record<string, unknown>;
 	} = {},
@@ -141,7 +143,11 @@ async function run(
 	const withWorkflow = options.withWorkflow ?? true;
 	const script: Step[] = withWorkflow
 		? [
-				() => fauxAssistantMessage([fauxToolCall("workflow", { script: options.workflow ?? WORKFLOW }, { id: "wf1" })], { stopReason: "toolUse" }),
+				() =>
+					fauxAssistantMessage(
+						(options.workflows ?? [options.workflow ?? WORKFLOW]).map((script, i) => fauxToolCall("workflow", { script }, { id: `wf${i + 1}` })),
+						{ stopReason: "toolUse" },
+					),
 				say("Started the workflow."),
 				...steps,
 			]
@@ -215,18 +221,17 @@ async function run(
 	}
 	await session.waitForIdle();
 
-	// The run's own journal: delivery and the reply to it are recorded apart.
+	// The new runs' own journals: delivery and the reply to it are recorded apart.
 	const runs = join(AGENT_DIR, "workflow-runs");
 	const known = new Set(runsBefore);
-	const runId = existsSync(runs) ? readdirSync(runs).find((id) => !known.has(id)) : undefined;
-	const journal = runId
-		? readFileSync(join(runs, runId, "journal.jsonl"), "utf8")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line))
-				.filter((record) => record.kind === "run" && (record.event === "delivered" || record.event === "reply"))
-				.map((record) => [record.event, record.reply, record.skipped].filter(Boolean).join(":"))
-		: [];
+	const journal = (existsSync(runs) ? readdirSync(runs).filter((id) => !known.has(id)) : []).flatMap((runId) =>
+		readFileSync(join(runs, runId, "journal.jsonl"), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.kind === "run" && (record.event === "delivered" || record.event === "reply"))
+			.map((record) => [record.event, record.reply, record.skipped].filter(Boolean).join(":")),
+	);
 
 	const entries = session.sessionManager.getEntries() as any[];
 	const custom = (type: string) => entries.filter((entry) => entry.type === "custom_message" && entry.customType === type);
@@ -350,6 +355,18 @@ async function run(
 	check("another extension queues a turn: the model was asked again, once", r.requests, 4);
 	check("another extension queues a turn: no error", r.errorNotes, []);
 	check("another extension queues a turn: journal", r.journal, ["delivered", "reply:empty", "reply:answered"]);
+}
+
+{
+	// Two runs, and one is still running when the other's result arrives. An
+	// empty reply to that result is the model waiting for the second one, whose
+	// result starts a turn of its own: not a stall.
+	const r = await run([empty, say("(not asked for)")], { workflows: [WAITING, WORKFLOW] });
+	check("another run still running: one result so far", r.results, 1);
+	check("another run still running: no retry", r.retries, 0);
+	check("another run still running: no error", r.errorNotes, []);
+	check("another run still running: no extra request", r.requests, 3);
+	check("another run still running: journal says why it was left", r.journal, ["delivered", "reply:empty:running"]);
 }
 
 {

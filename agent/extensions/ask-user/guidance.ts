@@ -53,7 +53,7 @@ export const ASK_USER_DESCRIPTION = [
 	"",
 	"A note is the user qualifying an answer, not the answer itself — it arrives labelled as a note. Treat it as a constraint on how you carry the answer out.",
 	"",
-	"Do NOT use this to ask permission for an action you should just take, to confirm something you could verify yourself, or to hand back a judgment call the task already answers. The line is whether the answer is information only the user has: if the code or the request can tell you, go and find out instead, act on it, and say what you assumed.",
+	"Do NOT use this to ask permission for an action you should just take, to confirm something you could verify yourself, or to hand back a judgment call the task already answers. The line is whether the answer is information only the user has: if the code or the request can tell you, go and find out instead, and act on it.",
 	"",
 	"Returns answers and notes, a dismissal, or a clarification request with unsubmitted drafts. For clarification, explain the question and options in chat, then call ask_user again with clearer wording. Drafts are context, not confirmed answers or permission.",
 ].join("\n");
@@ -67,7 +67,7 @@ export const ASK_USER_SNIPPET = `Ask the user up to ${CONFIG.maxQuestions} quest
 
 export const ASK_USER_GUIDELINES = [
 	"Ask the user (ask_user) when the answer is theirs to give and being wrong is expensive: two readings that lead to different work, a choice that gets baked into a schema or an API other work depends on, a preference or business rule that is nowhere in the repo, or a long piece of work about to rest on an assumption. One interruption is cheaper than building the wrong thing.",
-	"Do not ask for permission to act, for confirmation of something you could check yourself, or to hand back a judgment the task already settles — find out, act, and say what you assumed.",
+	"Do not ask for permission to act, for confirmation of something you could check yourself, or to hand back a judgment the task already settles — find out and act.",
 	"When you do ask, offer 2-4 concrete, mutually exclusive options; a free-text row is added automatically, so never add an \"Other\" option.",
 	"Mark your own pick with `recommended: true` on that one option (with the reason in its description) when you have a view — it is badged and pre-focused. Skip it when you genuinely don't, rather than recommending something for the sake of it.",
 	`Send the decisions you are already blocked on in one ask_user call (up to ${CONFIG.maxQuestions} questions), never one call per question — the user answers a batch in a single pass but pays for each separate call. Leave out any question whose premise one of the others could remove; there is no branching, so ask that one afterwards.`,

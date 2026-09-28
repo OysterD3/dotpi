@@ -24,8 +24,9 @@ export const CONTINUE_MESSAGE = "workflow-continue";
 /** Where ask_user announces a question opening and closing (ask-user/config.ts). */
 export const ASK_CHANNEL = "ask-user:asking";
 
+/** Says what happened and what to do; not what to write (the user wants extensions to leave output alone). */
 export const CONTINUE_TEXT =
-	"The workflow result above arrived, but your reply to it was empty. Answer from it now: tell the user what it found, or continue the task it was part of. It is not a reason to start another workflow. If you are waiting for another workflow that is still running, say so in one line.";
+	"The workflow result above arrived, but your reply to it was empty. Continue from it. It is not a reason to start another workflow.";
 
 export const EMPTY_AGAIN_TEXT =
 	"A workflow result arrived, but the model replied with nothing, even when asked again. Send a message to continue.";

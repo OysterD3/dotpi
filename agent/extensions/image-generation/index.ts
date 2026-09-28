@@ -129,7 +129,7 @@ export default function imageGeneration(pi: ExtensionAPI) {
 		label: "Generate image",
 		description: "Generate one PNG through your existing OpenAI Codex (ChatGPT) sign-in, without an OpenAI API key. Uses your ChatGPT allowance. Defaults to requesting GPT Image 2.5 Flare, but Codex can replace the image model. Always reports the requested and server-reported model and warns on a mismatch or missing model. Text-to-image only; never overwrites an existing file.",
 		promptSnippet: "Generate a PNG using ChatGPT/Codex sign-in, without an API key",
-		promptGuidelines: ["When using generate_image, tell the user when Codex did not confirm the requested image model. Never label the returned image as GPT Image 2.5 unless the server reported that model."],
+		promptGuidelines: ["When using generate_image, never label the returned image as GPT Image 2.5 unless the server reported that model."],
 		parameters,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (!params.prompt.trim()) throw new Error("An image prompt is required.");

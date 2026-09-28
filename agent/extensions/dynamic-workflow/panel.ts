@@ -315,7 +315,7 @@ export function interruptedNotice(interrupted: RunMeta[], stale: RunMeta[] = [])
 			`${interrupted.length > 0 ? "Also still" : "Still"} unresumed from an earlier session: ${shown
 				.map((meta) => `${meta.name} (${meta.runId})`)
 				.join(", ")}${more > 0 ? `, and ${more} older one${more === 1 ? "" : "s"} — see /workflows` : ""}.`,
-			`${shown.length === 1 ? "It is" : "They are"} still resumable with ${calls}. Mention ${shown.length === 1 ? "it" : "them"} to the user only if it bears on what they are asking for now; otherwise leave ${shown.length === 1 ? "it" : "them"} alone.`,
+			`${shown.length === 1 ? "It is" : "They are"} still resumable with ${calls}. Leave ${shown.length === 1 ? "it" : "them"} alone unless this bears on what the user is asking for now.`,
 		);
 	}
 

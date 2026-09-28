@@ -58,9 +58,11 @@ async function absent(name: string) {
 	await assert.rejects(readFile(join(dir, name)), { code: "ENOENT" });
 }
 
-test("registers the image tool and its model warning guidance", () => {
+test("registers the image tool and its model-label guidance", () => {
 	assert.equal(tool.name, "generate_image");
-	assert.match(tool.promptGuidelines!.join(" "), /tell the user/);
+	assert.match(tool.promptGuidelines!.join(" "), /never label the returned image as GPT Image 2\.5/i);
+	// The user wants extensions to leave the model's output alone, tone aside.
+	assert.doesNotMatch(tool.promptGuidelines!.join(" "), /tell the user/i);
 });
 
 for (const [label, reported, requested, confirmed] of [

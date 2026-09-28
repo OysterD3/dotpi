@@ -9,13 +9,10 @@
  * against in the first place.
  *
  * Also covers style.ts's model matching, settings.ts's contractModels loader,
- * CONTRACT_NUDGE / contractFollowUpReminder / hasAssumptionsBlock's own
- * wording and detection logic, and the wiring that picks between the two
- * styles and re-arms the contract follow-up on a schedule. The socratic
- * assertions above and below this file's new sections are exactly what they
- * were before those existed — pinning that a model not matched by
- * askUser.contractModels sees byte-identical behaviour to before this file
- * grew a second style.
+ * CONTRACT_NUDGE / contractFollowUpReminder's wording, the wiring that picks
+ * between the two styles and re-arms the contract follow-up on a schedule,
+ * and that no text the model reads tells it what to write about its
+ * assumptions.
  *
  * Run: jiti agent/extensions/ask-user/nudge.test.ts
  */
@@ -34,9 +31,10 @@ if (!getAgentDir().startsWith(ROOT)) {
 	throw new Error(`REFUSING TO RUN: getAgentDir() is ${getAgentDir()}, outside ${ROOT}`);
 }
 
-const { CONTRACT_NUDGE, contractFollowUpReminder, followUpReminder, hasAssumptionsBlock, OPENING_NUDGE, opensWork, systemReminder } =
+const { CONTRACT_NUDGE, contractFollowUpReminder, followUpReminder, OPENING_NUDGE, opensWork, systemReminder } =
 	await import("./nudge.ts");
 const { CONFIG, FOLLOWUP_ENTRY_TYPE, NUDGE_ENTRY_TYPE, TOOL_NAME } = await import("./config.ts");
+const { ASK_USER_DESCRIPTION, ASK_USER_GUIDELINES, ASK_USER_SNIPPET } = await import("./guidance.ts");
 const { loadSettings } = await import("./settings.ts");
 const { askStyle } = await import("./style.ts");
 const { default: register } = await import("./index.ts");
@@ -127,93 +125,34 @@ check("and says when not to", OPENING_NUDGE.includes("do not ask"), true);
 check("names the common case as not asking", OPENING_NUDGE.includes("the common case"), true);
 check("wrapped as a system reminder", systemReminder("x"), "<system-reminder>\nx\n</system-reminder>");
 
+console.log("\n--- no text tells the model what to write about its assumptions ---");
+// Extensions leave the model's output alone, tone aside: no ASSUMPTIONS block,
+// no line saying what it assumed, and no rule against one either. Every nudge,
+// reminder and guidance text is here.
+for (const [label, text] of [
+	["OPENING_NUDGE", OPENING_NUDGE],
+	["CONTRACT_NUDGE", CONTRACT_NUDGE],
+	["followUpReminder", followUpReminder(5)],
+	["contractFollowUpReminder", contractFollowUpReminder(5)],
+	["the tool description", ASK_USER_DESCRIPTION],
+	["the snippet", ASK_USER_SNIPPET],
+	["the guidelines", ASK_USER_GUIDELINES.join("\n")],
+] as const) {
+	check(`${label}: no ASSUMPTIONS block`, /ASSUMPTIONS/.test(text), false);
+	check(`${label}: no "say what you assumed"`, /what you are assuming|what you assumed|state your assumptions|state the assumption/i.test(text), false);
+	check(`${label}: no rule about "your assumptions"`, /your assumptions/i.test(text), false);
+}
+
 console.log("\n--- CONTRACT_NUDGE: wording ---");
-// No "if any exist" anywhere: the whole point is that this wording is not a
-// judgment call. Both compliance paths must be named, and named as ONE call /
-// ONE block rather than "ask when in doubt".
-check("names ask_user as one option", CONTRACT_NUDGE.includes("Call ask_user ONCE"), true);
-// The exact marker line hasAssumptionsBlock (below) actually scans for, and
-// the exact fallback phrasing for the "genuinely none apply" case — both
-// quoted in the nudge so the model is reproducing a literal string, not
-// paraphrasing one.
-check("names the exact marker line", CONTRACT_NUDGE.includes("'ASSUMPTIONS:'"), true);
-check("and its none-apply fallback, verbatim", CONTRACT_NUDGE.includes("'ASSUMPTIONS: none — <one line why>'"), true);
+// ONE call, not "ask when in doubt" — and only for a decision nothing settles,
+// or "file and module layout" alone would make every build request a question.
+check("names ask_user, once", CONTRACT_NUDGE.includes("Call ask_user ONCE"), true);
+check("a decision qualifies only when nothing settles it", CONTRACT_NUDGE.includes("cannot settle from the request, the codebase, or an obvious default"), true);
 check("says the gate re-applies mid-task", CONTRACT_NUDGE.includes("MID-TASK"), true);
 for (const category of ["data source", "schema", "framework/library/dependency", "layout", "scope boundaries", "materially different readings"]) {
 	check(`names the "${category}" category`, CONTRACT_NUDGE.includes(category), true);
 }
 check("wrapped the same way as OPENING_NUDGE", systemReminder(CONTRACT_NUDGE), `<system-reminder>\n${CONTRACT_NUDGE}\n</system-reminder>`);
-
-console.log("\n--- hasAssumptionsBlock ---");
-check(
-	"a block on its own line is found",
-	hasAssumptionsBlock("Some preamble.\nASSUMPTIONS:\n1. Using mock data — real API needs credentials I do not have."),
-	true,
-);
-check(
-	"found mid-text, not just as the first line",
-	hasAssumptionsBlock("I'll get started.\n\nFirst, a quick note.\n\nASSUMPTIONS:\n1. sqlite over postgres — smaller footprint.\n2. ..."),
-	true,
-);
-check("indentation before the marker is still a line start", hasAssumptionsBlock("notes\n  ASSUMPTIONS:\n  1. x"), true);
-check("the none-apply fallback still counts", hasAssumptionsBlock("ASSUMPTIONS: none — the request has no open decisions."), true);
-check(
-	"the word mid-sentence is not the block",
-	hasAssumptionsBlock("I want to surface my assumptions: this looks like it uses mock data."),
-	false,
-);
-check("mid-sentence even at a line's end does not count", hasAssumptionsBlock("Quick note before I start — ASSUMPTIONS: none really."), false);
-check("plain prose with no marker at all", hasAssumptionsBlock("Building the settings page now."), false);
-check("empty text", hasAssumptionsBlock(""), false);
-
-// Finding 3: markdown-wrapped and case-varied markers must still be found —
-// the model was told to print an artifact, and rendering it as markdown
-// (bold, a heading) is still printing it.
-check("bold-wrapped with **", hasAssumptionsBlock("**ASSUMPTIONS:**\n1. Using mock data — no credentials configured."), true);
-check("underscore-emphasis wrapped", hasAssumptionsBlock("__ASSUMPTIONS:__\n1. Using mock data."), true);
-check("a markdown heading", hasAssumptionsBlock("## ASSUMPTIONS:\n1. sqlite over postgres."), true);
-check("a deeper heading level", hasAssumptionsBlock("###### ASSUMPTIONS:\n1. x"), true);
-check("lower/mixed case", hasAssumptionsBlock("Assumptions:\n1. Using mock data."), true);
-check("heading AND emphasis stacked", hasAssumptionsBlock("## **ASSUMPTIONS:**\n1. Using mock data."), true);
-check("a single-asterisk emphasis wrapper also exposes the marker", hasAssumptionsBlock("*ASSUMPTIONS:*\n1. x"), true);
-// But markdown-ness alone must not be enough — the word still has to lead.
-check("a heading about assumptions, not the marker itself", hasAssumptionsBlock("## Notes on my assumptions here"), false);
-
-// Finding 5: a line that only APPEARS to start with the marker because it is
-// quoted (a fenced code block) or cited (a blockquote) must not count — this
-// repo's own test files fence example lines starting with "ASSUMPTIONS:",
-// and a model quoting the gate back must not register as having satisfied it.
-check(
-	"a fenced code block containing the marker does not count",
-	hasAssumptionsBlock("Here's the gate as written:\n```\nASSUMPTIONS:\n1. example line\n```\nBuilding now."),
-	false,
-);
-check(
-	"a tilde-fenced block containing the marker does not count either",
-	hasAssumptionsBlock("~~~\nASSUMPTIONS:\n1. example\n~~~"),
-	false,
-);
-check(
-	"a genuine block AFTER a fence closes still counts",
-	hasAssumptionsBlock("```\nASSUMPTIONS:\n1. quoted example, not real\n```\nASSUMPTIONS:\n1. Using the demo fixture — no credentials configured."),
-	true,
-);
-check("a blockquoted marker does not count", hasAssumptionsBlock("> ASSUMPTIONS:\n> 1. quoted from the nudge, not printed by me"), false);
-check(
-	"a real block still counts once the blockquote ends",
-	hasAssumptionsBlock("> quoting the gate above\nASSUMPTIONS:\n1. Using mock data."),
-	true,
-);
-
-console.log("\n--- contractFollowUpReminder restates the exact marker format ---");
-{
-	const text = contractFollowUpReminder(5);
-	// Finding 3: compaction can drop CONTRACT_NUDGE (the only other place this
-	// format is spelled out) before this follow-up ever fires, so the follow-up
-	// has to be self-sufficient.
-	check("restates the exact marker line, quoted", text.includes("'ASSUMPTIONS:'"), true);
-	check("and the one-numbered-line-per-assumption shape", text.includes("one numbered line per assumption"), true);
-}
 
 console.log("\n--- style.ts: askStyle ---");
 check("no model selected yet is socratic", askStyle(undefined, [...CONFIG.contractModels]), "socratic");
@@ -413,36 +352,7 @@ function install(hasUI = true, idle = false, model?: FakeModel, cwd = AGENT, tru
 		const input = toolName === "write" || toolName === "edit" ? { path: path ?? `auto-${autoPath++}.ts` } : {};
 		handlers.get("tool_call")?.({ type: "tool_call", toolCallId: "tc", toolName, input }, ctx);
 	};
-	/**
-	 * One assistant message_end event carrying `text` as its sole text block —
-	 * the shape the contract style's ASSUMPTIONS-block detection watches
-	 * (index.ts's message_end handler, hasAssumptionsBlock in nudge.ts).
-	 * `stopReason` defaults to "stop" (a normal completion) so every
-	 * pre-existing call, unchanged, keeps exercising that path; tests that care
-	 * about aborted/errored messages (Finding 6) pass one explicitly.
-	 */
-	const assistant = (text: string, stopReason = "stop") => {
-		handlers.get("message_end")?.(
-			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason } },
-			ctx,
-		);
-	};
-	/**
-	 * Same event, but `blocks` become SEPARATE text content blocks rather than
-	 * one — the shape index.ts's message_end handler must scan independently
-	 * rather than join (Finding 5): a marker that only appears once two blocks
-	 * are concatenated must not count.
-	 */
-	const assistantBlocks = (blocks: string[], stopReason = "stop") => {
-		handlers.get("message_end")?.(
-			{
-				type: "message_end",
-				message: { role: "assistant", content: blocks.map((text) => ({ type: "text", text })), stopReason },
-			},
-			ctx,
-		);
-	};
-	return { handlers, turn, call, assistant, assistantBlocks, tools: () => tools, sent, ctx };
+	return { handlers, turn, call, tools: () => tools, sent, ctx };
 }
 
 {
@@ -507,23 +417,6 @@ console.log("\n--- wiring: enforcement keys off the DELIVERED style, not a re-re
 	check("with contract wording, keyed off delivery not the current model", sent[0]?.content, contractFollowUpReminder(CONFIG.followUp.afterMutations));
 }
 {
-	// Same switch, but checking ASSUMPTIONS-block compliance rather than the
-	// follow-up: a model switched away from contract mid-session must still be
-	// able to satisfy (or be held to) the gate it was actually sent.
-	const { turn, call, assistant, ctx, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	(ctx as { model?: FakeModel }).model = ANTHROPIC_MODEL;
-	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
-	check("fires once", sent.length, 1);
-	assistant("ASSUMPTIONS:\n1. Using the demo fixture, not the real API — no credentials configured.");
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check(
-		"the ASSUMPTIONS block still registers as compliance under the model now selected",
-		sent.length,
-		1,
-	);
-}
-{
 	// The converse: a nudge delivered socratic, then a switch to a
 	// contract-matched model. The socratic latch — not the contract
 	// schedule — still governs, because that is the gate this session's
@@ -585,7 +478,7 @@ console.log("\n--- the compliance follow-up: message wording ---");
 	const text = followUpReminder(5);
 	check("names the count that tripped it", text.includes("created or edited 5 files"), true);
 	check("says to ask now", text.includes("call ask_user NOW"), true);
-	check("and gives the fallback", text.includes("state your assumptions in one line and continue"), true);
+	check("and says to continue otherwise", text.includes("otherwise continue"), true);
 	check("wrapped as a system reminder, same as the opening nudge", text.startsWith("<system-reminder>\n"), true);
 }
 
@@ -593,10 +486,9 @@ console.log("\n--- the compliance follow-up: contract wording ---");
 {
 	const text = contractFollowUpReminder(5);
 	check("names the count that tripped it", text.includes("modified 5 files"), true);
-	check("names both compliance paths", text.includes("neither asked a question nor printed an ASSUMPTIONS block"), true);
-	check("says to print it now", text.includes("Print it NOW"), true);
-	check("and gives the ask_user escape hatch, not a prose fallback", text.includes("use ask_user instead"), true);
-	check("does NOT offer followUpReminder's silent fallback", text.includes("state your assumptions in one line and continue"), false);
+	check("says to ask now", text.includes("use ask_user NOW"), true);
+	// Compaction can drop CONTRACT_NUDGE before this fires, so it names the kinds again.
+	check("names the decision kinds again", text.includes("data source"), true);
 	check("wrapped as a system reminder, same as the opening nudge", text.startsWith("<system-reminder>\n"), true);
 }
 
@@ -747,58 +639,16 @@ console.log("\n--- the compliance follow-up: contract satisfaction ---");
 		contractFollowUpReminder(CONFIG.followUp.rearmMutations),
 	);
 }
-{
-	// The other compliance path: a printed ASSUMPTIONS block, with no
-	// ask_user call at all. The FIRST firing here is still at afterMutations —
-	// no compliance has happened yet at that point — but the ASSUMPTIONS block
-	// itself is this test's first-ever compliance, so the arm after it is held
-	// to rearmMutations, same as an ask_user call would be.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
-	check("fires once, at afterMutations before any compliance has happened", sent.length, 1);
-	assistant("Continuing.\n\nASSUMPTIONS:\n1. Using the demo fixture, not the real API — no credentials configured.");
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check("an ASSUMPTIONS block re-arms it just like ask_user would", sent.length, 1);
-	call("write");
-	check("and a fresh run of mutations trips it again, at the now-elevated rearm threshold", sent.length, 2);
-	check(
-		"naming rearmMutations, not afterMutations",
-		sent[1]?.content,
-		contractFollowUpReminder(CONFIG.followUp.rearmMutations),
-	);
-}
-{
-	// Preemptive compliance: an ASSUMPTIONS block printed before the
-	// follow-up has ever fired still resets the mutation count — the same
-	// "not only a post-delivery thing" behaviour an ask_user call already has.
-	// This is this test's first-ever compliance too, so the threshold it
-	// re-arms to is already the elevated one.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	call("write");
-	call("write");
-	assistant("ASSUMPTIONS: none — the request has no open decisions.");
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check("the mutations before the block do not carry over", sent.length, 0);
-	call("write");
-	check("only the mutations since the block count toward it, at the now-elevated rearm threshold", sent.length, 1);
-}
-
 console.log("\n--- the compliance follow-up: post-compliance threshold never reverts to afterMutations (Finding 1) ---");
 {
-	// The exact reproduced false accusation: a reply that prints ASSUMPTIONS
-	// and, in that SAME reply, goes on to make several tool calls.
-	// pi-agent-core fires message_end for an assistant message before that
-	// same message's own tool calls execute, so compliance registers (and the
-	// schedule resets) before those calls are counted. Before this fix, the
-	// reset threshold was afterMutations (5) — lower than 6 — so this exact
-	// shape tripped a false accusation within the very turn that complied.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
+	// A model that asks, then builds 6 files on the answers: the reset
+	// threshold must not drop back to afterMutations (5), or asking would buy
+	// a reminder sooner than never asking does.
+	const { turn, call, sent } = install(true, false, OPENAI_MODEL);
 	turn("build me a settings page with a dark mode toggle");
-	assistant("ASSUMPTIONS:\n1. Using the demo fixture, not the real API — no credentials configured.");
+	call(TOOL_NAME);
 	for (let i = 0; i < 6; i++) call("write");
-	check("printing the block then mutating 6 files in the same turn does not fire", sent.length, 0);
+	check("asking then mutating 6 files does not fire", sent.length, 0);
 	for (let i = 0; i < CONFIG.followUp.rearmMutations; i++) call("write");
 	check("but enough further mutations still eventually fire", sent.length, 1);
 	check("at the rearm threshold, not afterMutations", sent[0]?.content, contractFollowUpReminder(CONFIG.followUp.rearmMutations));
@@ -808,9 +658,9 @@ console.log("\n--- the compliance follow-up: post-compliance threshold never rev
 	// the first-ever compliance: afterMutations is a one-time grace period for
 	// the whole session, not something a compliant model keeps earning back
 	// each time it complies.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
+	const { turn, call, sent } = install(true, false, OPENAI_MODEL);
 	turn("build me a settings page with a dark mode toggle");
-	assistant("ASSUMPTIONS: none — the request has no open decisions.");
+	call(TOOL_NAME);
 	for (let i = 0; i < CONFIG.followUp.rearmMutations; i++) call("write");
 	check("first arm after the first compliance fires at rearmMutations", sent.length, 1);
 	call(TOOL_NAME);
@@ -819,93 +669,6 @@ console.log("\n--- the compliance follow-up: post-compliance threshold never rev
 	for (let i = 0; i < CONFIG.followUp.rearmMutations - CONFIG.followUp.afterMutations; i++) call("write");
 	check("it only fires once the still-elevated rearm threshold is reached", sent.length, 2);
 }
-{
-	// Socratic sessions are unaffected by an ASSUMPTIONS-shaped message: the
-	// wording that mentions this marker was never offered to them, so a
-	// coincidental match must not silently satisfy a gate they were never
-	// given.
-	const { turn, call, assistant, sent } = install(true, false, ANTHROPIC_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
-	assistant("ASSUMPTIONS:\n1. This should not matter for a socratic session.");
-	call("write");
-	check("the socratic follow-up still fires at its own threshold, untouched", sent.length, 1);
-	check("with the socratic wording", sent[0]?.content, followUpReminder(CONFIG.followUp.afterMutations));
-}
-
-console.log("\n--- the compliance follow-up: content blocks scanned for the marker independently (Finding 5) ---");
-{
-	// A marker that appears ONLY inside a fenced quote must not register, even
-	// when that quote is delivered as its own separate content block following
-	// unrelated prose — the fence guard (hasAssumptionsBlock) has to apply
-	// within each block index.ts hands it, not just within a single big string.
-	const { turn, call, assistantBlocks, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	assistantBlocks(["Here's the gate as I understand it:", "```\nASSUMPTIONS:\n1. quoted from the nudge, not printed by me\n```"]);
-	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
-	check("a fenced quote in its own content block does not register as compliance", sent.length, 0);
-	call("write");
-	check("so the follow-up still fires at the ordinary threshold", sent.length, 1);
-}
-{
-	// A genuine block, delivered as its own separate content block following
-	// unrelated prose in an earlier block, is still detected — index.ts must
-	// look at every text block for the marker, not only the first or the last.
-	const { turn, call, assistantBlocks, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	assistantBlocks(["Sure, let's go.", "ASSUMPTIONS:\n1. Using the demo fixture — no credentials configured."]);
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check("a genuine block delivered separately from other prose still registers as compliance", sent.length, 0);
-	call("write");
-	check("...confirmed by the now-elevated rearm threshold applying", sent.length, 1);
-}
-
-console.log("\n--- the compliance follow-up: aborted/errored messages do not register compliance (Finding 6) ---");
-{
-	// pi-agent-core finalizes message_end with the PARTIAL message on user
-	// abort (Escape) and on a stream error — stopReason "aborted" or "error"
-	// either way. Escape-during-"ASSUMPTIONS: none" must not silently satisfy
-	// the gate for the rest of the run.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
-	check("fires once", sent.length, 1);
-	assistant("ASSUMPTIONS:\n1. Using the demo fixture — no credentials configured.", "aborted");
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check("an aborted message's ASSUMPTIONS block does not register as compliance", sent.length, 1);
-	call("write");
-	// Since it never registered, contractHasCompliedOnce is still false, so the
-	// SECOND firing is still at the UNCOMPLIED schedule (afterMutations +
-	// rearmMutations), not the elevated one compliance would have produced —
-	// confirming the abort did not just fail to register, but genuinely left
-	// the schedule untouched.
-	check("so the follow-up fires again at the ordinary (uncomplied) rearm threshold", sent.length, 2);
-	check(
-		"naming the uncomplied schedule's threshold",
-		sent[1]?.content,
-		contractFollowUpReminder(CONFIG.followUp.afterMutations + CONFIG.followUp.rearmMutations),
-	);
-}
-{
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
-	assistant("ASSUMPTIONS:\n1. Using the demo fixture — no credentials configured.", "error");
-	for (let i = 0; i < CONFIG.followUp.afterMutations - 1; i++) call("write");
-	check("an errored message's ASSUMPTIONS block does not register as compliance either", sent.length, 1);
-}
-{
-	// A normal completion (the implicit default in every other test in this
-	// file) still registers — this pins that the guard is specific to
-	// aborted/error, not a regression that silences compliance altogether.
-	const { turn, call, assistant, sent } = install(true, false, OPENAI_MODEL);
-	turn("build me a settings page with a dark mode toggle");
-	for (let i = 0; i < CONFIG.followUp.afterMutations; i++) call("write");
-	assistant("ASSUMPTIONS:\n1. Using the demo fixture — no credentials configured.", "stop");
-	for (let i = 0; i < CONFIG.followUp.rearmMutations - 1; i++) call("write");
-	check("a normally-completed message's block still registers as compliance", sent.length, 1);
-}
-
 console.log("\n--- the compliance follow-up: distinct files, not calls ---");
 {
 	// Five edits to the same file is one file still unchecked against the

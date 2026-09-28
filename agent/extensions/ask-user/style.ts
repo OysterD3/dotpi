@@ -15,16 +15,20 @@
  * exist, ask" — and that is precisely the shape of instruction OpenAI-family
  * models are trained to route around in favour of finishing the task. What
  * is not optional for them is an unconditional protocol with a mandatory,
- * checkable output artifact, which is what CONTRACT_NUDGE (nudge.ts) is.
+ * checkable output artifact, which is what CONTRACT_NUDGE (nudge.ts) was. The
+ * artifact, a visible ASSUMPTIONS block, is gone since — the user wants
+ * extensions to leave the model's output alone, tone aside — and what is left
+ * is a concrete list of decisions and a follow-up that repeats until the model
+ * asks.
  *
  * Scoped by model rather than replacing the socratic wording outright,
  * because the asymmetry runs the other way too: claude-opus-5 did not need
  * the contract, and a model that already asks does not benefit from being
- * handed a rigid protocol instead of a judgment call — if anything a forced
- * artifact on every turn is closer to alert fatigue for a model that was
+ * handed a rigid protocol instead of a judgment call — if anything a
+ * repeating reminder is closer to alert fatigue for a model that was
  * already complying. So this is an allowlist, not a global switch: only
  * models matched by a pattern below get the contract, everyone else keeps
- * the wording that already works for them, byte-for-byte.
+ * the socratic wording.
  */
 import type { Model } from "@earendil-works/pi-ai";
 

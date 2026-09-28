@@ -917,6 +917,24 @@ console.log("\n--- opt-in persistence survives a resume ---");
 	);
 }
 {
+	// A session saved before the keyword reminder was reworded holds the old
+	// text. Resume finds the reminder by its fixed start, so it still counts.
+	const OLD_KEYWORD_REMINDER =
+		'The user included the keyword "ultracode", opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task\'s SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, say so in one line and do the work inline. If it does, width comes from counting the task\'s seams — one agent per deliverable — not from a default number. The keyword removes the need to ask, not the need to decide.';
+	const branch = [
+		{ type: "message", message: { role: "user", content: [{ type: "text", text: "ultracode build the widget" }] } },
+		{ type: "custom_message", customType: "ultracode", content: `<system-reminder>\n${OLD_KEYWORD_REMINDER}\n</system-reminder>`, display: false },
+		{ type: "custom_message", customType: "workflow-result", content: "done", display: true },
+	];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	events.get("session_start")!({}, ctx);
+	check(
+		"a keyword reminder saved in its old wording still counts on resume",
+		(await turn("what's the status", "interactive", ctx))?.message?.content,
+		`<system-reminder>\n${AFTER_RUN}\n</system-reminder>`,
+	);
+}
+{
 	// Same crash-and-resume shape, but the dead process also logged an
 	// explicit /ultracode off before it died — restoreFromBranch must honour
 	// that the same way the live disable() path does, or a resume can
