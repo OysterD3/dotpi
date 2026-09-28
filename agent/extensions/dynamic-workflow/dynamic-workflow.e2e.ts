@@ -382,7 +382,7 @@ check("shift+down registered", shortcuts.has("shift+down"), true);
 check("the gesture describes itself", (shortcuts.get("shift+down")?.description?.length ?? 0) > 0, true);
 check("entry renderer", entryRenderers, ["ultracode"]);
 check("result message renderer", messageRenderers.includes("workflow-result"), true);
-for (const name of ["session_start", "input", "before_agent_start", "thinking_level_select", "session_shutdown"]) {
+for (const name of ["session_start", "input", "before_agent_start", "thinking_level_select", "session_compact", "session_shutdown"]) {
 	check(`hooks ${name}`, events.has(name), true);
 }
 
@@ -412,6 +412,38 @@ console.log("\n--- alwaysOn: the mode as a standing default ---");
 	// since pi persists every level change into defaultThinkingLevel and the next
 	// session would "restore" to the xhigh this one wrote.
 	check("and does not pretend to restore a level", thinkingLevel, "xhigh");
+	await turn("drain the exit notice");
+}
+{
+	// Under alwaysOn a level change is only a level change: pi's picker, the
+	// cycle key and a model switch that moves the level all arrive as this one
+	// event, and a plain /effort level is the same choice. Only /ultracode off
+	// leaves. A standing opt-in used to end mid-session this way, and the "off"
+	// it logged then kept every resume of the session off too.
+	writeSettings({ alwaysOn: true });
+	thinkingLevel = "medium";
+	const { ctx, notices, statuses } = makeCtx({ model: MODEL });
+	events.get("session_start")!({}, ctx);
+	await turn("announce it");
+	appended.length = 0;
+	await events.get("thinking_level_select")!({ level: "low", previousLevel: "xhigh" }, ctx);
+	check("alwaysOn: a level change logs no off", appended, []);
+	check("and the model is told nothing", await turn("next"), undefined);
+	check("and the badge stays", statuses.at(-1)?.text, "✦ dynamic workflow");
+	await commands.get("effort")!.handler("high", ctx);
+	check("a plain /effort level keeps it on too", appended, []);
+	check("still nothing to tell the model", await turn("after effort"), undefined);
+	// On at a level below xhigh is a state only alwaysOn reaches, so the texts
+	// that used to say "xhigh" regardless now have to name the real level.
+	await commands.get("ultracode")!.handler("status", ctx);
+	check("status names the level it is on", notices.at(-1)?.message, "Current effort level: dynamic workflow (high + workflow orchestration; this session only)");
+	await commands.get("effort")!.handler("ultracode", ctx);
+	check("asking for ultracode again applies its level again", thinkingLevel, "xhigh");
+	check("and says so truthfully", notices.at(-1)?.message, "Current effort level: dynamic workflow (xhigh + workflow orchestration)");
+	await commands.get("effort")!.handler("high", ctx);
+	await commands.get("ultracode")!.handler("off", ctx);
+	check("/ultracode off still leaves", notices.at(-1)?.message, "Dynamic workflow off");
+	check("and keeps the level the user chose", thinkingLevel, "high");
 	await turn("drain the exit notice");
 }
 {
@@ -749,6 +781,75 @@ console.log("\n--- restore from branch ---");
 	const arrayCase = makeCtx({ model: MODEL, branch: arrayBranch });
 	events.get("session_start")!({}, arrayCase.ctx);
 	check("array-content reminder restores announced state", await turn("go"), undefined);
+
+	// A compaction folds the reminder into a summary. Measured with the mode on:
+	// 3 of 3 trials sent a task to a workflow while the reminder was in view,
+	// and 3 of 3 did it inline once it had been compacted away.
+	const compaction = { type: "compaction", summary: "…", firstKeptEntryId: "x" };
+	const compacted = makeCtx({ model: MODEL, branch: [...arrayBranch, userMessage, compaction] });
+	events.get("session_start")!({}, compacted.ctx);
+	check("resume after a compaction announces again", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	const reannounced = makeCtx({ model: MODEL, branch: [...arrayBranch, userMessage, compaction, userMessage, reminderEntry(ENTER_FULL)] });
+	events.get("session_start")!({}, reannounced.ctx);
+	check("but not twice", await turn("go"), undefined);
+	const offBranch = [...settledBranch, userMessage, compaction];
+	const off = makeCtx({ model: MODEL, branch: offBranch });
+	events.get("session_start")!({}, off.ctx);
+	check("a compaction with the mode off says nothing", await turn("go"), undefined);
+	const owed = makeCtx({ model: MODEL, branch: [...exitPendingBranch, compaction] });
+	events.get("session_start")!({}, owed.ctx);
+	check("an exit notice owed before a compaction is still delivered", (await turn("go"))?.message?.content, `<system-reminder>\n${EXIT}\n</system-reminder>`);
+	// Off, compaction, on: the pending exit is cancelled, but the reminder that
+	// made it pending is no longer in view, so the mode announces again.
+	const backOn = makeCtx({ model: MODEL, branch: [...exitPendingBranch, compaction] });
+	events.get("session_start")!({}, backOn.ctx);
+	await commands.get("ultracode")!.handler("on", backOn.ctx);
+	check("resumed, then back on after a compaction: announces again", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	const onEntry = { type: "custom", customType: "ultracode", data: { action: "on" } };
+	const onAgain = makeCtx({ model: MODEL, branch: [...exitPendingBranch, compaction, onEntry] });
+	events.get("session_start")!({}, onAgain.ctx);
+	check("and the same when the on is in the branch", (await turn("go"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	// pi keeps a recent tail after a compaction. A reminder in it is in view.
+	const keptBranch = [onEntry, { ...userMessage, id: "k" }, reminderEntry(ENTER_FULL), userMessage, { type: "compaction", summary: "…", firstKeptEntryId: "k" }];
+	const kept = makeCtx({ model: MODEL, branch: keptBranch });
+	events.get("session_start")!({}, kept.ctx);
+	check("a reminder in the kept tail is not repeated on resume", await turn("go"), undefined);
+}
+{
+	// The same in a live session: pi emits session_compact for manual and
+	// automatic compaction alike.
+	writeSettings({});
+	const branch: Record<string, unknown>[] = [];
+	const { ctx } = makeCtx({ model: MODEL, branch });
+	const compact = (firstKeptEntryId: string) =>
+		events.get("session_compact")!({ type: "session_compact", reason: "threshold", compactionEntry: { type: "compaction", firstKeptEntryId } }, ctx);
+	events.get("session_start")!({}, ctx);
+	await commands.get("ultracode")!.handler("on", ctx);
+	await turn("announce it");
+	check("quiet turn before the compaction", await turn("quiet"), undefined);
+	branch.push({ id: "k", type: "message", message: { role: "user", content: [] } });
+	branch.push({ type: "custom_message", customType: "ultracode", content: `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`, display: false });
+	await compact("k");
+	check("a reminder in the kept tail is not repeated", await turn("kept"), undefined);
+	await compact("gone");
+	check("the turn after a compaction that took it announces again", (await turn("after"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	check("once", await turn("and then"), undefined);
+	await compact("gone");
+	await commands.get("ultracode")!.handler("off", ctx);
+	check("an exit owed across a compaction is still delivered", (await turn("off now"))?.message?.content, `<system-reminder>\n${EXIT}\n</system-reminder>`);
+	await compact("gone");
+	check("with the mode off a compaction says nothing", await turn("later"), undefined);
+
+	// Off and on again before the exit notice went out normally says nothing,
+	// because the entry reminder is still in view. After a compaction it is not.
+	await commands.get("ultracode")!.handler("on", ctx);
+	await turn("announce it again");
+	await commands.get("ultracode")!.handler("off", ctx);
+	await compact("gone");
+	await commands.get("ultracode")!.handler("on", ctx);
+	check("back on after a compaction announces again", (await turn("back"))?.message?.content, `<system-reminder>\n${ENTER_FULL}\n</system-reminder>`);
+	await commands.get("ultracode")!.handler("off", ctx);
+	await turn("drain the exit notice");
 }
 
 // ------------------------------------------- opt-in persists across delivery

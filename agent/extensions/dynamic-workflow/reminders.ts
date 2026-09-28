@@ -16,7 +16,7 @@ export const KEYWORD_MARK = 'The user included the keyword "ultracode"';
  * per-turn one had not, so the loudest of the three was the only one still
  * mandating.
  */
-export const KEYWORD_REMINDER = `${KEYWORD_MARK}, opting this turn into multi-agent orchestration. That is permission to run a workflow without asking first — not an instruction to run one. Judge whether the task's SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, do the work inline. If it does, width comes from counting the task's seams — one agent per deliverable — not from a default number. The keyword removes the need to ask, not the need to decide.`;
+export const KEYWORD_REMINDER = `${KEYWORD_MARK}, opting this turn into multi-agent orchestration. That is permission to run a workflow — not an instruction to run one. Judge whether the task's SHAPE needs a fleet: coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own. If it does not, do the work inline. If it does, width comes from counting the task's seams — one agent per deliverable — not from a default number. The keyword is the opt-in, not the decision.`;
 
 /**
  * Delivered on the turn a workflow's result arrives.
@@ -55,7 +55,7 @@ export const AFTER_RUN =
  * aside.
  */
 export const ENTER_FULL =
-	"Ultracode is on: you may run a workflow without asking first. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. Judge that before you act. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
+	"Ultracode is on: you may run a workflow. That is permission, not an instruction to run one for every task. Reach for a fleet when the task's SHAPE needs it — coverage wider than one context holds, independent verification of a claim you cannot check yourself, a mechanical sweep over many files, or several deliverables that different agents would own — and work inline when it does not. Judge that before you act. When you do run one, count the task's seams and run one agent per seam: a request's bulleted list IS the fan-out, a fleet of one means it was never split, and backend/frontend/cli is an org chart rather than a decomposition. Give each agent a single deliverable and say what finishing looks like: an agent stops when it decides it is done, so its prompt is the only budget it has. See the Workflow tool's **Ultracode** and **Bounding an agent** sections.";
 
 /**
  * The sparse reminder repeats the two rules that actually change behaviour

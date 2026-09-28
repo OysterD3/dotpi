@@ -2875,6 +2875,9 @@ console.log("\n--- no injected text tells the main model what to write ---");
 	// These are the clauses that were taken out; none may come back.
 	// SUBAGENT_PREAMBLE is not here: a script reads a subagent's reply, not the user.
 	const told = /tell the user|say so\b|say the verdict|say which|say what is in flight|answer from it|mention (it|them) to the user|briefly describe/i;
+	// Workflow or inline is the model's call. "Without asking the user first"
+	// turned every un-opted-in task that could use a fleet into a question.
+	const ask = /\bask(ing)? (the user|first)\b/i;
 	const stale = interruptedNotice([], [
 		{ runId: "wf-old", name: "audit", status: "interrupted", cwd: "/p", pid: 1, startedAt: 0, agentCount: 2, usage: emptyUsage() },
 	])!;
@@ -2889,6 +2892,7 @@ console.log("\n--- no injected text tells the main model what to write ---");
 		["the interrupted-run notice", stale],
 	] as const) {
 		check(`${label}: says nothing about what to write`, told.test(text), false);
+		check(`${label}: never sends the workflow decision to the user`, ask.test(text), false);
 	}
 }
 

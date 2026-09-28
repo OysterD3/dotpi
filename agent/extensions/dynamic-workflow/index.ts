@@ -33,7 +33,8 @@
  *        ("dynamic workflow: xhigh + workflow orchestration, this session only")
  *        and standing reminders follow a fixed cadence — full on entry, "still
  *        on" every 10th user turn, exit notice once when it goes off. Changing
- *        the thinking level away from the applied one exits the mode;
+ *        the thinking level away from the applied one exits the mode, unless
+ *        dynamicWorkflow.alwaysOn is set;
  *      - `/effort` offers the same thing as an effort LEVEL: the model's own
  *        levels plus "ultracode", which resolves to xhigh AND the standing
  *        opt-in. pi's own picker cannot carry it — ThinkingLevel is a closed
@@ -74,7 +75,9 @@
  *   dynamicWorkflow.alwaysOn        boolean, default false — start every
  *                                   session in the mode. A default, not a lock:
  *                                   a session toggled off stays off, resumes
- *                                   included. See the setting in config.ts.
+ *                                   included. A thinking-level change or a
+ *                                   model switch does not turn it off. See the
+ *                                   setting in config.ts.
  *   dynamicWorkflow.model           "provider/model-id" for workflow subagents;
  *                                   defaults to the session model
  *   dynamicWorkflow.thinking        thinking level for workflow subagents that
@@ -259,6 +262,30 @@ export interface RestoredBranchState {
 	keywordFired: boolean;
 }
 
+/** A reminder entry's text, whether pi stored its content as a string or as blocks. */
+function reminderText(content: unknown): string {
+	return typeof content === "string"
+		? content
+		: Array.isArray(content)
+			? content.map((block: { text?: string }) => block.text ?? "").join("\n")
+			: "";
+}
+
+/**
+ * Whether an "Ultracode is on" or "still on" reminder is in the part of the
+ * branch a compaction kept: pi keeps the entries from firstKeptEntryId on,
+ * custom messages included, and folds the rest into the summary.
+ */
+export function modeReminderKept(branch: Array<Record<string, any>>, firstKeptEntryId: string | undefined): boolean {
+	const kept = branch.findIndex((entry) => entry.id === firstKeptEntryId);
+	if (kept < 0) return false;
+	return branch.slice(kept).some((entry) => {
+		if (entry.type !== "custom_message" || entry.customType !== ENTRY_TYPE) return false;
+		const text = reminderText(entry.content);
+		return text.includes("Ultracode is") && !text.includes("Ultracode is off");
+	});
+}
+
 /**
  * Rebuild mode state from a resumed branch: toggle entries (type "custom") and
  * delivered reminders, which pi persists as type "custom_message" entries —
@@ -267,11 +294,12 @@ export interface RestoredBranchState {
 export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<string, any>>): RestoredBranchState {
 	let on = false;
 	let announced = false;
+	let outOfView = false;
 	let turns = 0;
 	let previousLevel: string | undefined;
 	let keywordFired = false;
 	let toggled = false;
-	for (const entry of branch) {
+	for (const [index, entry] of branch.entries()) {
 		if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
 			toggled = true;
 			const data = entry.data as ToggleEntry | undefined;
@@ -284,16 +312,13 @@ export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<stri
 			// resurrect an opt-in the user already turned off.
 			if (!on) keywordFired = false;
 		} else if (entry.type === "custom_message" && entry.customType === ENTRY_TYPE) {
-			const content = entry.content;
-			const text =
-				typeof content === "string"
-					? content
-					: Array.isArray(content)
-						? content.map((block: { text?: string }) => block.text ?? "").join("\n")
-						: "";
-			if (text.includes("Ultracode is off")) announced = false;
-			else if (text.includes("Ultracode is")) {
+			const text = reminderText(entry.content);
+			if (text.includes("Ultracode is off")) {
+				announced = false;
+				outOfView = false;
+			} else if (text.includes("Ultracode is")) {
 				announced = true;
+				outOfView = false;
 				turns = 0;
 			}
 			// Reminders combine onto one message (keyword first, see
@@ -302,13 +327,16 @@ export function restoreFromBranch(mode: UltracodeMode, branch: Array<Record<stri
 			// still counts. By the reminder's fixed start, not its whole text, so a
 			// session saved before the reminder was reworded still counts too.
 			if (text.includes(KEYWORD_MARK)) keywordFired = true;
+		} else if (entry.type === "compaction") {
+			// Same as the live session_compact handler below.
+			if (announced && !modeReminderKept(branch.slice(0, index), entry.firstKeptEntryId)) outOfView = true;
 		} else if (entry.type === "message" && entry.message?.role === "user" && on && announced) {
 			turns++;
 		}
 	}
 	// A pending exit: the mode is off but the model was told it is on and the
 	// exit notice never went out before the session ended.
-	mode.restore({ on, announced, turnsSinceReminder: turns, exitPending: announced });
+	mode.restore({ on, announced, outOfView, turnsSinceReminder: turns, exitPending: announced });
 	return { previousLevel: on ? previousLevel : undefined, keywordFired, toggled };
 }
 
@@ -731,10 +759,30 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.notify(`Dynamic workflow off — thinking level changed to ${level}`, "info");
 	};
 
+	/**
+	 * With alwaysOn, a level change is only a level change: the mode stays on
+	 * at the new level, and only /ultracode off leaves it. A model switch
+	 * changes the level too (pi re-applies the default or per-model level and
+	 * clamps it), so without this a standing opt-in ended mid-session, and the
+	 * "off" it logged kept every resume of that session off as well.
+	 */
+	const followLevel = (ctx: ExtensionContext, level: string) => {
+		if (!settings.alwaysOn) return leaveForLevel(ctx, level);
+		appliedLevel = level;
+	};
+
+	// Measured: with the mode on and the entry reminder compacted away, 3 of 3
+	// trials worked inline on a task that 3 of 3 sent to a workflow while the
+	// reminder was still in view. A mode the model cannot see is off in effect.
+	pi.on("session_compact", (event, ctx) => {
+		const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
+		if (!modeReminderKept(branch, event.compactionEntry.firstKeptEntryId)) mode.reminderOutOfView();
+	});
+
 	pi.on("thinking_level_select", (event, ctx) => {
 		if (settingLevel || !mode.isOn()) return;
 		if (event.level === appliedLevel) return;
-		leaveForLevel(ctx, event.level);
+		followLevel(ctx, event.level);
 	});
 
 	const setLevel = (level: string) => {
@@ -763,7 +811,12 @@ export default function (pi: ExtensionAPI) {
 	 */
 	const enable = (ctx: ExtensionContext, asDefault = false) => {
 		if (mode.isOn()) {
-			if (!asDefault) ctx.ui.notify("Current effort level: dynamic workflow (xhigh + workflow orchestration)", "info");
+			if (asDefault) return;
+			// With alwaysOn the mode can be on at a lower level (see followLevel),
+			// so asking for it again asks for its level again.
+			setLevel("xhigh");
+			appliedLevel = pi.getThinkingLevel();
+			ctx.ui.notify(`Current effort level: ${currentLevelLabel()}`, "info");
 			return;
 		}
 		const model = ctx.model;
@@ -974,7 +1027,7 @@ export default function (pi: ExtensionAPI) {
 			if (argument === "status") {
 				ctx.ui.notify(
 					mode.isOn()
-						? "Current effort level: dynamic workflow (xhigh + workflow orchestration; this session only)"
+						? `Current effort level: dynamic workflow (${appliedLevel ?? pi.getThinkingLevel()} + workflow orchestration; this session only)`
 						: "Dynamic workflow is off. /dynamic-workflow to turn it on.",
 					"info",
 				);
@@ -1052,7 +1105,7 @@ export default function (pi: ExtensionAPI) {
 			// Staying on the level ultracode itself applied is not leaving it —
 			// same rule the event handler uses, so picking "xhigh" while the mode
 			// is on keeps the mode rather than silently dropping it.
-			if (wasApplied !== undefined && applied !== wasApplied) leaveForLevel(ctx, applied);
+			if (wasApplied !== undefined && applied !== wasApplied) followLevel(ctx, applied);
 			ctx.ui.notify(applied === picked ? `Effort level: ${applied}` : `Effort level: ${applied} (${picked} is not available on this model)`, "info");
 		},
 	});

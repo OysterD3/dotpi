@@ -214,6 +214,10 @@ export interface UltracodeSettings {
 	 * It is a default, not a lock. Turning the mode off in a session turns it off
 	 * for that session, and a resume of that session keeps it off — the branch
 	 * records what was chosen, and this only applies where nothing was.
+	 *
+	 * Only /ultracode off turns it off. With this set, a thinking-level change
+	 * (pi's picker, the cycle key, a plain level from /effort, or a model switch
+	 * that moves the level) keeps the mode on at the new level.
 	 */
 	alwaysOn: boolean;
 	/**

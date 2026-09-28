@@ -1696,15 +1696,16 @@ level is untouched — the keyword and the session mode are independent.
 The **session mode** (`/ultracode`, or `/ultracode on|off|status`) raises thinking to xhigh for the
 session, and standing reminders follow a fixed cadence — the full "Ultracode is on" reminder on
 entry, a sparse nudge every 10th user turn, and one exit notice when it goes off. Changing the
-thinking level away from the applied one exits the mode. The mode survives session resume: toggles
-are replayed from the branch, and delivered reminders are counted so a resumed session continues the
-cadence instead of re-announcing.
+thinking level away from the applied one exits the mode (not with `alwaysOn`, see below). The mode
+survives session resume: toggles are replayed from the branch, and delivered reminders are counted so
+a resumed session continues the cadence instead of re-announcing.
 
 **Ultracode is also an effort level.** `/effort` lists what the current model supports and then
 `ultracode — xhigh + workflow orchestration, this session only`, and picking it is `/ultracode on`:
 xhigh (or as close as the model goes) plus the standing opt-in. Picking any plain level from the
 same list leaves the mode again, keeping the level you just chose rather than restoring the
-pre-ultracode one — the choice that got you there is the choice.
+pre-ultracode one — the choice that got you there is the choice. With `alwaysOn`, the plain level is
+applied and the mode stays on.
 
 ```
 Effort level
@@ -1747,6 +1748,23 @@ an effort level now — something you set once and stop thinking about — where
 typed at the task in front of you. A standing opt-in with no moment of judgement in it decays into
 "the mode is on, so run a fleet". The reminders once also told the model to say that verdict in one
 line; that is gone, because extensions here leave the model's output alone, tone aside.
+
+**Workflow or inline is the model's call, never a question.** Without an opt-in, the tool
+description used to say *"do NOT call this tool without asking the user first"*, and the permission
+lines said *"without asking first"*. So when the model saw no opt-in, it put the choice to the user:
+in a live probe with the mode off and no shell tool, 6 of 6 trials asked *"May I use a workflow?"*.
+Now the rule without an opt-in is to work inline, no text mentions asking, and the unit suite fails
+if a reminder or the description brings it back.
+
+**A compaction announces the mode again.** The full reminder goes out on the first turn, and the
+sparse one only every 10th turn. A compaction folds the full one into a summary, so until the next
+sparse one the model could not see that the mode was on — and the description forbids a workflow
+without that. Measured with the mode on: 3 of 3 trials sent a 15-module test task to a workflow while
+the reminder was in view, and 3 of 3 did it inline after a compaction. Now, when a compaction takes
+the last reminder out of view (pi keeps a recent tail, from `firstKeptEntryId` on, and a reminder
+there is still seen), the next turn with the mode on gets the full reminder again — live, on resume,
+and after switching the mode off and on across the compaction. An exit notice owed before the
+compaction is still sent.
 
 **What the mode means was rewritten after measuring it.** It used to say *"optimize for the most
 exhaustive, correct answer"*, *"use the Workflow tool on every substantive task"* and *"token cost
@@ -2195,6 +2213,12 @@ session keeps it off. The branch records what was chosen and the default only ap
 was, which is the difference between the two. Nothing is announced at startup either — the
 `✦ dynamic workflow` badge is the surface, and a notice on every session start is exactly the noise a
 standing default exists to remove.
+
+**With `alwaysOn`, only `/ultracode off` turns the mode off.** A thinking-level change — pi's picker,
+the cycle key, a plain level from `/effort`, or a model switch, which re-applies the default or
+per-model level and clamps it — keeps the mode on at the new level. Without the setting, a level
+change still leaves the mode as described above. Before this, a model switch that moved the level
+ended a standing opt-in mid-session, and the "off" it logged kept every resume of that session off.
 
 One consequence worth stating: an `alwaysOn` session records **no** level to restore, so
 `/ultracode off` drops the orchestration and leaves the thinking level where it is. There is nothing
