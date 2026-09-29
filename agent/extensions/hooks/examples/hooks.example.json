@@ -1,0 +1,48 @@
+{
+  "description": "Example hooks. Copy to ~/.pi/agent/hooks.json for every project, or to <project>/.pi/hooks.json for one trusted project. The scripts are beside this file; /hooks shows what loaded.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$HOME/.pi/agent/extensions/hooks/examples/git-context.py\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$HOME/.pi/agent/extensions/hooks/examples/block-force-push.py\"" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "python3 \"$HOME/.pi/agent/extensions/hooks/examples/check-json.py\"" }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          { "type": "command", "command": "osascript -e 'display notification \"pi is waiting for you\" with title \"pi\"'" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "model": "openai-codex/gpt-6-luna",
+            "prompt": "The agent is about to stop. Its last message is in last_assistant_message below. If that message says it changed code but reports no test or check run after the change, answer not ok and name the check to run. Otherwise answer ok.\n\n$ARGUMENTS",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

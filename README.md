@@ -991,6 +991,13 @@ unchanged. `~/.claude/hooks/bash-guard.py` works as it is:
 }
 ```
 
+Worked examples are in `agent/extensions/hooks/examples/`. `hooks.example.json` — copy it to
+`~/.pi/agent/hooks.json`, or to a trusted project's `.pi/hooks.json` — sets up one hook for each
+common kind of answer: a SessionStart script that gives the model the git branch and uncommitted
+files (`additionalContext`), a Bash guard that blocks force pushes (exit 2), a check that a changed
+`.json` file still parses (`decision: "block"` after the tool ran), a macOS notification, and a Stop
+`prompt` hook on a small model. Nothing in that folder loads until you copy the config.
+
 Four files, merged rather than overriding each other: `hooks` in `~/.pi/agent/settings.json`,
 `~/.pi/agent/hooks.json`, and the same two under a project's `.pi/`. A `hooks.json` may be the bare
 event map or a Claude Code plugin's `{ "description", "hooks" }` file. The same handler in two files
