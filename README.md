@@ -151,14 +151,6 @@ stores the numbers rather than the drawing, so it re-renders correctly after a t
 | `config.ts` | Channel names, meter glyphs, thresholds |
 | `usage.test.ts` | Unit coverage |
 
-**`agent/extensions/compaction/`** — writes the compaction summary with `openai-codex/gpt-6.1-sol` at
-medium thinking. Without it, pi uses the session model at the session thinking level, with no prompt
-cache. On gpt-6-astra at xhigh, one compaction cost $2.8-6.4. The extension calls pi's own exported
-`compact()`, so the summary prompt and the file lists do not change, and pi records the usage on the
-compaction entry, where `/usage` reads it. The model and the level are constants in `index.ts`. If the
-model is missing or the call fails, pi runs its built-in compaction on the session model. This call
-has no retry, because an extension cannot reach pi's retry settings.
-
 **`agent/extensions/lsp/`** — registers an `lsp_diagnostics` tool: real compiler errors and
 warnings from language servers, so the agent can verify an edit without running a build. pi has
 no LSP support of its own, so this is a complete client.
