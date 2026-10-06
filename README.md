@@ -151,6 +151,14 @@ stores the numbers rather than the drawing, so it re-renders correctly after a t
 | `config.ts` | Channel names, meter glyphs, thresholds |
 | `usage.test.ts` | Unit coverage |
 
+**`agent/extensions/compaction/`** — writes the compaction summary with `openai-codex/gpt-6.1-sol` at
+medium thinking. Without it, pi uses the session model at the session thinking level, with no prompt
+cache. On gpt-6-astra at xhigh, one compaction cost $2.8-6.4. The extension calls pi's own exported
+`compact()`, so the summary prompt and the file lists do not change, and pi records the usage on the
+compaction entry, where `/usage` reads it. The model and the level are constants in `index.ts`. If the
+model is missing or the call fails, pi runs its built-in compaction on the session model. This call
+has no retry, because an extension cannot reach pi's retry settings.
+
 **`agent/extensions/lsp/`** — registers an `lsp_diagnostics` tool: real compiler errors and
 warnings from language servers, so the agent can verify an edit without running a build. pi has
 no LSP support of its own, so this is a complete client.
@@ -3260,7 +3268,6 @@ Third-party packages are listed in `settings.packages`. `pi install` vendors the
 | Package | What it does | Configured by |
 | --- | --- | --- |
 | `pi-provider-qoder` | The Qoder provider. Pinned to the fork's `main`: upstream v0.4.6 plus what upstream hasn't merged — one billed request set per turn instead of one per model call, pi's session id sent as Qoder's `session_id` (as qodercli does), `auth.json` written over the file as it is (upstream's startup copy reverted other providers' logins on `/login qoder`), and the system prompt and tools read from pi 0.86+'s transcript even when an older pi-ai resolves first (without that the model gets neither). Model ids are upstream's friendly names: `qoder/Ultimate`, not `qoder/ultimate`. | `models.providers.qoder` |
-| `pi-openai-server-compaction` | Codex-style **server-side** compaction for OpenAI models: sends `compaction_trigger` through `POST /v1/responses` and gets an encrypted `compaction` item back, instead of a text summary. | `agent/openai-server-compaction.json` — **not** `settings.compaction` |
 | `pi-web-access` | Web search, URL fetch, repo clone, PDF and video extraction. Replaced the removed `web-search`/`web-fetch` extensions. | `web-search.json` (gitignored, and in `permissions.deny`) |
 | `pi-cache-optimizer` | Cache diagnostics and provider-specific request optimizations. Codex skips prompt rewrites; cache hits are not guaranteed. Run `/cache-optimizer stats` or `/cache-optimizer doctor` after `/reload`. | `agent/pi-cache-optimizer-config.json` and local statistics (gitignored); the custom footer hides its status chip. |
 | `@ryan_nookpi/pi-extension-codex-fast-mode` | `/codex-fast` toggle. | `agent/state/codex-fast-mode.json` (gitignored) |
@@ -3268,20 +3275,6 @@ Third-party packages are listed in `settings.packages`. `pi install` vendors the
 **Use exact versions or commits for reproducible installs.** The lockfile lives in `agent/npm/`,
 which is gitignored, so floating packages can resolve to a different build on another machine.
 Bump pins deliberately; the package entries are the tracked record.
-
-**Compaction moved out of tracked config.** The local `compaction` extension was removed because
-`pi-openai-server-compaction` registers the same `session_before_compact` hook and one would silently
-win. The surviving `"compaction"` block in settings.json now configures only pi's *built-in* fallback
-path; the replacement reads none of it. Its knobs — `enabled`, `thresholdRatio` (0.7),
-`compactThreshold`, `usePreviousResponseId`, `notify` — come from `~/.pi/agent/openai-server-compaction.json`,
-which this repo does not create. Create it to retune, and note it is gitignored and deny-listed
-because the same file can carry an API key.
-
-**Known gap:** `/usage` no longer shows a compaction row. The old extension called pi's exported
-`compact()`, so pi recorded the spend on the session entry where `usage/collect.ts` finds it. The
-replacement pays for its own calls and reports usage nested under `details`, and emits nothing on the
-`usage:spend` channel, so that spend is invisible to the report. Total understates real cost by
-whatever compaction consumed.
 
 ## Install on a new machine
 
