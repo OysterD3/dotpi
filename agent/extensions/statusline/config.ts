@@ -88,6 +88,7 @@ export const CONFIG = {
 		barError: "error",
 		cached: "mdCode",
 		out: "warning",
+		tps: "mdLink",
 		reset: "dim",
 		/** Active workflow runs, appended below everything else. */
 		workflow: "accent",

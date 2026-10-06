@@ -2,7 +2,7 @@
  * Rich statusline (custom footer) for pi.
  *
  * Line 1:  <model>  │  <cwd>  │  <branch>  │  +added,-removed  │  v<pi-version>
- * Line 2:  Context: [████····] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>
+ * Line 2:  Context: [████····] <tokens>/<window> (<pct>%)  Cached: <c>  In: <i>  Out: <o>  Total: <t>  TPS: <r>
  * Line 3:  Weekly: [████····] <pct>% (resets <time>)   [further windows, if any]
  * Line 4:  Credits: [████····] <left> left (resets <date>)   Session: <spent>   (Qoder models only)
  * Last:    one line per active workflow run, while any is in flight
@@ -21,6 +21,11 @@
  *   - git diff (+/-)             : ./git.ts
  *   - subscription limits        : ./usage.ts
  *   - Qoder credits              : ./credits.ts
+ *
+ * TPS is the last finished reply's output tokens over its stream time, from
+ * message_start to message_end. That window includes time to first token and any
+ * hidden reasoning, which `usage.output` counts too. It is blank until a reply
+ * finishes in this session, and a failed or aborted reply leaves it unchanged.
  *
  * Line 3 appears only when the provider actually reports limit windows. Each window is
  * labelled by its own reported duration, not by slot order — a Codex account reports
@@ -51,9 +56,11 @@ import {
 	formatCwd,
 	formatTokens,
 	limitSegment,
+	formatTps,
 	meter,
 	meterColor,
 	paint,
+	tokensPerSecond,
 } from "./render.ts";
 import { createUsageReader } from "./usage.ts";
 
@@ -76,7 +83,28 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", () => credits?.markStale());
 	pi.on("session_tree", () => credits?.markStale());
 
+	// The last finished reply's tokens per second, and when the current reply started.
+	let tps: number | undefined;
+	let replyStartedAt: number | undefined;
+	let requestRender: (() => void) | undefined;
+	pi.on("message_start", (event) => {
+		if (event.message.role === "assistant") replyStartedAt = Date.now();
+	});
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant" || replyStartedAt === undefined) return;
+		const message = event.message as AssistantMessage;
+		const durationMs = Date.now() - replyStartedAt;
+		replyStartedAt = undefined;
+		if (message.stopReason === "error" || message.stopReason === "aborted") return;
+		const rate = tokensPerSecond(message.usage.output, durationMs);
+		if (rate === undefined) return;
+		tps = rate;
+		requestRender?.();
+	});
+
 	pi.on("session_start", (_event, ctx) => {
+		tps = undefined;
+		replyStartedAt = undefined;
 		if (ctx.mode !== "tui") return;
 
 		const gitDiff = makeGitDiffCounter(ctx.cwd);
@@ -86,6 +114,8 @@ export default function (pi: ExtensionAPI) {
 			const usage = CONFIG.showLimits ? createUsageReader(ctx, () => tui.requestRender()) : null;
 			const creditsReader = CONFIG.showLimits ? createCreditsReader(ctx, () => tui.requestRender()) : null;
 			credits = creditsReader;
+			const rerender = () => tui.requestRender();
+			requestRender = rerender;
 
 			// ultracode re-announces on every panel tick while runs are live and
 			// once more when the last one settles, so this both fills and clears
@@ -142,6 +172,7 @@ export default function (pi: ExtensionAPI) {
 					usage?.dispose();
 					creditsReader?.dispose();
 					if (credits === creditsReader) credits = null;
+					if (requestRender === rerender) requestRender = undefined;
 				},
 				invalidate() {},
 				render(width: number): string[] {
@@ -220,7 +251,10 @@ export default function (pi: ExtensionAPI) {
 						paint(theme, CONFIG.colors.label, "  Out: ") +
 						paint(theme, CONFIG.colors.out, formatTokens(output)) +
 						paint(theme, CONFIG.colors.label, "  Total: ") +
-						theme.bold(formatTokens(total));
+						theme.bold(formatTokens(total)) +
+						(tps === undefined
+							? ""
+							: paint(theme, CONFIG.colors.label, "  TPS: ") + paint(theme, CONFIG.colors.tps, formatTps(tps)));
 
 					const lines = [truncateToWidth(line1, width), truncateToWidth(line2, width)];
 

@@ -28,6 +28,21 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1000000)}M`;
 }
 
+/**
+ * Output tokens per second over a reply's stream, or undefined when the reply
+ * cannot give a real rate: no output, or a stream too short to time (pi emits
+ * start and end back-to-back for a reply that never streamed).
+ */
+export function tokensPerSecond(output: number, durationMs: number): number | undefined {
+	if (output <= 0 || durationMs < 200) return undefined;
+	return output / (durationMs / 1000);
+}
+
+/** "54" / "8.3": tenths only while they still mean something. */
+export function formatTps(tps: number): string {
+	return tps < 10 ? tps.toFixed(1) : `${Math.round(tps)}`;
+}
+
 export function formatCwd(cwd: string, home: string | undefined): string {
 	if (!home) return cwd;
 	const rel = relative(resolve(home), resolve(cwd));
