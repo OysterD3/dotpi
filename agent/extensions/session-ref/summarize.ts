@@ -1,9 +1,6 @@
 /**
  * The summary call: tool-less, over the referenced session's flattened
- * branch, on the session model (model.ts selectModel — recap's policy,
- * copied). Mirrors recap's generate.ts because it is the same kind of call;
- * the differences are the prompt (a structured handoff, not a one-liner) and
- * the input (a foreign session's branch, not the current one's).
+ * branch, on the session model (model.ts selectModel).
  */
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
@@ -15,8 +12,8 @@ import { buildTranscript, type TranscriptEntry } from "./transcript.ts";
 
 export type SummaryOutcome = { ok: true; text: string } | { ok: false; reason: string };
 
-/** Flattened spend from the summary call, for the `usage:spend` channel — the
- * same shape recap announces. A summary is a real model call that leaves no
+/** Flattened spend from the summary call, for the `usage:spend` channel, in the
+ * shape the usage extension reads. A summary is a real model call that leaves no
  * usage anywhere in the session, so without this it is spend nothing can see. */
 export type SpendReport = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; cost: number };
 

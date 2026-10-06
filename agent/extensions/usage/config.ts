@@ -9,8 +9,8 @@ export const ENTRY_TYPE = "usage";
  *
  * Named for the question, not for one answer to it. An earlier version was
  * `ultracode:spend`, which made workflow agents visible and left every other
- * extension that bills money invisible — `recap` and `goal` both call
- * `completeSimple` directly and record nothing on the session, so a report
+ * extension that bills money invisible — `goal` calls `completeSimple`
+ * directly and records nothing on the session, so a report
  * wired to a single producer understates the bill, which is the one direction
  * it must never be wrong in.
  *

@@ -1,8 +1,8 @@
 /**
  * Resolving the summariser model, using pi's own `--model` rules reproduced
  * against the ModelRegistry list (pi's resolver is not exported to
- * extensions). The same transcription the recap, goal, permissions,
- * subagents, and dynamic-workflow extensions carry; duplicated here so this
+ * extensions). The same transcription the goal, permissions, subagents,
+ * and dynamic-workflow extensions carry; duplicated here so this
  * extension is independently installable.
  *
  * A reference may end in `:level` — pi's `--model` syntax, which a configured
@@ -85,7 +85,7 @@ function matchReference<M extends ModelLike>(reference: string, models: readonly
 /**
  * A full `provider/id` name that no listed model has, built as a custom model —
  * pi's `buildFallbackModel`, so a full name works here as it does for
- * `pi --model`. The same transcription recap's model.ts carries.
+ * `pi --model`.
  *
  * The provider must be one the list knows: the custom model copies the first
  * listed model of that provider and changes only the id and the name. An
@@ -148,7 +148,7 @@ export function resolveModel<M extends ModelLike>(reference: string, models: rea
  * choose. With nothing configured, the session model is used: the default
  * configured nothing, so it must not be able to break anything. session-ref
  * has no model setting, so summarize.ts passes nothing and the summary runs
- * on the session model. The same policy, copied, as recap's selectModel.
+ * on the session model.
  */
 export function selectModel<M extends ModelLike>(
 	configured: string | undefined,

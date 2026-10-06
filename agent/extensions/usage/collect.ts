@@ -13,7 +13,7 @@
  *     pi makes on your behalf, recorded on the compaction/branch_summary entry
  *     rather than as messages.
  *   - extensions that call a model directly. Background workflow agents are
- *     separate pi processes; `recap` and `goal` call `completeSimple` and store
+ *     separate pi processes; `goal` calls `completeSimple` and stores
  *     only a display entry. None of it can be recovered from the file, so each
  *     announces on SPEND_CHANNEL and AnnouncedSpendLog keeps the tally.
  *   - the same, after a restart. An announcement is an event, so a `pi -c` into
@@ -400,7 +400,7 @@ export function collectUsage(entries: readonly unknown[]): SessionUsage {
  * folds in as zero and reports a fleet that cost fifty dollars as free.
  */
 export interface AnnouncedSpend {
-	/** Row label, and the accumulation key: "workflows", "recap", "goal". */
+	/** Row label, and the accumulation key: "workflows", "goal". */
 	source: string;
 	usage: {
 		input?: number;
@@ -428,7 +428,7 @@ export interface AnnouncedSpend {
 	 * on every report without the numbers growing each time it is asked, and
 	 * what lets the same run be reported live from memory and later from disk
 	 * and still be billed once. A producer that only ever streams increments
-	 * (recap, goal, the permissions classifier) has nothing to key on and omits
+	 * (goal, the permissions classifier) has nothing to key on and omits
 	 * it.
 	 */
 	key?: string;
@@ -570,8 +570,7 @@ export class AnnouncedSpendLog {
  *
  * Kept out of collectUsage because it comes from events rather than the session
  * file: this is the spend nothing in the transcript can corroborate — workflow
- * agents are other processes, and recap and goal record their calls nowhere at
- * all.
+ * agents are other processes, and goal records its calls nowhere at all.
  *
  * An announcement whose `source` matches a tool that already spent is merged
  * into that tool's row rather than added beside it. One producer reaching the

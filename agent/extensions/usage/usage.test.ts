@@ -238,7 +238,7 @@ console.log("\n--- collect: a lone child is dropped even with nothing announced 
 
 	// With something else announcing, the same report must look the same.
 	const log = new AnnouncedSpendLog();
-	log.add({ source: "recap", calls: 3, usage: { cost: 0.036 } });
+	log.add({ source: "goal", calls: 3, usage: { cost: 0.036 } });
 	const withOther = withAnnounced(collected, log.rows());
 	check("and it does not reappear when an unrelated source spends", withOther.tools[0]?.children, undefined);
 }
@@ -285,9 +285,9 @@ console.log("\n--- collect: a keyed announcement replaces, it does not accumulat
 	check("broken down per run", log.rows()[0]?.children?.map((child) => child.label), ["sweep (10:00)", "review (11:00)"]);
 
 	// Increments from another producer are untouched by any of this.
-	log.add({ source: "recap", calls: 1, usage: { cost: 0.01 } });
-	log.add({ source: "recap", calls: 1, usage: { cost: 0.01 } });
-	check("unkeyed sources still accumulate", log.rows().find((row) => row.label === "recap")?.totals.cost, 0.02);
+	log.add({ source: "goal", calls: 1, usage: { cost: 0.01 } });
+	log.add({ source: "goal", calls: 1, usage: { cost: 0.01 } });
+	check("unkeyed sources still accumulate", log.rows().find((row) => row.label === "goal")?.totals.cost, 0.02);
 }
 
 console.log("\n--- collect: a run the transcript already paid for is not billed again ---");
@@ -337,12 +337,12 @@ console.log("\n--- collect: a run the transcript already paid for is not billed 
 
 console.log("\n--- collect: an announcement from a non-tool keeps its own row ---");
 {
-	// recap and goal announce but are not tools, so there is nothing to merge
-	// into and they must not be swallowed.
+	// goal announces but is not a tool, so there is nothing to merge into
+	// and it must not be swallowed.
 	const log = new AnnouncedSpendLog();
-	log.add({ source: "recap", calls: 3, usage: { input: 24_000, cost: 0.036 } });
+	log.add({ source: "goal", calls: 3, usage: { input: 24_000, cost: 0.036 } });
 	const merged = withAnnounced(collectUsage([]), log.rows());
-	check("it stands alone", merged.announced?.map((row) => row.label), ["recap"]);
+	check("it stands alone", merged.announced?.map((row) => row.label), ["goal"]);
 	check("with its calls intact", merged.announced?.[0]?.totals.calls, 3);
 	check("and reaches the total", Number(merged.total.cost.toFixed(4)), 0.036);
 }
@@ -481,15 +481,15 @@ console.log("\n--- collect: workflow spend folded in ---");
 	check("and no announced-spend footnote", withAnnounced(base, []).hasAnnounced, false);
 
 	// Increments, not snapshots: a second announcement from the same source adds
-	// to the first rather than replacing it. recap fires repeatedly in one
+	// to the first rather than replacing it. goal fires repeatedly in one
 	// session, so replacing would report only the most recent call.
 	log.add({ source: "workflows", calls: 2, usage: { cost: 0.5 } });
 	check("a second announcement accumulates", log.rows()[0]?.totals.cost, 13);
 	check("and its calls with it", log.rows()[0]?.totals.calls, 42);
 
 	// Sources are separate rows, so one producer cannot hide another.
-	log.add({ source: "recap", usage: { cost: 0.02 } });
-	check("a second source is its own row", log.rows().map((row) => row.label), ["workflows", "recap"]);
+	log.add({ source: "goal", usage: { cost: 0.02 } });
+	check("a second source is its own row", log.rows().map((row) => row.label), ["workflows", "goal"]);
 	check("calls default to one", log.rows()[1]?.totals.calls, 1);
 
 	// Malformed announcements degrade rather than crash or corrupt the table.
@@ -528,8 +528,8 @@ console.log("\n--- collect: workflow spend folded in ---");
 	const perRun = new AnnouncedSpendLog();
 	perRun.add({ source: "workflows", detail: "code-review (16:01)", calls: 24, usage: { input: 540_000, cost: 5.2 } });
 	perRun.add({ source: "workflows", detail: "migrate-parser (14:03)", calls: 16, usage: { input: 360_000, cost: 2.8 } });
-	perRun.add({ source: "recap", usage: { cost: 0.01 } });
-	const [workflows, recap] = perRun.rows();
+	perRun.add({ source: "goal", usage: { cost: 0.01 } });
+	const [workflows, goal] = perRun.rows();
 	check("the source row still totals them", Number(workflows?.totals.cost.toFixed(2)), 8);
 	check("with a child per run, costliest first", workflows?.children?.map((row) => row.label), [
 		"code-review (16:01)",
@@ -537,7 +537,7 @@ console.log("\n--- collect: workflow spend folded in ---");
 	]);
 	check("each carrying its own cost", workflows?.children?.map((row) => row.totals.cost), [5.2, 2.8]);
 	check("and its own calls", workflows?.children?.map((row) => row.totals.calls), [24, 16]);
-	check("no detail, no children", recap?.children, undefined);
+	check("no detail, no children", goal?.children, undefined);
 	// A lone run that IS its parent earns no line. The log emits it regardless —
 	// it cannot know whether the finished row will also hold a tool result's
 	// spend — so the rule is applied by withAnnounced, against the real parent.

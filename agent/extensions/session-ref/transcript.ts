@@ -1,9 +1,7 @@
 /**
  * Flattening a foreign session's branch into plain text.
  *
- * Adapted from the recap extension's transcript.ts (same flattening rules, so
- * a session reads the same whether it is being recapped or referenced), with
- * one difference: the budget arrives in CHARACTERS decided by the caller,
+ * The budget arrives in CHARACTERS decided by the caller,
  * because session-ref budgets against the context actually left in the CURRENT
  * session, not against the reading model's window. When the budget is tight
  * the OLDEST messages drop first — the end of a session is where it landed.
@@ -105,10 +103,8 @@ function truncationNotice(dropped: number): string {
 /**
  * Flatten and fit to `budgetChars`, dropping the oldest sections first.
  *
- * The budget is a CAP, not a preference. Recap's version of this loop keeps
- * the newest section unconditionally, which is harmless there (the budget is
- * half a model window) — here the budget can be a sliver of remaining
- * context, and a single pasted-file-sized message must not sail through it.
+ * The budget is a CAP, not a preference. The budget can be a sliver of
+ * remaining context, and a single pasted-file-sized message must not sail through it.
  * When even the newest section is over budget on its own, its TAIL is kept —
  * the end of a message is where it landed — behind an explicit notice.
  */

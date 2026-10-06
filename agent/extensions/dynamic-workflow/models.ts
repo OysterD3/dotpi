@@ -10,8 +10,7 @@
  * with a clear message instead of silently running on the wrong model.
  *
  * The matching rules are pi's own `--model` rules, reproduced against the
- * ModelRegistry list (pi's resolver is not exported to extensions) — the same
- * transcription the recap extension uses:
+ * ModelRegistry list (pi's resolver is not exported to extensions):
  *
  *   1. canonical `provider/id`            exact, case-insensitive
  *   2. `provider/id` split               exact provider + exact id

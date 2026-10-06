@@ -6,7 +6,7 @@
  *   ~/.pi/agent/settings.json    yours, applies everywhere
  *   <cwd>/.pi/settings.json      the project's
  *
- * pi's `Settings` type has no `goal` field, so — as with the permissions, recap
+ * pi's `Settings` type has no `goal` field, so — as with the permissions
  * and add-dir extensions — this relies on pi preserving unknown keys when it
  * rewrites the file (its SettingsManager merges modified fields over the parsed
  * current file, so foreign keys survive).

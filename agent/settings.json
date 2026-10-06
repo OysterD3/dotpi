@@ -77,8 +77,5 @@
   },
   "goal": {
     "model": "openai-codex/gpt-6-astra:medium"
-  },
-  "recap": {
-    "model": "openai-codex/gpt-6-luna:low"
   }
 }

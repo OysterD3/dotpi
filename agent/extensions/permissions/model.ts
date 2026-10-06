@@ -28,7 +28,7 @@
  * deterministic table, and being told which model was meant is the difference
  * between noticing that and not.
  *
- * Deliberately duplicated from the goal and recap extensions rather than shared —
+ * Deliberately duplicated from the goal extension rather than shared —
  * every extension in this repo is independently installable, so a file may not
  * import across extension boundaries.
  */

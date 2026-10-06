@@ -15,8 +15,7 @@
  *   budget.ts    threshold crossing/latching and checkpoint wording (pure)
  *   settings.ts  the `usage.budget` settings block
  *
- * The report is written into the transcript as a custom entry, the way /recap
- * is: it is information for you, not context for the model, and a custom entry
+ * The report is written into the transcript as a custom entry: it is information for you, not context for the model, and a custom entry
  * never enters LLM context. That also means scrolling back to an earlier
  * `/usage` shows what the session had spent AT THAT POINT, which is the useful
  * behaviour when you are trying to work out what a particular stretch cost.

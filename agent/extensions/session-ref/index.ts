@@ -22,9 +22,9 @@
  *   autocomplete.ts  the `#` provider, stacked on pi's own (pure rules)
  *   marker.ts        `#[Name·id]` in, quoted name out (pure)
  *   sessions.ts      picker rows and loading the chosen branch (pure rules)
- *   transcript.ts    branch -> budgeted plain text (recap's flattening, adapted)
+ *   transcript.ts    branch -> budgeted plain text
  *   summarize.ts     the handoff-summary call
- *   model.ts         model policy (recap's, copied)
+ *   model.ts         model policy
  *   prompts.ts       summariser prompt + the injected block
  *   config.ts        budgets and thresholds
  */
@@ -59,8 +59,8 @@ export type Listers = {
 };
 
 /**
- * pi.events channel for announcing model spend — the same string contract the
- * recap and usage extensions share. With no subscriber it goes
+ * pi.events channel for announcing model spend — the string contract the usage
+ * extension reads. With no subscriber it goes
  * nowhere; with the usage extension installed, the summary call's cost shows
  * up in /usage instead of being spend nothing can see.
  */

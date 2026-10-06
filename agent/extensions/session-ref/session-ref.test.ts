@@ -178,7 +178,7 @@ console.log("\n--- the injected block ---");
 
 // -------------------------------------------------------- model selection policy
 
-console.log("\n--- selectModel: the recap policy, copied ---");
+console.log("\n--- selectModel: the policy ---");
 {
 	const M = (provider: string, id: string) => ({ provider, id, name: id, contextWindow: 200_000 });
 	const MODELS = [M("openai-codex", "gpt-5.6-luna"), M("anthropic", "claude-sonnet-5")];

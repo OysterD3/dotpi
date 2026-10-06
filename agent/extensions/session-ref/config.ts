@@ -12,7 +12,7 @@
 export const MESSAGE_TYPE = "session-ref";
 
 export const CONFIG = {
-	/** The estimate used everywhere tokens are shown; recap uses the same. */
+	/** The estimate used everywhere tokens are shown; */
 	charsPerToken: 4,
 
 	/** Picker rows shown before the rest collapse into the search hint. */
@@ -56,7 +56,6 @@ export const CONFIG = {
 	/** Share of the SUMMARISER model's window its transcript input may take. */
 	summaryTranscriptFraction: 0.5,
 
-	/** Wall-clock ceiling for the summary call. Longer than recap's one-liner:
-	 * a handoff summary reads a whole session and writes structured prose. */
+	/** Wall-clock ceiling for the summary call. A handoff summary reads a whole session and writes structured prose. */
 	summaryTimeoutMs: 60_000,
 };

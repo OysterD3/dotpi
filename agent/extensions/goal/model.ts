@@ -27,7 +27,7 @@
  * Ambiguity is an error rather than a silent pick: a judge running on a model you
  * did not choose is worse than being told the reference was ambiguous.
  *
- * Deliberately duplicated from the recap extension rather than shared — every
+ * Deliberately duplicated rather than shared — every
  * extension in this repo is independently installable, so a file may not import
  * across extension boundaries.
  */

@@ -1,7 +1,7 @@
 /**
  * Reading the `usage.budget` block out of settings.json.
  *
- * Lives under its own top-level `usage` key, beside `goal` and `recap`:
+ * Lives under its own top-level `usage` key, beside `goal`:
  *
  *   ~/.pi/agent/settings.json    yours, applies everywhere
  *   <cwd>/.pi/settings.json      the project's

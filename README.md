@@ -75,7 +75,7 @@ workflow                     40   828k     44k   1.90M   $8.0008
   code-review (16:01)        24   540k     30k   1.26M   $5.2008
   migrate-parser (14:03)     16   288k     14k    640k   $2.8000
 compaction                    1   140k    3.1k       0   $0.4200
-recap                         3    24k     360       0   $0.0360
+goal                          3    24k     360       0   $0.0360
 ────────────────────────────────────────────────────────────────
 Total                        45  2.19M    132k   2.88M  $20.8024
 5.20M tokens billed  ·  57% of input served from cache  ·  185k reasoning
@@ -110,10 +110,10 @@ the current branch: an abandoned fork was still paid for, and a `/usage` that go
 rewound would be lying.
 
 The last category is spend that reaches the session file **nowhere at all**: background workflow
-agents are separate pi processes, and `recap` and `goal` call `completeSimple` directly and store
+agents are separate pi processes, and `goal` calls `completeSimple` directly and stores
 only a display entry. Each announces on a shared `usage:spend` channel — named for the question,
 not for one answer to it, since a channel called `ultracode:spend` made workflows visible and left
-the other two invisible. The payload is an increment (`{ source, detail, usage, calls }`, `cost`
+`goal` invisible. The payload is an increment (`{ source, detail, usage, calls }`, `cost`
 flat), so a producer announces as it spends and never keeps a tally of its own. Rows are keyed by
 `source`, and the optional `detail` names one run/request inside it — that is what gives the
 indented per-run rows above. A producer that isn't installed simply never fires and its row never
@@ -133,12 +133,12 @@ pi's bus does not await handlers — with keyed snapshots: `key` makes a payload
 accumulate, so the same run can be offered on every report, live from memory or later from disk,
 and be billed exactly once. `ultracode` answers from `run.json`, which every settled agent writes.
 A run whose usage is already on a tool result stamps `details.spendKey` with its id, and the report
-drops that key from the answer rather than counting the fleet twice. `recap`, `goal` and the
+drops that key from the answer rather than counting the fleet twice. `goal` and the
 permissions classifier keep announcing increments: they have nothing durable to answer from, and
 their spend is cents rather than tens of dollars. The footnote still says so whenever any announced
 spend is in the table.
 
-The report is written into the transcript as a custom entry, the way `/recap` is, so it never
+The report is written into the transcript as a custom entry, so it never
 enters LLM context — and scrolling back to an earlier `/usage` shows what the session had spent *at
 that point*, which is what you want when working out what one stretch of work cost. The entry
 stores the numbers rather than the drawing, so it re-renders correctly after a theme change.
@@ -1409,75 +1409,6 @@ the number you are deciding on.
 | `config.ts` | The modes and what each one costs |
 | `skill-loading.test.ts` | Round trip against pi's own formatter |
 
-**`agent/extensions/recap/`** — adds `/recap`, an "away summary": a one- or two-line plain-text
-summary of where the session stands.
-
-```
-/recap                         # summarise now
-```
-
-A recap leads with the overall goal and current task, then the one next action, in under 40 words
-with no markdown. It runs as a tool-less LLM call over a recent-biased transcript of the branch, and
-shows up as a display-only entry — information for the person returning, never fed back into the
-model's context.
-
-**The recap model is configurable.** Set `recap.model` in settings.json to a model reference (a
-bare id, or `provider/id` to disambiguate); it falls back to the active session model. Resolution
-uses the same rules as pi's `--model`, so an ambiguous bare id is an error rather than a silent
-pick:
-
-```jsonc
-{
-  "recap": {
-    "model": "<provider>/<small-fast-model>", // optional; unset = the session model
-    "autoOnReturn": true,           // optional; on by default — see below
-    "idleThresholdMs": 300000,      // optional; "away" gap, floored at 30s
-    "minUserTurns": 3               // optional
-  }
-}
-```
-
-**Two doors into one generator.** There is the manual `/recap`, and an automatic summary written at
-the end of the trace while you are away, so it is on screen when you get back.
-
-- `/recap` is always available and does exactly what it says.
-- Auto-on-return is a timer, armed when the agent settles and fired once the absence has lasted
-  `idleThresholdMs`. It is **on by default**: a recap that must be configured first is a recap that
-  never gets seen (this one ran for weeks without producing an entry). The cost is one model call
-  per absence; opt out with `recap.autoOnReturn: false`.
-
-It used to be generated on the way *in* — held in front of your next message so it landed above it.
-That put the summary of an absence behind the act of ending it: it did not exist until you had
-already started typing, and you paid a few seconds' wait to read it. Producing it on a timer instead
-means your next message goes straight through. The old path survives as a fallback for the one case
-a timer cannot cover — a session resumed from disk, where no `agent_settled` has fired in this
-process and the gap is only visible once you type.
-
-The trade runs the other way now, and is worth knowing: **idle is not away.** A five-minute pause
-spent reading a diff produces a recap nobody asked for, where before it produced one only if you
-left *and* came back. pi exposes no focus events, so wall-clock idle is still the only proxy
-available; the difference is that it is now spent while you are gone rather than while you wait.
-
-The auto path has three more gates: a minimum of user turns before a recap is worthwhile (3), a
-minimum of turns since the last recap so the same spot is not recapped twice (2), and never while
-background work is pending. A project's `.pi/settings.json` can turn auto-recap on for itself, but
-its `recap.model` is honoured only when the project is trusted — a clone cannot silently redirect
-where your transcript is sent.
-
-| File | Role |
-| --- | --- |
-| `index.ts` | Command, event wiring, the idle timer and the on-return fallback |
-| `prompts.ts` | The recap prompt |
-| `generate.ts` | The tool-less LLM call and its outcomes |
-| `model.ts` | Resolving `recap.model` the way pi resolves `--model` (pure) |
-| `transcript.ts` | Session branch → budgeted transcript text (pure) |
-| `settings.ts` | The `recap` settings block |
-| `gate.ts` | The auto-on-return decision (pure) |
-| `state.ts` | Idle timing and a reentrancy guard |
-| `render.ts` | The recap entry's appearance (pure) |
-| `config.ts` | Limits and constants |
-| `recap.test.ts` / `recap.e2e.ts` | Unit and wiring coverage (`recap.live.ts` hits the real model) |
-
 **`agent/extensions/session-ref/`** — type `#` mid-prompt to tag another session into this one, as
 a summary or its full transcript. There is no command, because remembering another session is
 something you realise mid-sentence.
@@ -1516,9 +1447,9 @@ to nothing is left in the prompt exactly as typed rather than silently going mis
 | `autocomplete.ts` | The `#` completion provider, stacked on pi's own (pure rules) |
 | `marker.ts` | `#[Name·id]` in, quoted name out; the id is what makes a marker resolvable (pure) |
 | `sessions.ts` | Picker rules (pure) and loading the chosen branch |
-| `transcript.ts` | Branch → budgeted plain text (recap's flattening, adapted) |
+| `transcript.ts` | Branch → budgeted plain text |
 | `summarize.ts` | The handoff-summary call |
-| `model.ts` | Choosing the summariser model (recap's, copied) |
+| `model.ts` | Choosing the summariser model |
 | `prompts.ts` | Summariser prompt + the injected block |
 | `config.ts` | Budgets and thresholds |
 | `session-ref.test.ts` | Picker rules, branch loading, budgets, marker and trigger rules, and `#`-to-submit end-to-end |
@@ -3389,7 +3320,7 @@ things — extensions, themes, the permissions policy template, subagents — tr
 - **Models** — the session model is pi's own `defaultProvider` / `defaultModel` /
   `defaultThinkingLevel` in `agent/settings.json` (or whatever `/model` picked since). A feature
   that makes model calls of its own takes a model reference in the same file — `goal.model`,
-  `permissions.auto.model`, `recap.model`, `dynamicWorkflow.model` — a `prompt`
+  `permissions.auto.model`, `dynamicWorkflow.model` — a `prompt`
   hook takes one in its own `model` field, and a subagent takes one on the `model:` line of
   `agent/agents/<name>.md`. Unset, the feature uses the session
   model; session-ref's summary always does. Write the full `provider/id`. A
@@ -3405,7 +3336,7 @@ things — extensions, themes, the permissions policy template, subagents — tr
   `--model` syntax. The full reference is matched first and the level is split off only when that
   finds nothing, so an id with a real colon in it — OpenRouter ships
   `deepseek/deepseek-chat:free`-style ids — is never cut. Subagents run at the carried level unless
-  a `reasoning` value (the agent file's, or a one-time call's) pins one; goal, permissions, recap,
+  a `reasoning` value (the agent file's, or a one-time call's) pins one; goal, permissions,
   and dynamic-workflow set their own thinking and drop the level.
 - **Theme** — drop a JSON file in `agent/themes/`, then set `"theme"` in `agent/settings.json` to
   its `name`. Copy `one-dark-pro.json` as a starting point. A theme is two layers: `vars` is the raw
