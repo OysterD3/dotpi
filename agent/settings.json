@@ -1,10 +1,17 @@
 {
-  "lastChangelogVersion": "0.87.1",
+  "lastChangelogVersion": "1.0.2",
   "theme": "one-dark-pro",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6-astra",
   "defaultThinkingLevel": "xhigh",
-  "defaultTools": ["read", "bash", "edit", "write", "grep", "find"],
+  "defaultTools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "find"
+  ],
   "externalEditor": "nvim",
   "quietStartup": true,
   "steeringMode": "all",
@@ -62,7 +69,7 @@
   },
   "dynamicWorkflow": {
     "alwaysOn": true,
-    "model": "openai-codex/gpt-6-sol",
+    "model": "openai-codex/gpt-6.1-sol",
     "thinking": "high"
   },
   "packages": [

@@ -2133,7 +2133,7 @@ of letting a fleet spawn and die one agent at a time.
   "dynamicWorkflow": {
     "keywordTrigger": true,   // optional; whether the "ultracode" keyword opts in a turn
     "alwaysOn": false,        // optional; start every session in the mode
-    "model": "openai-codex/gpt-6-sol", // optional default for agents no request routes; unset, the session model
+    "model": "openai-codex/gpt-6.1-sol", // optional default for agents no request routes; unset, the session model
     "thinking": "high"        // optional level for agents nothing else gives one; unset, the child pi's own
   }
 }
@@ -2688,14 +2688,14 @@ tool allowlist and a role prompt; the main agent delegates a scoped task to one 
 ```
 Subagent           Model        Reasoning  Purpose
 ──────────────────────────────────────────────────
-code-explorer      gpt-6-sol    High       Read-only codebase discovery and investigation
+code-explorer      gpt-6.1-sol  High       Read-only codebase discovery and investigation
 code-reviewer      gpt-6-astra  Low        Review diffs for correctness, security, and quality
 commit-pusher      gpt-6-luna   Low        Stage, commit, and push completed changes
-implementer        gpt-6-sol    High       Features and bug fixes with tests and validation
-quick-implementer  gpt-6-sol    High       Small, well-defined changes in one or two files
+implementer        gpt-6.1-sol  High       Features and bug fixes with tests and validation
+quick-implementer  gpt-6.1-sol  High       Small, well-defined changes in one or two files
 ```
 
-Every subagent names its model directly, as a full `provider/id`: `openai-codex/gpt-6-sol` for the
+Every subagent names its model directly, as a full `provider/id`: `openai-codex/gpt-6.1-sol` for the
 three that do the engineering, `openai-codex/gpt-6-astra` for the reviewer, `openai-codex/gpt-6-luna`
 for the one that only runs git. Each file says its own model — a subagent's tier is part of what it
 is, and reading it off the agent beats inferring it from somewhere else. `code-reviewer` deliberately
