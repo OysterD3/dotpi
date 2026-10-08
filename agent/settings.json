@@ -75,7 +75,8 @@
   "packages": [
     "npm:pi-provider-qoder@github:OysterD3/pi-provider-qoder#8e39e37",
     "npm:pi-web-access",
-    "npm:pi-cache-optimizer"
+    "npm:pi-cache-optimizer",
+    "npm:@monotykamary/pi-better-openai"
   ],
   "showCacheMissNotices": true,
   "hideThinkingBlock": true,
