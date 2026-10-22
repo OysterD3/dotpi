@@ -55,7 +55,8 @@
       "Web_search",
       "Source_check",
       "Fetch_content",
-      "Get_search_content"
+      "Get_search_content",
+      "Compress"
     ],
     "allowDestructive": [],
     "destructiveOverridesAllow": true,
